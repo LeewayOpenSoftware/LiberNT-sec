@@ -792,41 +792,51 @@ SeCaptureSecurityDescriptor(
 
         if (DescriptorCopy.Owner)
         {
-            if (!RtlValidSid(DescriptorCopy.Owner)) RtlRaiseStatus(STATUS_INVALID_SID);
             NewDescriptor->Owner = Offset;
             RtlCopyMemory((PUCHAR)NewDescriptor + Offset,
                           DescriptorCopy.Owner,
                           OwnerSize);
+            if (!RtlValidSid((PUCHAR)NewDescriptor + Offset) ||
+                RtlLengthRequiredSid(((PISID)((PUCHAR)NewDescriptor + Offset))->SubAuthorityCount) != OwnerSize)
+                RtlRaiseStatus(STATUS_INVALID_SID);
             Offset += ROUND_UP(OwnerSize, sizeof(ULONG));
         }
 
         if (DescriptorCopy.Group)
         {
-            if (!RtlValidSid(DescriptorCopy.Group)) RtlRaiseStatus(STATUS_INVALID_SID);
             NewDescriptor->Group = Offset;
             RtlCopyMemory((PUCHAR)NewDescriptor + Offset,
                           DescriptorCopy.Group,
                           GroupSize);
+            if (!RtlValidSid((PUCHAR)NewDescriptor + Offset) ||
+                RtlLengthRequiredSid(((PISID)((PUCHAR)NewDescriptor + Offset))->SubAuthorityCount) != GroupSize)
+                RtlRaiseStatus(STATUS_INVALID_SID);
             Offset += ROUND_UP(GroupSize, sizeof(ULONG));
         }
 
         if (DescriptorCopy.Sacl)
         {
-            if (!RtlValidAcl(DescriptorCopy.Sacl)) RtlRaiseStatus(STATUS_INVALID_ACL);
             NewDescriptor->Sacl = Offset;
             RtlCopyMemory((PUCHAR)NewDescriptor + Offset,
                           DescriptorCopy.Sacl,
                           SaclSize);
+            if (SaclSize < sizeof(ACL) ||
+                ((PACL)((PUCHAR)NewDescriptor + Offset))->AclSize != SaclSize ||
+                !RtlValidAcl((PACL)((PUCHAR)NewDescriptor + Offset)))
+                RtlRaiseStatus(STATUS_INVALID_ACL);
             Offset += ROUND_UP(SaclSize, sizeof(ULONG));
         }
 
         if (DescriptorCopy.Dacl)
         {
-            if (!RtlValidAcl(DescriptorCopy.Dacl)) RtlRaiseStatus(STATUS_INVALID_ACL);
             NewDescriptor->Dacl = Offset;
             RtlCopyMemory((PUCHAR)NewDescriptor + Offset,
                           DescriptorCopy.Dacl,
                           DaclSize);
+            if (DaclSize < sizeof(ACL) ||
+                ((PACL)((PUCHAR)NewDescriptor + Offset))->AclSize != DaclSize ||
+                !RtlValidAcl((PACL)((PUCHAR)NewDescriptor + Offset)))
+                RtlRaiseStatus(STATUS_INVALID_ACL);
             Offset += ROUND_UP(DaclSize, sizeof(ULONG));
         }
 
