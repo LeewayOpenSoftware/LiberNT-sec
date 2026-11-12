@@ -1,0 +1,8 @@
+# v0 symbol mangling so KD/WinDbg can demangle internal Rust frames in the
+# kernel-target build. Intentionally does NOT set build.target or build-std here:
+# the kernel (reproducible) build passes the custom target + -Zbuild-std on the
+# command line (see build-kernel.sh), and the host differential build
+# (build-host.sh) uses the prebuilt host std/core. Keeping build-std out of this
+# file means a plain `cargo build` for a host triple stays clean.
+[build]
+rustflags = ["-Csymbol-mangling-version=v0"]

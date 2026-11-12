@@ -1,0 +1,8 @@
+# Pinned Rust toolchain (shared with the lnrspoc PoC) for reproducible builds.
+# Exact nightly: 1.98.0-nightly, date 2026-05-24. rust-src is needed only for the
+# custom kernel target (-Zbuild-std=core,compiler_builtins); the host diff build
+# uses the prebuilt std/core for the host triple and needs no build-std.
+[toolchain]
+channel = "nightly-2026-05-24"
+components = ["rust-src", "llvm-tools"]
+profile = "minimal"

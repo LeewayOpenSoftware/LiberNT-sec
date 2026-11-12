@@ -1,0 +1,22 @@
+[package]
+name = "leeway-rs-reparse"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Leeway experimental (C1) no_std Rust NTFS reparse-data validator. Not shipped; off by default; C validator stays the production path."
+
+[lib]
+name = "leeway_rs_reparse"
+crate-type = ["staticlib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+debug = 1
+strip = false

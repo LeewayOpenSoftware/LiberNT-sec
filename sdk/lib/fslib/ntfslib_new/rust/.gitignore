@@ -1,0 +1,5 @@
+/target
+difftest/reparse_differential
+difftest/reparse_differential.exe
+*.o
+*.obj
