@@ -1,0 +1,2963 @@
+/*
+ * Schannel tests
+ *
+ * Copyright 2006 Juan Lang
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#include <stdarg.h>
+#include <windef.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <stdio.h>
+#define SECURITY_WIN32
+#include <security.h>
+#define SCHANNEL_USE_BLACKLISTS
+#include <schannel.h>
+#include <ncrypt.h>
+
+#include "wine/test.h"
+
+static const BYTE bigCert[] = { 0x30, 0x7a, 0x02, 0x01, 0x01, 0x30, 0x02, 0x06,
+ 0x00, 0x30, 0x15, 0x31, 0x13, 0x30, 0x11, 0x06, 0x03, 0x55, 0x04, 0x03, 0x13,
+ 0x0a, 0x4a, 0x75, 0x61, 0x6e, 0x20, 0x4c, 0x61, 0x6e, 0x67, 0x00, 0x30, 0x22,
+ 0x18, 0x0f, 0x31, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30,
+ 0x30, 0x30, 0x30, 0x5a, 0x18, 0x0f, 0x31, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30,
+ 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5a, 0x30, 0x15, 0x31, 0x13, 0x30,
+ 0x11, 0x06, 0x03, 0x55, 0x04, 0x03, 0x13, 0x0a, 0x4a, 0x75, 0x61, 0x6e, 0x20,
+ 0x4c, 0x61, 0x6e, 0x67, 0x00, 0x30, 0x07, 0x30, 0x02, 0x06, 0x00, 0x03, 0x01,
+ 0x00, 0xa3, 0x16, 0x30, 0x14, 0x30, 0x12, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01,
+ 0x01, 0xff, 0x04, 0x08, 0x30, 0x06, 0x01, 0x01, 0xff, 0x02, 0x01, 0x01 };
+static WCHAR cspNameW[] = { 'W','i','n','e','C','r','y','p','t','T','e',
+ 'm','p',0 };
+static  BYTE privKey[] = {
+    0x07, 0x02, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x52, 0x53, 0x41, 0x32,
+    0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x6f, 0x21, 0x3c, 0x0b,
+    0x70, 0x2a, 0x43, 0xcb, 0x60, 0x5d, 0x4e, 0xf1, 0x24, 0x73, 0x3b, 0x71,
+    0xae, 0x15, 0x20, 0x89, 0xb1, 0xb6, 0x52, 0x2c, 0x06, 0x47, 0xce, 0xe9,
+    0x1d, 0x7d, 0xc9, 0x69, 0x3a, 0xd4, 0x8f, 0xa9, 0x37, 0xea, 0xb7, 0xa8,
+    0x83, 0xfb, 0x16, 0x79, 0x8b, 0x19, 0xda, 0x65, 0x3b, 0x50, 0x86, 0xbc,
+    0x7c, 0xf4, 0x94, 0x9f, 0x19, 0xe3, 0x42, 0xcf, 0xbf, 0x88, 0x4a, 0x49,
+    0x9d, 0x55, 0xc6, 0xd8, 0x01, 0x49, 0x8b, 0x85, 0x3b, 0x05, 0x96, 0xf5,
+    0xa2, 0x23, 0x99, 0x9d, 0x25, 0xc9, 0x85, 0xe5, 0x81, 0xdc, 0x59, 0xfd,
+    0x01, 0xe5, 0x77, 0x57, 0xd6, 0x63, 0x0f, 0xcf, 0x11, 0xae, 0x8b, 0x6f,
+    0x78, 0x95, 0x87, 0x2e, 0x1b, 0xf3, 0x22, 0x5d, 0x3d, 0x6a, 0x84, 0x01,
+    0x9f, 0xbc, 0x5c, 0x71, 0x32, 0xf3, 0x35, 0x92, 0x44, 0xa0, 0x93, 0x4d,
+    0x38, 0x40, 0x5d, 0x32, 0x32, 0x63, 0xd5, 0xd2, 0xa8, 0xcf, 0xd8, 0x22,
+    0x69, 0x82, 0x8f, 0x24, 0x69, 0xde, 0xbd, 0xfa, 0xee, 0xf6, 0x1f, 0x9b,
+    0xd8, 0x98, 0x5c, 0x50, 0x69, 0x44, 0x26, 0x43, 0x8c, 0x87, 0xe6, 0x1e,
+    0x6a, 0x8c, 0xb4, 0x78, 0x4a, 0xbf, 0x56, 0x7c, 0xe0, 0x82, 0x49, 0x66,
+    0x3e, 0xe6, 0x15, 0xc2, 0x73, 0x46, 0x2c, 0x28, 0x10, 0x71, 0xae, 0x0a,
+    0x40, 0x7a, 0x39, 0xd1, 0xc8, 0x5c, 0xe4, 0x13, 0x6f, 0x1b, 0xf7, 0xbd,
+    0x45, 0x91, 0x38, 0xbc, 0x6b, 0xb3, 0x39, 0x1c, 0x0f, 0xf7, 0x9e, 0xb2,
+    0x42, 0x2c, 0x1e, 0xc9, 0x0b, 0xb4, 0x4a, 0x07, 0xca, 0x1a, 0xc6, 0xf2,
+    0xf3, 0x35, 0x0f, 0xac, 0x08, 0x2c, 0x5d, 0xb4, 0x9f, 0x15, 0x79, 0x09,
+    0x44, 0xe4, 0x6a, 0x1d, 0x18, 0x03, 0xa4, 0x3e, 0xd6, 0x78, 0xf5, 0x3a,
+    0x55, 0x2c, 0xba, 0x58, 0xc5, 0xd5, 0x39, 0xc5, 0x49, 0xa7, 0x27, 0xac,
+    0x95, 0x0c, 0x79, 0xcb, 0x58, 0x59, 0x5c, 0xec, 0x5b, 0x61, 0x9c, 0x04,
+    0x87, 0xa7, 0xf9, 0xe3, 0x5f, 0x2e, 0x75, 0x85, 0x93, 0x26, 0x41, 0x35,
+    0x3d, 0x77, 0x08, 0x56, 0x53, 0xf2, 0x1b, 0x76, 0x5a, 0xe2, 0x44, 0xf1,
+    0x70, 0x9c, 0x98, 0xea, 0x51, 0x52, 0x10, 0x0f, 0x75, 0x5b, 0x45, 0xad,
+    0x0b, 0x80, 0x45, 0x88, 0xc6, 0x85, 0xd3, 0x6a, 0x52, 0x91, 0xb3, 0x94,
+    0xcd, 0x64, 0x8f, 0x74, 0xf2, 0xb8, 0x54, 0x2b, 0x15, 0xb3, 0x0d, 0x29,
+    0x2e, 0x3f, 0x57, 0x39, 0xa6, 0xc5, 0x1c, 0x28, 0xf6, 0x4b, 0x1b, 0x30,
+    0xa2, 0x6c, 0x07, 0x9d, 0x90, 0x35, 0xff, 0x00, 0xf6, 0xf3, 0xb0, 0x2a,
+    0xca, 0x2b, 0x20, 0xd1, 0x84, 0xd9, 0x7c, 0x07, 0x13, 0x00, 0x9b, 0x48,
+    0xdd, 0xd2, 0x7b, 0x01, 0xcb, 0x3b, 0x47, 0x6e, 0xf9, 0xdd, 0x46, 0x4e,
+    0xc3, 0x6d, 0xd6, 0x04, 0x96, 0xff, 0xa0, 0xdc, 0xf3, 0x70, 0x84, 0x61,
+    0x67, 0x82, 0xe2, 0x60, 0x2c, 0xd1, 0xb1, 0xa4, 0x34, 0x67, 0xc6, 0x0e,
+    0xff, 0xee, 0x9b, 0xf0, 0xdb, 0x32, 0xb2, 0xdd, 0xd1, 0xe2, 0xc1, 0x7b,
+    0xe0, 0x9f, 0x98, 0xbe, 0xd0, 0x4e, 0x03, 0x9c, 0x1c, 0x5b, 0x63, 0xd8,
+    0xff, 0x90, 0xe8, 0x6a, 0xc3, 0x73, 0xa5, 0x2b, 0x50, 0xcb, 0xc7, 0xd0,
+    0x5c, 0x75, 0x02, 0xa4, 0xee, 0xeb, 0x44, 0x11, 0x7a, 0xd0, 0x3e, 0x73,
+    0x35, 0xe1, 0x10, 0x39, 0xc4, 0x21, 0x7b, 0xaf, 0x1b, 0x03, 0xe8, 0xfc,
+    0xca, 0x6e, 0xe8, 0xe6, 0x38, 0xb8, 0x7d, 0x16, 0x2b, 0xe2, 0x9d, 0x09,
+    0x15, 0x81, 0x51, 0xf9, 0x3d, 0x4b, 0xca, 0xbd, 0x89, 0x2e, 0xe1, 0x3f,
+    0x8e, 0xe8, 0x05, 0x9a, 0x6d, 0xb5, 0x31, 0x30, 0x19, 0x45, 0x9f, 0xc3,
+    0x18, 0xc7, 0x6f, 0x32, 0x52, 0xce, 0xf8, 0x39, 0x6b, 0xb7, 0xd2, 0xcb,
+    0x29, 0x32, 0xc1, 0xc7, 0xe9, 0x45, 0xbb, 0x6d, 0xbb, 0x8f, 0xa0, 0x1a,
+    0x28, 0xa3, 0x2f, 0x94, 0x35, 0xef, 0xc7, 0x36, 0x47, 0x0e, 0x9f, 0x3d,
+    0xe4, 0x94, 0x61, 0xf3, 0xfe, 0xbb, 0xc2, 0x12, 0x64, 0xb8, 0x40, 0x83,
+    0xf3, 0x95, 0xfc, 0xe3, 0x71, 0x64, 0xae, 0x04, 0x8b, 0x70, 0x8c, 0x39,
+    0x76, 0x5c, 0xc8, 0xdc, 0x91, 0xd7, 0xe1, 0xe9, 0x82, 0x4a, 0x85, 0xac,
+    0x70, 0xde, 0x09, 0xdf, 0x38, 0x10, 0x8a, 0x3e, 0x42, 0x52, 0x4e, 0xf0,
+    0xa8, 0x0c, 0xef, 0x08, 0x07, 0xce, 0x86, 0xd7, 0xda, 0xe9, 0x89, 0xa2,
+    0x6d, 0x9d, 0x2d, 0x68, 0xdd, 0x78, 0xce, 0xe3, 0xca, 0x6f, 0xfe, 0xf5,
+    0x9c, 0x17, 0x7b, 0x49, 0x0c, 0x0f, 0xd8, 0xf3, 0x8d, 0xb1, 0xc9, 0xf4,
+    0x1f, 0x31, 0xe7, 0x38, 0xe4, 0xa4, 0x9a, 0x45, 0xe2, 0x3f, 0x57, 0x08,
+    0x32, 0x6e, 0x5e, 0x94, 0x30, 0xbe, 0xba, 0xf9, 0x5b, 0xa1, 0x4f, 0x0d,
+    0xd9, 0x60, 0x57, 0x62, 0x15, 0x9b, 0x11, 0x53, 0xe7, 0xde, 0x99, 0x9e,
+    0x93, 0xd0, 0x7a, 0x5c, 0xed, 0x70, 0xa4, 0x7f, 0x0a, 0x3d, 0xed, 0xef,
+    0xb9, 0x17, 0xb7, 0xd2, 0x40, 0xe9, 0x48, 0xe6, 0x17, 0x6b, 0xba, 0x2d,
+    0x54, 0x18, 0x7c, 0xa5, 0x28, 0xcb, 0xda, 0x49, 0x5e, 0x4f, 0x10, 0x38,
+    0xd4, 0xe9, 0x28, 0xd1, 0x56, 0x84, 0x4e, 0xde, 0x9d, 0x34, 0x82, 0xf0,
+    0xa2, 0x1c, 0xbf, 0xe8, 0x13, 0x4d, 0x34, 0xc7, 0x64, 0x08, 0xf1, 0x74,
+    0xc3, 0x0d, 0x42, 0xfd, 0x5e, 0xda, 0x04, 0xf3, 0x12, 0xf9, 0xc2, 0x61,
+    0x09, 0x78, 0x44, 0xbd, 0x1b, 0x96, 0x95, 0x1f, 0x35, 0x71, 0xb9, 0xdf,
+    0x84, 0xe8, 0xea, 0xce, 0x5a, 0x4e, 0x3c, 0x7e, 0xfe, 0x6e, 0x59, 0x25,
+    0xdb, 0x3b, 0x91, 0x26, 0xa8, 0x87, 0x4b, 0x82, 0xe1, 0x69, 0x3b, 0xd6,
+    0x11, 0x0b, 0xf2, 0x3e, 0x7d, 0x76, 0xf3, 0x89, 0x3c, 0x9e, 0x99, 0x6b,
+    0x65, 0x24, 0x34, 0x66, 0x29, 0xd8, 0x33, 0x7a, 0x5a, 0x3b, 0xbe, 0x15,
+    0x1d, 0x26, 0x80, 0x68, 0x12, 0x6f, 0xe4, 0x6e, 0xc4, 0x9d, 0x04, 0x7a,
+    0xa4, 0x4d, 0x79, 0x04, 0xe0, 0x33, 0xde, 0xff, 0x0c, 0x47, 0x25, 0x59,
+    0x3e, 0xe4, 0x21, 0x66, 0xdb, 0xdf, 0xf3, 0x75, 0x3d, 0x94, 0x36, 0x73,
+    0x67, 0xd8, 0xa6, 0x71, 0xa7, 0xc4, 0x5a, 0xff, 0x6c, 0xee, 0x70, 0x8e,
+    0x9d, 0x77, 0x71, 0x4b, 0xf1, 0x4f, 0xe3, 0x70, 0x8a, 0xbd, 0xf3, 0x78,
+    0xd6, 0x5e, 0x60, 0x7f, 0x78, 0xe3, 0x81, 0x7c, 0x96, 0x4b, 0x2d, 0x90,
+    0x86, 0x7b, 0x6e, 0xd7, 0x5e, 0x66, 0xb1, 0x45, 0xf8, 0x03, 0xcd, 0xf5,
+    0x55, 0x32, 0xa0, 0x39, 0xb1, 0xf0, 0xf0, 0xc6, 0xfb, 0xef, 0x3f, 0x81,
+    0x15, 0xca, 0x03, 0x36, 0xb8, 0xfe, 0xeb, 0xdd, 0x82, 0x02, 0x1b, 0xe7,
+    0x1d, 0x12, 0x73, 0x31, 0x1d, 0x31, 0x95, 0xa4, 0x2e, 0x61, 0x16, 0x72,
+    0x68, 0xbb, 0x3a, 0x95, 0x22, 0x81, 0x15, 0x01, 0xd4, 0x76, 0xb7, 0x0c,
+    0x43, 0x5c, 0xb1, 0x6d, 0x95, 0xec, 0x3f, 0x8b, 0x78, 0x5b, 0xb4, 0x7f,
+    0xca, 0x92, 0x2a, 0x01, 0x0b, 0x06, 0xfc, 0x9e, 0xd4, 0xa1, 0x3f, 0xce,
+    0xe6, 0x6c, 0x70, 0xa3, 0x8d, 0x11, 0x84, 0x81, 0xa7, 0x3a, 0xa3, 0x68,
+    0x3e, 0x2c, 0x04, 0xd2, 0x6d, 0x16, 0xcd, 0x21, 0x43, 0x0f, 0x29, 0xf7,
+    0xc9, 0x66, 0x1b, 0xe1, 0xbe, 0xd5, 0xf5, 0x62, 0xb9, 0xb3, 0x2b, 0xf0,
+    0x08, 0xb7, 0x06, 0xf1, 0x65, 0x7f, 0xa4, 0xaf, 0xe7, 0xf2, 0x53, 0xa2,
+    0x8a, 0xaa, 0xb8, 0x4f, 0xca, 0xd8, 0xbe, 0x5a, 0x01, 0xb4, 0x65, 0x09,
+    0x52, 0x89, 0x89, 0xc5, 0xfb, 0x05, 0x41, 0x4b, 0xc7, 0x49, 0xd8, 0x41,
+    0x95, 0x8d, 0xde, 0x5f, 0x76, 0x02, 0x20, 0x3d, 0x85, 0x40, 0x63, 0xb9,
+    0x1c, 0xbd, 0x28, 0xab, 0x78, 0xea, 0x4a, 0xc0, 0x03, 0x73, 0x90, 0x9b,
+    0x2c, 0xdd, 0x40, 0xd9, 0xad, 0x93, 0xfe, 0xdd, 0xd4, 0xf6, 0xf5, 0x37,
+    0x8f, 0x77, 0xe2, 0x4a, 0x7c, 0x93, 0x1d, 0x52, 0x4b, 0x2e, 0xe3, 0x8c,
+    0xd4, 0xdd, 0xa7, 0x70, 0x6b, 0x5f, 0x6b, 0x3d, 0x9c, 0xbf, 0x73, 0xd7,
+    0xc1, 0x13, 0x45, 0x9e, 0x99, 0x19, 0x51, 0xd3, 0x80, 0x71, 0xf1, 0x78,
+    0xa8, 0x1b, 0x72, 0x17, 0x6b, 0x39, 0xca, 0xbd, 0x34, 0x3f, 0x86, 0x2c,
+    0x2a, 0x10, 0xba, 0xd9, 0x71, 0x44, 0x3a, 0x95, 0x5a, 0xb9, 0x0a, 0xc8,
+    0x9a, 0xea, 0x58, 0xf5, 0x28, 0x08, 0x16, 0x0a, 0x05, 0x29, 0xfa, 0x3e,
+    0xba, 0x78, 0x01, 0xda, 0x99, 0x75, 0x7e, 0x46, 0x0b, 0xb8, 0xbd, 0x4e,
+    0x8d, 0xe9, 0x89, 0x7f, 0xed, 0xc8, 0x22, 0xd1, 0x52, 0xa9, 0xa5, 0x88,
+    0x3a, 0xd1, 0x5b, 0x27, 0x15, 0xdf, 0x43, 0x00,
+};
+
+static const BYTE selfSignedCert[] = {
+    0x30, 0x82, 0x03, 0x18, 0x30, 0x82, 0x02, 0x00, 0xa0, 0x03, 0x02, 0x01,
+    0x02, 0x02, 0x14, 0x4f, 0x07, 0x41, 0x0b, 0x25, 0x17, 0x2e, 0x82, 0x6c,
+    0x82, 0xa4, 0x03, 0xc6, 0xb6, 0xca, 0x15, 0x2a, 0xba, 0x36, 0x41, 0x30,
+    0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
+    0x05, 0x00, 0x30, 0x14, 0x31, 0x12, 0x30, 0x10, 0x06, 0x03, 0x55, 0x04,
+    0x03, 0x0c, 0x09, 0x4a, 0x75, 0x61, 0x6e, 0x20, 0x4c, 0x61, 0x6e, 0x67,
+    0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36, 0x31, 0x31, 0x30, 0x37, 0x31, 0x31,
+    0x31, 0x34, 0x35, 0x36, 0x5a, 0x17, 0x0d, 0x33, 0x36, 0x31, 0x31, 0x30,
+    0x34, 0x31, 0x31, 0x31, 0x34, 0x35, 0x36, 0x5a, 0x30, 0x14, 0x31, 0x12,
+    0x30, 0x10, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x09, 0x4a, 0x75, 0x61,
+    0x6e, 0x20, 0x4c, 0x61, 0x6e, 0x67, 0x30, 0x82, 0x01, 0x22, 0x30, 0x0d,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+    0x00, 0x03, 0x82, 0x01, 0x0f, 0x00, 0x30, 0x82, 0x01, 0x0a, 0x02, 0x82,
+    0x01, 0x01, 0x00, 0xac, 0x27, 0xa7, 0x49, 0xc5, 0x39, 0xd5, 0xc5, 0x58,
+    0xba, 0x2c, 0x55, 0x3a, 0xf5, 0x78, 0xd6, 0x3e, 0xa4, 0x03, 0x18, 0x1d,
+    0x6a, 0xe4, 0x44, 0x09, 0x79, 0x15, 0x9f, 0xb4, 0x5d, 0x2c, 0x08, 0xac,
+    0x0f, 0x35, 0xf3, 0xf2, 0xc6, 0x1a, 0xca, 0x07, 0x4a, 0xb4, 0x0b, 0xc9,
+    0x1e, 0x2c, 0x42, 0xb2, 0x9e, 0xf7, 0x0f, 0x1c, 0x39, 0xb3, 0x6b, 0xbc,
+    0x38, 0x91, 0x45, 0xbd, 0xf7, 0x1b, 0x6f, 0x13, 0xe4, 0x5c, 0xc8, 0xd1,
+    0x39, 0x7a, 0x40, 0x0a, 0xae, 0x71, 0x10, 0x28, 0x2c, 0x46, 0x73, 0xc2,
+    0x15, 0xe6, 0x3e, 0x66, 0x49, 0x82, 0xe0, 0x7c, 0x56, 0xbf, 0x4a, 0x78,
+    0xb4, 0x8c, 0x6a, 0x1e, 0xe6, 0x87, 0x8c, 0x43, 0x26, 0x44, 0x69, 0x50,
+    0x5c, 0x98, 0xd8, 0x9b, 0x1f, 0xf6, 0xee, 0xfa, 0xbd, 0xde, 0x69, 0x24,
+    0x8f, 0x82, 0x69, 0x22, 0xd8, 0xcf, 0xa8, 0xd2, 0xd5, 0x63, 0x32, 0x32,
+    0x5d, 0x40, 0x38, 0x4d, 0x93, 0xa0, 0x44, 0x92, 0x35, 0xf3, 0x32, 0x71,
+    0x5c, 0xbc, 0x9f, 0x01, 0x84, 0x6a, 0x3d, 0x5d, 0x22, 0xf3, 0x1b, 0x2e,
+    0x87, 0x95, 0x78, 0x6f, 0x8b, 0xae, 0x11, 0xcf, 0x0f, 0x63, 0xd6, 0x57,
+    0x77, 0xe5, 0x01, 0xfd, 0x59, 0xdc, 0x81, 0xe5, 0x85, 0xc9, 0x25, 0x9d,
+    0x99, 0x23, 0xa2, 0xf5, 0x96, 0x05, 0x3b, 0x85, 0x8b, 0x49, 0x01, 0xd8,
+    0xc6, 0x55, 0x9d, 0x49, 0x4a, 0x88, 0xbf, 0xcf, 0x42, 0xe3, 0x19, 0x9f,
+    0x94, 0xf4, 0x7c, 0xbc, 0x86, 0x50, 0x3b, 0x65, 0xda, 0x19, 0x8b, 0x79,
+    0x16, 0xfb, 0x83, 0xa8, 0xb7, 0xea, 0x37, 0xa9, 0x8f, 0xd4, 0x3a, 0x69,
+    0xc9, 0x7d, 0x1d, 0xe9, 0xce, 0x47, 0x06, 0x2c, 0x52, 0xb6, 0xb1, 0x89,
+    0x20, 0x15, 0xae, 0x71, 0x3b, 0x73, 0x24, 0xf1, 0x4e, 0x5d, 0x60, 0xcb,
+    0x43, 0x2a, 0x70, 0x0b, 0x3c, 0x21, 0x6f, 0x02, 0x03, 0x01, 0x00, 0x01,
+    0xa3, 0x62, 0x30, 0x60, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04,
+    0x16, 0x04, 0x14, 0xf2, 0xf3, 0x66, 0x19, 0x39, 0xea, 0xf1, 0x39, 0x3a,
+    0x9f, 0xd7, 0x9d, 0x7f, 0xe4, 0xb8, 0x60, 0xe9, 0xdb, 0xa9, 0x58, 0x30,
+    0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14,
+    0xf2, 0xf3, 0x66, 0x19, 0x39, 0xea, 0xf1, 0x39, 0x3a, 0x9f, 0xd7, 0x9d,
+    0x7f, 0xe4, 0xb8, 0x60, 0xe9, 0xdb, 0xa9, 0x58, 0x30, 0x13, 0x06, 0x03,
+    0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01,
+    0x05, 0x05, 0x07, 0x03, 0x01, 0x30, 0x09, 0x06, 0x03, 0x55, 0x1d, 0x13,
+    0x04, 0x02, 0x30, 0x00, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+    0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x03, 0x82, 0x01, 0x01, 0x00,
+    0x0e, 0xed, 0x82, 0x6c, 0x55, 0xce, 0x22, 0x54, 0x84, 0xae, 0x49, 0x41,
+    0xc7, 0x09, 0x97, 0xe6, 0xb3, 0xf7, 0x49, 0x38, 0xa5, 0xf3, 0xc4, 0x17,
+    0x23, 0x35, 0xf8, 0x68, 0x1e, 0xea, 0xf2, 0xf6, 0x9d, 0x61, 0x8a, 0x6e,
+    0x83, 0xdd, 0x39, 0xf2, 0x7a, 0x79, 0xd7, 0x3b, 0xd2, 0x12, 0x28, 0xfe,
+    0xb8, 0x01, 0xbb, 0xaa, 0xf8, 0x46, 0x87, 0xd6, 0xa4, 0x5b, 0xdc, 0x8e,
+    0x5e, 0x5b, 0xeb, 0x28, 0x43, 0x1d, 0xa6, 0x7b, 0xcc, 0xaa, 0x3d, 0xd0,
+    0xa0, 0x3d, 0x56, 0x7c, 0x27, 0x64, 0x74, 0xc1, 0x73, 0x97, 0x52, 0x9c,
+    0xb0, 0x8d, 0x20, 0xda, 0x7c, 0x12, 0x06, 0x2d, 0x6e, 0xe8, 0xb8, 0xc7,
+    0x6e, 0x46, 0x03, 0x64, 0xf5, 0x69, 0x2e, 0x7d, 0x27, 0xc1, 0xbb, 0x3d,
+    0xe9, 0xdf, 0xd8, 0xd4, 0xcd, 0x6e, 0xa7, 0xee, 0xf7, 0x0c, 0x0e, 0x11,
+    0x8c, 0xf8, 0xa6, 0xb4, 0x37, 0xa0, 0x3a, 0x29, 0x99, 0xf3, 0x69, 0x99,
+    0xef, 0xb4, 0xdf, 0x65, 0x4c, 0x29, 0xef, 0x38, 0xef, 0xaa, 0xd4, 0x2b,
+    0xe6, 0xd4, 0xc2, 0x78, 0x45, 0x82, 0xdd, 0x46, 0x33, 0xa9, 0x74, 0xe0,
+    0xcd, 0x68, 0x7c, 0xe0, 0x39, 0xcc, 0x79, 0x1e, 0x19, 0xb9, 0x55, 0xfc,
+    0x39, 0x1f, 0x88, 0x87, 0x98, 0x95, 0x1a, 0x98, 0x75, 0x88, 0x5e, 0xaa,
+    0x9c, 0xb4, 0x3f, 0xab, 0xf3, 0xae, 0x3a, 0xd8, 0x5c, 0x36, 0x45, 0xdf,
+    0x75, 0x8a, 0x57, 0x33, 0x80, 0x2c, 0x61, 0x85, 0xc3, 0x8a, 0x7f, 0x48,
+    0xc0, 0xa6, 0x97, 0xcf, 0xbf, 0xe0, 0x46, 0x92, 0x4d, 0x6c, 0xeb, 0xab,
+    0x6f, 0x91, 0xcd, 0xfd, 0xc7, 0x3d, 0x74, 0xde, 0x9b, 0x47, 0x97, 0x5f,
+    0x93, 0x51, 0x4d, 0x29, 0x32, 0x29, 0x50, 0xd3, 0xc4, 0xe1, 0x46, 0x24,
+    0xec, 0xfa, 0xa0, 0xe0, 0x3e, 0x4e, 0x4b, 0x83, 0xbe, 0xb3, 0x37, 0x0d,
+    0x50, 0x7c, 0x1b, 0xd4,
+};
+
+static CHAR unisp_name_a[] = UNISP_NAME_A;
+
+static const char *algid_to_str(ALG_ID alg)
+{
+    static char buf[12];
+    switch(alg) {
+#define X(x) case x: return #x
+        X(CALG_MD2);
+        X(CALG_MD4);
+        X(CALG_MD5);
+        X(CALG_SHA1); /* same as CALG_SHA */
+        X(CALG_MAC);
+        X(CALG_RSA_SIGN);
+        X(CALG_DSS_SIGN);
+        X(CALG_NO_SIGN);
+        X(CALG_RSA_KEYX);
+        X(CALG_DES);
+        X(CALG_3DES_112);
+        X(CALG_3DES);
+        X(CALG_DESX);
+        X(CALG_RC2);
+        X(CALG_RC4);
+        X(CALG_SEAL);
+        X(CALG_DH_SF);
+        X(CALG_DH_EPHEM);
+        X(CALG_AGREEDKEY_ANY);
+        X(CALG_KEA_KEYX);
+        X(CALG_HUGHES_MD5);
+        X(CALG_SKIPJACK);
+        X(CALG_TEK);
+        X(CALG_CYLINK_MEK);
+        X(CALG_SSL3_SHAMD5);
+        X(CALG_SSL3_MASTER);
+        X(CALG_SCHANNEL_MASTER_HASH);
+        X(CALG_SCHANNEL_MAC_KEY);
+        X(CALG_SCHANNEL_ENC_KEY);
+        X(CALG_PCT1_MASTER);
+        X(CALG_SSL2_MASTER);
+        X(CALG_TLS1_MASTER);
+        X(CALG_RC5);
+        X(CALG_HMAC);
+        X(CALG_TLS1PRF);
+        X(CALG_HASH_REPLACE_OWF);
+        X(CALG_AES_128);
+        X(CALG_AES_192);
+        X(CALG_AES_256);
+        X(CALG_AES);
+        X(CALG_SHA_256);
+        X(CALG_SHA_384);
+        X(CALG_SHA_512);
+        X(CALG_ECDH);
+        X(CALG_ECMQV);
+        X(CALG_ECDSA);
+#undef X
+    }
+
+    sprintf(buf, "%x", alg);
+    return buf;
+}
+
+static void init_cred(SCHANNEL_CRED *cred)
+{
+    cred->dwVersion = SCHANNEL_CRED_VERSION;
+    cred->cCreds = 0;
+    cred->paCred = 0;
+    cred->hRootStore = NULL;
+    cred->cMappers = 0;
+    cred->aphMappers = NULL;
+    cred->cSupportedAlgs = 0;
+    cred->palgSupportedAlgs = NULL;
+    cred->grbitEnabledProtocols = 0;
+    cred->dwMinimumCipherStrength = 0;
+    cred->dwMaximumCipherStrength = 0;
+    cred->dwSessionLifespan = 0;
+    cred->dwFlags = 0;
+}
+
+static void test_strength(PCredHandle handle)
+{
+    SecPkgCred_CipherStrengths strength = {-1,-1};
+    SECURITY_STATUS st;
+
+    st = QueryCredentialsAttributesA(handle, SECPKG_ATTR_CIPHER_STRENGTHS, &strength);
+    ok(st == SEC_E_OK, "QueryCredentialsAttributesA failed: %lu\n", GetLastError());
+    ok(strength.dwMinimumCipherStrength, "dwMinimumCipherStrength not changed\n");
+    ok(strength.dwMaximumCipherStrength, "dwMaximumCipherStrength not changed\n");
+    trace("strength %ld - %ld\n", strength.dwMinimumCipherStrength, strength.dwMaximumCipherStrength);
+}
+
+static void test_supported_protocols(CredHandle *handle, unsigned exprots)
+{
+    SecPkgCred_SupportedProtocols protocols;
+    SECURITY_STATUS status;
+
+    status = QueryCredentialsAttributesA(handle, SECPKG_ATTR_SUPPORTED_PROTOCOLS, &protocols);
+    ok(status == SEC_E_OK, "QueryCredentialsAttributes failed: %08lx\n", status);
+
+    if(exprots)
+        ok(protocols.grbitProtocol == exprots, "protocols.grbitProtocol = %lx, expected %x\n", protocols.grbitProtocol, exprots);
+
+    trace("Supported protocols:\n");
+
+#define X(flag, name) do { if(protocols.grbitProtocol & flag) { trace(name "\n"); protocols.grbitProtocol &= ~flag; } }while(0)
+    X(SP_PROT_SSL2_CLIENT, "SSL 2 client");
+    X(SP_PROT_SSL3_CLIENT, "SSL 3 client");
+    X(SP_PROT_TLS1_0_CLIENT, "TLS 1.0 client");
+    X(SP_PROT_TLS1_1_CLIENT, "TLS 1.1 client");
+    X(SP_PROT_TLS1_2_CLIENT, "TLS 1.2 client");
+    X(SP_PROT_TLS1_3_CLIENT, "TLS 1.3 client");
+    X(SP_PROT_DTLS1_0_CLIENT, "DTLS 1.0 client");
+    X(SP_PROT_DTLS1_2_CLIENT, "DTLS 1.2 client");
+#undef X
+
+    if(protocols.grbitProtocol)
+        trace("Unknown flags: %lx\n", protocols.grbitProtocol);
+}
+
+static void test_supported_algs(CredHandle *handle)
+{
+    SecPkgCred_SupportedAlgs algs;
+    SECURITY_STATUS status;
+    unsigned i;
+
+    status = QueryCredentialsAttributesA(handle, SECPKG_ATTR_SUPPORTED_ALGS, &algs);
+    todo_wine ok(status == SEC_E_OK, "QueryCredentialsAttributes failed: %08lx\n", status);
+    if(status != SEC_E_OK)
+        return;
+
+    trace("Supported algorithms (%ld):\n", algs.cSupportedAlgs);
+    for(i=0; i < algs.cSupportedAlgs; i++)
+        trace("    %s\n", algid_to_str(algs.palgSupportedAlgs[i]));
+
+    FreeContextBuffer(algs.palgSupportedAlgs);
+}
+
+static void test_cread_attrs(void)
+{
+    SCHANNEL_CRED schannel_cred;
+    SECURITY_STATUS status;
+    CredHandle cred;
+
+    status = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+            NULL, NULL, NULL, NULL, &cred, NULL);
+    ok(status == SEC_E_OK, "AcquireCredentialsHandleA failed: %lx\n", status);
+
+    test_supported_protocols(&cred, 0);
+    test_supported_algs(&cred);
+
+    status = QueryCredentialsAttributesA(&cred, SECPKG_ATTR_SUPPORTED_PROTOCOLS, NULL);
+    ok(status == SEC_E_INTERNAL_ERROR, "QueryCredentialsAttributes failed: %08lx, expected SEC_E_INTERNAL_ERROR\n", status);
+
+    status = QueryCredentialsAttributesA(&cred, SECPKG_ATTR_SUPPORTED_ALGS, NULL);
+    ok(status == SEC_E_INTERNAL_ERROR, "QueryCredentialsAttributes failed: %08lx, expected SEC_E_INTERNAL_ERROR\n", status);
+
+    FreeCredentialsHandle(&cred);
+
+    init_cred(&schannel_cred);
+    schannel_cred.grbitEnabledProtocols = SP_PROT_TLS1_CLIENT;
+    status = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+            NULL, &schannel_cred, NULL, NULL, &cred, NULL);
+    ok(status == SEC_E_OK, "AcquireCredentialsHandleA failed: %lx\n", status);
+
+    test_supported_protocols(&cred, SP_PROT_TLS1_CLIENT);
+    test_supported_algs(&cred);
+
+    FreeCredentialsHandle(&cred);
+}
+
+static void testAcquireSecurityContext(void)
+{
+    BOOL has_schannel = FALSE;
+    SecPkgInfoA *package_info;
+    ULONG i;
+    SECURITY_STATUS st;
+    CredHandle cred;
+    SecPkgCredentials_NamesA names;
+    TimeStamp exp;
+    SCHANNEL_CRED schanCred;
+    SCH_CREDENTIALS schCred;
+    PCCERT_CONTEXT certs[2];
+    HCRYPTPROV csp;
+    WCHAR ms_def_prov_w[MAX_PATH];
+    BOOL ret;
+    HCRYPTKEY key;
+    CRYPT_KEY_PROV_INFO keyProvInfo;
+
+    if (SUCCEEDED(EnumerateSecurityPackagesA(&i, &package_info)))
+    {
+        while(i--)
+        {
+            if (!strcmp(package_info[i].Name, unisp_name_a))
+            {
+                has_schannel = TRUE;
+                break;
+            }
+        }
+        FreeContextBuffer(package_info);
+    }
+    if (!has_schannel)
+    {
+        skip("Schannel not available\n");
+        return;
+    }
+
+    lstrcpyW(ms_def_prov_w, MS_DEF_PROV_W);
+
+    keyProvInfo.pwszContainerName = cspNameW;
+    keyProvInfo.pwszProvName = ms_def_prov_w;
+    keyProvInfo.dwProvType = PROV_RSA_FULL;
+    keyProvInfo.dwFlags = 0;
+    keyProvInfo.cProvParam = 0;
+    keyProvInfo.rgProvParam = NULL;
+    keyProvInfo.dwKeySpec = AT_SIGNATURE;
+
+    certs[0] = CertCreateCertificateContext(X509_ASN_ENCODING, bigCert, sizeof(bigCert));
+    certs[1] = CertCreateCertificateContext(X509_ASN_ENCODING, selfSignedCert, sizeof(selfSignedCert));
+
+    SetLastError(0xdeadbeef);
+    ret = CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+
+    st = AcquireCredentialsHandleA(NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_SECPKG_NOT_FOUND, "Expected SEC_E_SECPKG_NOT_FOUND, got %08lx\n", st);
+
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, 0, NULL, NULL, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_NO_CREDENTIALS, "Expected SEC_E_NO_CREDENTIALS, got %08lx\n", st);
+
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_BOTH, NULL, NULL, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_NO_CREDENTIALS, "Expected SEC_E_NO_CREDENTIALS, got %08lx\n", st);
+
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND, NULL, NULL, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_NO_CREDENTIALS, "Expected SEC_E_NO_CREDENTIALS, got %08lx\n", st);
+
+    if (0) /* crash */
+    {
+        AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, NULL, NULL, NULL, NULL, NULL);
+    }
+
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, NULL, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+    if(st == SEC_E_OK)
+        FreeCredentialsHandle(&cred);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND, NULL, NULL, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_NO_CREDENTIALS, "st = %08lx\n", st);
+    memset(&cred, 0, sizeof(cred));
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, NULL, NULL, NULL, &cred, &exp);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+    /* expriy is indeterminate in win2k3 */
+    trace("expiry: %08lx%08lx\n", exp.HighPart, exp.LowPart);
+
+    st = QueryCredentialsAttributesA(&cred, SECPKG_CRED_ATTR_NAMES, &names);
+    ok(st == SEC_E_NO_CREDENTIALS, "expected SEC_E_NO_CREDENTIALS, got %08lx\n", st);
+
+    FreeCredentialsHandle(&cred);
+
+    /* Should fail if no enabled protocols are available */
+    init_cred(&schanCred);
+    schanCred.grbitEnabledProtocols = SP_PROT_TLS1_X_SERVER;
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, &schanCred, NULL, NULL, &cred, &exp);
+    ok(st == SEC_E_ALGORITHM_MISMATCH, "st = %08lx\n", st);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND, NULL, &schanCred, NULL, NULL, &cred, &exp);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+    FreeCredentialsHandle(&cred);
+
+    schanCred.grbitEnabledProtocols = SP_PROT_TLS1_X_CLIENT;
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, &schanCred, NULL, NULL, &cred, &exp);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+    FreeCredentialsHandle(&cred);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND, NULL, &schanCred, NULL, NULL, &cred, &exp);
+    ok(st == SEC_E_ALGORITHM_MISMATCH, "st = %08lx\n", st);
+
+    /* Bad version in SCHANNEL_CRED */
+    memset(&schanCred, 0, sizeof(schanCred));
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, &schanCred, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+     NULL, &schanCred, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+
+    /* No cert in SCHANNEL_CRED succeeds for outbound.. */
+    schanCred.dwVersion = SCHANNEL_CRED_VERSION;
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, &schanCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+    FreeCredentialsHandle(&cred);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+     NULL, &schanCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_OK, "Expected SEC_E_OK, got %08lx\n", st);
+
+    if (0)
+    {
+        /* Crashes with bad paCred pointer */
+        schanCred.cCreds = 1;
+        AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, NULL, NULL);
+    }
+
+    /* Bogus cert in SCHANNEL_CRED. Windows fails with SEC_E_UNKNOWN_CREDENTIALS. */
+    schanCred.cCreds = 1;
+    schanCred.paCred = &certs[0];
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, &schanCred, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+     NULL, &schanCred, NULL, NULL, NULL, NULL);
+    ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+
+    /* Good cert, but missing private key. Windows fails with SEC_E_NO_CREDENTIALS. */
+    schanCred.cCreds = 1;
+    schanCred.paCred = &certs[1];
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, &schanCred, NULL, NULL, &cred, NULL);
+    todo_wine ok(st == SEC_E_NO_CREDENTIALS, "Expected SEC_E_NO_CREDENTIALS, got %08lx\n", st);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+     NULL, &schanCred, NULL, NULL, NULL, NULL);
+    todo_wine ok(st == SEC_E_NO_CREDENTIALS, "Expected SEC_E_NO_CREDENTIALS, got %08lx\n", st);
+
+    /* Good cert, with CRYPT_KEY_PROV_INFO set before it's had a key loaded. */
+    ret = CertSetCertificateContextProperty(certs[1],
+          CERT_KEY_PROV_INFO_PROP_ID, 0, &keyProvInfo);
+    schanCred.dwVersion = SCH_CRED_V3;
+    ok(ret, "CertSetCertificateContextProperty failed: %08lx\n", GetLastError());
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+        NULL, &schanCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_UNKNOWN_CREDENTIALS || st == SEC_E_INSUFFICIENT_MEMORY /* win10 */,
+       "Expected SEC_E_INSUFFICIENT_MEMORY, got %08lx\n", st);
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+        NULL, &schanCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_UNKNOWN_CREDENTIALS || st == SEC_E_INSUFFICIENT_MEMORY /* win10 */,
+     "Expected SEC_E_INSUFFICIENT_MEMORY, got %08lx\n", st);
+
+    ret = CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL,
+     CRYPT_NEWKEYSET);
+    ok(ret, "CryptAcquireContextW failed: %08lx\n", GetLastError());
+    ret = 0;
+
+    ret = CryptImportKey(csp, privKey, sizeof(privKey), 0, 0, &key);
+    ok(ret, "CryptImportKey failed: %08lx\n", GetLastError());
+    if (ret)
+    {
+        PCCERT_CONTEXT tmp;
+
+        if (0)
+        {
+            /* Crashes */
+            AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+             NULL, &schanCred, NULL, NULL, NULL, NULL);
+        }
+
+        /* Good cert with private key, bogus version */
+        schanCred.dwVersion = SCH_CRED_V1;
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "Expected SEC_E_UNKNOWN_CREDENTIALS, got %08lx\n", st);
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "Expected SEC_E_UNKNOWN_CREDENTIALS, got %08lx\n", st);
+        schanCred.dwVersion = SCH_CRED_V2;
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "Expected SEC_E_UNKNOWN_CREDENTIALS, got %08lx\n", st);
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "Expected SEC_E_UNKNOWN_CREDENTIALS, got %08lx\n", st);
+
+        /* Succeeds on V3 or higher */
+        schanCred.dwVersion = SCH_CRED_V3;
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        todo_wine ok(st == SEC_E_INSUFFICIENT_MEMORY || broken(st == S_OK) /* <win10 */,
+         "AcquireCredentialsHandleA failed: %08lx\n", st);
+        if (st == S_OK) FreeCredentialsHandle(&cred);
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        todo_wine ok(st == SEC_E_INSUFFICIENT_MEMORY || broken(st == S_OK) /* <win10 */,
+         "AcquireCredentialsHandleA failed: %08lx\n", st);
+        if (st == S_OK) FreeCredentialsHandle(&cred);
+        schanCred.dwVersion = SCHANNEL_CRED_VERSION;
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+        FreeCredentialsHandle(&cred);
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", st);
+        if (st == SEC_E_OK) test_strength(&cred);
+        FreeCredentialsHandle(&cred);
+
+        /* How about more than one cert? */
+        schanCred.cCreds = 2;
+        schanCred.paCred = certs;
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+        tmp = certs[0];
+        certs[0] = certs[1];
+        certs[1] = tmp;
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "st = %08lx\n", st);
+        st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_INBOUND,
+         NULL, &schanCred, NULL, NULL, &cred, NULL);
+        ok(st == SEC_E_UNKNOWN_CREDENTIALS, "Expected SEC_E_UNKNOWN_CREDENTIALS, got %08lx\n", st);
+        /* FIXME: what about two valid certs? */
+
+        CryptDestroyKey(key);
+    }
+
+    memset(&schCred, 0, sizeof(schCred));
+    schCred.dwVersion = SCH_CREDENTIALS_VERSION;
+    st = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND,
+     NULL, &schCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_OK || broken(st == SEC_E_UNKNOWN_CREDENTIALS) /* <= win10v1570 */,
+       "AcquireCredentialsHandleA failed: %08lx\n", st);
+    FreeCredentialsHandle(&cred);
+
+    CryptReleaseContext(csp, 0);
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+
+    CertFreeCertificateContext(certs[0]);
+    CertFreeCertificateContext(certs[1]);
+}
+
+static void test_remote_cert(PCCERT_CONTEXT remote_cert)
+{
+    PCCERT_CONTEXT iter = NULL;
+    BOOL incl_remote = FALSE;
+    unsigned cert_cnt = 0;
+
+    ok(remote_cert->hCertStore != NULL, "hCertStore == NULL\n");
+
+    while((iter = CertEnumCertificatesInStore(remote_cert->hCertStore, iter))) {
+        if(iter == remote_cert)
+            incl_remote = TRUE;
+        cert_cnt++;
+    }
+
+    ok(cert_cnt == 4, "cert_cnt = %u\n", cert_cnt);
+    ok(incl_remote, "context does not contain cert itself\n");
+}
+
+static const char http_request[] = "GET /tests/clientcert/ HTTP/1.1\r\nHost: test.winehq.org\r\nConnection: close\r\n\r\n";
+
+static void init_buffers(SecBufferDesc *desc, unsigned count, unsigned size)
+{
+    desc->ulVersion = SECBUFFER_VERSION;
+    desc->cBuffers = count;
+    desc->pBuffers = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, count*sizeof(SecBuffer));
+
+    desc->pBuffers[0].cbBuffer = size;
+    desc->pBuffers[0].pvBuffer = HeapAlloc(GetProcessHeap(), 0, size);
+}
+
+static void init_sec_buffer(SecBuffer *sec_buf, ULONG count, void *buf)
+{
+    sec_buf->cbBuffer = count;
+    sec_buf->pvBuffer = buf;
+}
+
+static void reset_buffers(SecBufferDesc *desc)
+{
+    unsigned i;
+
+    for (i = 0; i < desc->cBuffers; ++i)
+    {
+        desc->pBuffers[i].BufferType = SECBUFFER_EMPTY;
+        if (i > 0)
+        {
+            desc->pBuffers[i].cbBuffer = 0;
+            desc->pBuffers[i].pvBuffer = NULL;
+        }
+    }
+}
+
+static void free_buffers(SecBufferDesc *desc)
+{
+    HeapFree(GetProcessHeap(), 0, desc->pBuffers[0].pvBuffer);
+    HeapFree(GetProcessHeap(), 0, desc->pBuffers);
+}
+
+static int receive_data(SOCKET sock, SecBuffer *buf)
+{
+    unsigned received = 0;
+
+    while (1)
+    {
+        unsigned char *data = buf->pvBuffer;
+        unsigned expected = 0;
+        int ret;
+
+        ret = recv(sock, (char *)data+received, buf->cbBuffer-received, 0);
+        if (ret == -1)
+        {
+            skip("recv failed\n");
+            return -1;
+        }
+        else if(ret == 0)
+        {
+            skip("connection closed\n");
+            return -1;
+        }
+        received += ret;
+
+        while (expected < received)
+        {
+            unsigned frame_size = 5 + ((data[3]<<8) | data[4]);
+            expected += frame_size;
+            data += frame_size;
+        }
+
+        if (expected == received)
+            break;
+    }
+
+    buf->cbBuffer = received;
+
+    return received;
+}
+
+static void test_context_output_buffer_size(DWORD protocol, DWORD flags, ULONG ctxt_flags_req)
+{
+    SCHANNEL_CRED cred;
+    CredHandle cred_handle;
+    CtxtHandle context;
+    SECURITY_STATUS status;
+    SecBuffer in_buffer = {0, SECBUFFER_EMPTY, NULL};
+    SecBufferDesc in_buffers  = {SECBUFFER_VERSION, 1, &in_buffer};
+    SecBufferDesc out_buffers;
+    unsigned buf_size = 8192;
+    void *buf, *buf2;
+    ULONG attrs;
+    int i;
+
+    init_cred(&cred);
+    cred.grbitEnabledProtocols = protocol;
+    cred.dwFlags = flags;
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+        &cred, NULL, NULL, &cred_handle, NULL);
+    ok( status == SEC_E_OK, "got %08lx\n", status );
+    if (status != SEC_E_OK) return;
+
+    init_buffers(&out_buffers, 4, buf_size);
+    out_buffers.pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buf = out_buffers.pBuffers[0].pvBuffer;
+    buf2 = out_buffers.pBuffers[1].pvBuffer = HeapAlloc(GetProcessHeap(), 0, buf_size);
+    for (i = 0; i < 2; i++)
+    {
+        SecBuffer *buffer = !i ? &out_buffers.pBuffers[0] : &out_buffers.pBuffers[1];
+
+        init_sec_buffer(&out_buffers.pBuffers[0], buf_size, buf);
+        if (i) buffer->BufferType = SECBUFFER_ALERT;
+
+        buffer->cbBuffer = 0;
+        status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost", ctxt_flags_req,
+                0, 0, &in_buffers, 0, &context, &out_buffers, &attrs, NULL);
+        ok(status == SEC_E_INSUFFICIENT_MEMORY, "%d: Expected SEC_E_INSUFFICIENT_MEMORY, got %08lx\n", i, status);
+
+        if (i) init_sec_buffer(&out_buffers.pBuffers[0], buf_size, (void *)0xdeadbeef);
+        init_sec_buffer(buffer, 0, NULL);
+        status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost",
+                ctxt_flags_req | ISC_REQ_ALLOCATE_MEMORY, 0, 0, &in_buffers, 0, &context, &out_buffers, &attrs, NULL);
+        ok(status == SEC_I_CONTINUE_NEEDED, "%d: Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", i, status);
+        ok(out_buffers.pBuffers[0].pvBuffer != (void *)0xdeadbeef, "got %p.\n", out_buffers.pBuffers[0].pvBuffer);
+        if (i) FreeContextBuffer(out_buffers.pBuffers[0].pvBuffer);
+        FreeContextBuffer(buffer->pvBuffer);
+        DeleteSecurityContext(&context);
+
+        if (i) init_sec_buffer(&out_buffers.pBuffers[0], buf_size, buf);
+        init_sec_buffer(buffer, buf_size, !i ? buf : buf2);
+        status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost", ctxt_flags_req,
+                0, 0, &in_buffers, 0, &context, &out_buffers, &attrs, NULL);
+        ok(status == SEC_I_CONTINUE_NEEDED, "%d: Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", i, status);
+        if (i) ok(!buffer->cbBuffer, "Expected SECBUFFER_ALERT buffer to be empty\n");
+        DeleteSecurityContext(&context);
+    }
+
+    HeapFree(GetProcessHeap(), 0, buf2);
+    free_buffers(&out_buffers);
+    FreeCredentialsHandle(&cred_handle);
+}
+
+static void test_InitializeSecurityContext(void)
+{
+    SCHANNEL_CRED cred;
+    CredHandle cred_handle;
+    CtxtHandle context;
+    SECURITY_STATUS status;
+    SecBuffer out_buffer = {1000, SECBUFFER_TOKEN, NULL};
+    SecBuffer in_buffer = {0, SECBUFFER_EMPTY, NULL};
+    SecBufferDesc out_buffers = {SECBUFFER_VERSION, 1, &out_buffer};
+    SecBufferDesc in_buffers  = {SECBUFFER_VERSION, 1, &in_buffer};
+    ULONG attrs;
+
+    init_cred(&cred);
+    cred.grbitEnabledProtocols = SP_PROT_TLS1_CLIENT;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION;
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+        &cred, NULL, NULL, &cred_handle, NULL);
+    ok(status == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", status);
+    if (status != SEC_E_OK) return;
+
+    status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost",
+        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM|ISC_REQ_ALLOCATE_MEMORY,
+        0, 0, &in_buffers, 0, &context, &out_buffers, &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", status);
+
+    FreeContextBuffer(out_buffer.pvBuffer);
+    DeleteSecurityContext(&context);
+    FreeCredentialsHandle(&cred_handle);
+}
+
+static SOCKET create_ssl_socket( const char *hostname )
+{
+    struct hostent *host;
+    struct sockaddr_in addr;
+    SOCKET sock;
+
+    if (!(host = gethostbyname(hostname)))
+    {
+        skip("Can't resolve \"%s\"\n", hostname);
+        return -1;
+    }
+
+    addr.sin_family = host->h_addrtype;
+    addr.sin_addr = *(struct in_addr *)host->h_addr_list[0];
+    addr.sin_port = htons(443);
+    if ((sock = socket(host->h_addrtype, SOCK_STREAM, 0)) == -1)
+    {
+        skip("Can't create socket\n");
+        return 1;
+    }
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == -1)
+    {
+        skip("Can't connect to \"%s\"\n", hostname);
+        closesocket(sock);
+        return -1;
+    }
+
+    return sock;
+}
+
+static const BYTE pfxdata[] =
+{
+    0x30, 0x82, 0x0b, 0x1d, 0x02, 0x01, 0x03, 0x30, 0x82, 0x0a, 0xe3, 0x06,
+    0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01, 0xa0, 0x82,
+    0x0a, 0xd4, 0x04, 0x82, 0x0a, 0xd0, 0x30, 0x82, 0x0a, 0xcc, 0x30, 0x82,
+    0x05, 0x07, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07,
+    0x06, 0xa0, 0x82, 0x04, 0xf8, 0x30, 0x82, 0x04, 0xf4, 0x02, 0x01, 0x00,
+    0x30, 0x82, 0x04, 0xed, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+    0x01, 0x07, 0x01, 0x30, 0x1c, 0x06, 0x0a, 0x2a, 0x86, 0x48, 0x86, 0xf7,
+    0x0d, 0x01, 0x0c, 0x01, 0x06, 0x30, 0x0e, 0x04, 0x08, 0xac, 0x3e, 0x35,
+    0xa8, 0xed, 0x0d, 0x50, 0x07, 0x02, 0x02, 0x08, 0x00, 0x80, 0x82, 0x04,
+    0xc0, 0x5a, 0x62, 0x55, 0x25, 0xf6, 0x2c, 0xf1, 0x78, 0x6c, 0x63, 0x96,
+    0x8a, 0xea, 0x04, 0x64, 0xb3, 0x99, 0x3b, 0x80, 0x50, 0x05, 0x37, 0x55,
+    0xa3, 0x5e, 0x9f, 0x35, 0xc3, 0x3c, 0xdc, 0xf6, 0xc4, 0xc1, 0x39, 0xa2,
+    0xd7, 0x50, 0xad, 0xf9, 0x29, 0x3c, 0x51, 0xea, 0x15, 0x20, 0x25, 0xd3,
+    0x4d, 0x69, 0xdf, 0x10, 0xd8, 0x9d, 0x60, 0x78, 0x8a, 0x70, 0x44, 0x7f,
+    0x01, 0x4f, 0x4a, 0xfa, 0xab, 0xfd, 0x46, 0x48, 0x96, 0x2b, 0x69, 0xfc,
+    0x11, 0xf8, 0x3f, 0xd3, 0x79, 0x09, 0x75, 0x81, 0x47, 0xdf, 0xce, 0xfe,
+    0x07, 0x2f, 0x0a, 0xd8, 0xac, 0x87, 0x14, 0x1f, 0x7b, 0x95, 0x70, 0xee,
+    0x7e, 0x52, 0x90, 0x11, 0xd6, 0x69, 0xf4, 0xd5, 0x38, 0x85, 0xc9, 0xc1,
+    0x07, 0x01, 0xe8, 0xbb, 0xfb, 0xe2, 0x08, 0xa8, 0xfa, 0xbf, 0xf0, 0x92,
+    0x63, 0x1d, 0xbb, 0x2b, 0x45, 0x6f, 0xce, 0x97, 0x01, 0xd7, 0x95, 0xf0,
+    0x9c, 0x9a, 0x6b, 0x73, 0x01, 0xbf, 0xf9, 0x3d, 0xc8, 0x2b, 0x86, 0x7a,
+    0xd5, 0x65, 0x84, 0xd7, 0xff, 0xb2, 0xf9, 0x20, 0x52, 0x35, 0xc5, 0x60,
+    0x33, 0x70, 0x1d, 0x2f, 0x26, 0x09, 0x1c, 0x22, 0x17, 0xd8, 0x08, 0x4e,
+    0x69, 0x20, 0xe2, 0x71, 0xe4, 0x07, 0xb1, 0x48, 0x5f, 0x20, 0x08, 0x7a,
+    0xbf, 0x65, 0x53, 0x23, 0x07, 0xf9, 0x6c, 0xde, 0x3e, 0x29, 0xbf, 0x6b,
+    0xef, 0xbb, 0x6a, 0x5f, 0x79, 0xa1, 0x72, 0xa1, 0x10, 0x24, 0x80, 0xb4,
+    0x44, 0xb8, 0xc9, 0xfc, 0xa3, 0x36, 0x7e, 0x23, 0x37, 0x58, 0xc6, 0x1e,
+    0xe8, 0x42, 0x4d, 0xb5, 0xf5, 0x58, 0x93, 0x21, 0x38, 0xa2, 0xc4, 0xa9,
+    0x01, 0x96, 0xf9, 0x61, 0xac, 0x55, 0xb3, 0x3d, 0xe4, 0x54, 0x8b, 0x6c,
+    0xc3, 0x83, 0xff, 0x50, 0x87, 0x94, 0xe8, 0x35, 0x3c, 0x26, 0x0d, 0x20,
+    0x8a, 0x25, 0x0e, 0xb6, 0x67, 0x78, 0x29, 0xc7, 0xbf, 0x76, 0x8e, 0x62,
+    0x62, 0xc4, 0x50, 0xd6, 0xc5, 0x3c, 0xb4, 0x7a, 0x35, 0xbe, 0x53, 0x52,
+    0xc4, 0xe4, 0x10, 0xb3, 0xe0, 0x73, 0xb0, 0xd1, 0xc1, 0x5a, 0x4f, 0x4e,
+    0x64, 0x0d, 0x92, 0x51, 0x2d, 0x4d, 0xec, 0xb0, 0xc6, 0x40, 0x1b, 0x03,
+    0x89, 0x7f, 0xc2, 0x2c, 0xe3, 0x2c, 0xbd, 0x8c, 0x9c, 0xd9, 0xe0, 0x08,
+    0x59, 0xd3, 0xaf, 0x48, 0x56, 0x89, 0x60, 0x85, 0x76, 0xe0, 0xd8, 0x7c,
+    0xcf, 0x02, 0x8f, 0xfd, 0xb2, 0x8f, 0x2b, 0x61, 0xcf, 0x28, 0x56, 0x8b,
+    0x6b, 0x03, 0x2b, 0x2f, 0x83, 0x31, 0xa0, 0x1c, 0xd1, 0x6c, 0x87, 0x49,
+    0xc4, 0x77, 0x55, 0x1f, 0x61, 0x45, 0x58, 0x88, 0x9f, 0x01, 0xc3, 0x63,
+    0x62, 0x30, 0x35, 0xdf, 0x61, 0x74, 0x55, 0x63, 0x3f, 0xae, 0x41, 0xc1,
+    0xb8, 0xf0, 0x9f, 0xab, 0x25, 0xad, 0x41, 0x5c, 0x1f, 0x00, 0x0d, 0xef,
+    0xf0, 0xcf, 0xaf, 0x41, 0x23, 0xca, 0x8c, 0x38, 0xea, 0x5a, 0xe4, 0x8b,
+    0xb4, 0x89, 0xd0, 0x76, 0x7f, 0x2b, 0x77, 0x8f, 0xe4, 0x44, 0xd5, 0x37,
+    0xac, 0xc2, 0x09, 0x7e, 0x7e, 0x7e, 0x02, 0x5c, 0x27, 0x01, 0xcb, 0x4d,
+    0xea, 0xb3, 0x97, 0x36, 0x35, 0xd2, 0x05, 0x3c, 0x4e, 0xb8, 0x04, 0x5c,
+    0xb8, 0x95, 0x3f, 0xc6, 0xbf, 0xd4, 0x20, 0x01, 0xfb, 0xed, 0x37, 0x5a,
+    0xad, 0x4c, 0x61, 0x93, 0xfe, 0x95, 0x7c, 0x34, 0x11, 0x15, 0x9d, 0x00,
+    0x0b, 0x99, 0x69, 0xcb, 0x7e, 0xb9, 0x53, 0x46, 0x57, 0x39, 0x3f, 0x59,
+    0x4b, 0x30, 0x8d, 0xfb, 0x84, 0x66, 0x2d, 0x06, 0xc9, 0x88, 0xa6, 0x18,
+    0xd7, 0x36, 0xc6, 0xf6, 0xf7, 0x47, 0x85, 0x38, 0xc8, 0x3d, 0x37, 0xea,
+    0x57, 0x4c, 0xb0, 0x7c, 0x95, 0x29, 0x84, 0xab, 0xbb, 0x19, 0x86, 0xc2,
+    0xc5, 0x99, 0x01, 0x38, 0x6b, 0xf1, 0xd3, 0x1d, 0xa8, 0x02, 0xf9, 0x6f,
+    0xaa, 0xf1, 0x57, 0xd0, 0x88, 0x68, 0x62, 0x5f, 0x9f, 0x7a, 0x63, 0xba,
+    0x3a, 0xc9, 0x95, 0x11, 0x3c, 0xf9, 0xa1, 0xc1, 0x35, 0xfe, 0xd5, 0x12,
+    0x49, 0x88, 0x0d, 0x5c, 0xe2, 0xd1, 0x15, 0x18, 0xfb, 0xd5, 0x7f, 0x19,
+    0x3f, 0xaf, 0xa0, 0xcb, 0x31, 0x20, 0x9e, 0x03, 0x93, 0xa4, 0x66, 0xbd,
+    0x83, 0xe8, 0x60, 0x34, 0x55, 0x0d, 0x97, 0x10, 0x23, 0x24, 0x7a, 0x45,
+    0x36, 0xb4, 0xc4, 0xee, 0x60, 0x6f, 0xd8, 0x46, 0xc5, 0xac, 0x2b, 0xa9,
+    0x18, 0x74, 0x83, 0x1e, 0xdf, 0x7c, 0x1a, 0x5a, 0xe8, 0x5f, 0x8b, 0x4f,
+    0x9f, 0x40, 0x3e, 0x5e, 0xfb, 0xd3, 0x68, 0xac, 0x34, 0x62, 0x30, 0x23,
+    0xb6, 0xbc, 0xdf, 0xbc, 0xc7, 0x25, 0xd2, 0x1b, 0x57, 0x33, 0xfb, 0x78,
+    0x22, 0x21, 0x1e, 0x3a, 0xf6, 0x44, 0x18, 0x7e, 0x12, 0x36, 0x47, 0x58,
+    0xd0, 0x59, 0x26, 0x98, 0x98, 0x95, 0xf4, 0xd1, 0xaa, 0x45, 0xaa, 0xe7,
+    0xd1, 0xe6, 0x2d, 0x78, 0xf0, 0x8b, 0x1c, 0xfd, 0xf8, 0x50, 0x60, 0xa2,
+    0x1e, 0x7f, 0xe3, 0x31, 0x77, 0x31, 0x58, 0x99, 0x0f, 0xda, 0x0e, 0xa3,
+    0xc6, 0x7a, 0x30, 0x45, 0x55, 0x11, 0x91, 0x77, 0x41, 0x79, 0xd3, 0x56,
+    0xb2, 0x07, 0x00, 0x61, 0xab, 0xec, 0x27, 0xc7, 0x9f, 0xfa, 0x89, 0x08,
+    0xc2, 0x87, 0xcf, 0xe9, 0xdc, 0x9e, 0x29, 0x22, 0xfb, 0x23, 0x7f, 0x9d,
+    0x89, 0xd5, 0x6e, 0x75, 0x20, 0xd8, 0x00, 0x5b, 0xc4, 0x94, 0xbb, 0xc5,
+    0xb2, 0xba, 0x77, 0x2b, 0xf6, 0x3c, 0x88, 0xb0, 0x4c, 0x38, 0x46, 0x55,
+    0xee, 0x8b, 0x03, 0x15, 0xbc, 0x0a, 0x1d, 0x47, 0x87, 0x44, 0xaf, 0xb1,
+    0x2a, 0xa7, 0x4d, 0x08, 0xdf, 0x3b, 0x2d, 0x70, 0xa1, 0x67, 0x31, 0x76,
+    0x6e, 0x6f, 0x40, 0x3b, 0x3b, 0xe8, 0xf9, 0xdf, 0x90, 0xa4, 0xce, 0x7f,
+    0xb8, 0x2d, 0x69, 0xcb, 0x1c, 0x1e, 0x94, 0xcd, 0xb1, 0xd8, 0x43, 0x22,
+    0xb8, 0x4f, 0x98, 0x92, 0x74, 0xb3, 0xde, 0xeb, 0x7a, 0xcb, 0xfa, 0xd0,
+    0x36, 0xe4, 0x5d, 0xfa, 0xd3, 0xce, 0xf9, 0xba, 0x3e, 0x0f, 0x6c, 0xc3,
+    0x5b, 0xb3, 0x81, 0x84, 0x6e, 0x5d, 0xc1, 0x21, 0x89, 0xec, 0x67, 0x9a,
+    0xfd, 0x55, 0x20, 0xb0, 0x71, 0x53, 0xae, 0xf8, 0xa4, 0x8d, 0xd5, 0xe5,
+    0x2d, 0x3a, 0xce, 0x89, 0x55, 0x8c, 0x4f, 0x3b, 0x37, 0x95, 0x4e, 0x15,
+    0xbe, 0xe7, 0xd1, 0x7a, 0x36, 0x82, 0x45, 0x69, 0x7c, 0x27, 0x4f, 0xb9,
+    0x4b, 0x7d, 0xcd, 0x59, 0xc8, 0xf4, 0x8b, 0x0f, 0x4f, 0x75, 0x23, 0xd3,
+    0xd0, 0xc7, 0x10, 0x79, 0xc0, 0xf1, 0xac, 0x14, 0xf7, 0x0d, 0xc8, 0x5e,
+    0xfc, 0xff, 0x1a, 0x2b, 0x10, 0x88, 0x7e, 0x7e, 0x2f, 0xfa, 0x7b, 0x9f,
+    0x47, 0x23, 0x34, 0xfc, 0xf5, 0xde, 0xd9, 0xa3, 0x05, 0x99, 0x2a, 0x96,
+    0x83, 0x3d, 0xa4, 0x7f, 0x6a, 0x66, 0x9b, 0xe7, 0xf1, 0x00, 0x4e, 0x9a,
+    0xfc, 0x68, 0xd2, 0x74, 0x17, 0xba, 0xc9, 0xc8, 0x20, 0x39, 0xa1, 0xa8,
+    0x85, 0xc6, 0x10, 0x2b, 0xab, 0x97, 0x34, 0x2d, 0x49, 0x68, 0x57, 0xb0,
+    0x43, 0xee, 0x25, 0xbb, 0x35, 0x1b, 0x03, 0x99, 0xa3, 0x21, 0x68, 0x66,
+    0x86, 0x3f, 0xc6, 0xfc, 0x49, 0xf0, 0xba, 0x5f, 0x00, 0xc6, 0xe3, 0x1c,
+    0xb2, 0x9f, 0x16, 0x7f, 0xc7, 0x40, 0x4a, 0x9a, 0x39, 0xc1, 0x95, 0x69,
+    0xa2, 0x87, 0xba, 0x58, 0xc6, 0xf2, 0xd6, 0x66, 0xa6, 0x4c, 0x6d, 0x29,
+    0x9c, 0xa8, 0x6e, 0xa9, 0xd2, 0xe4, 0x54, 0x17, 0x89, 0xe2, 0x43, 0xf0,
+    0xe1, 0x8b, 0x57, 0x84, 0x6c, 0x87, 0x63, 0x17, 0xbb, 0xf6, 0x33, 0x1b,
+    0xe4, 0x34, 0x6a, 0x80, 0x70, 0x7b, 0x1b, 0xfd, 0xf8, 0x79, 0x28, 0xc8,
+    0x3c, 0x8e, 0xa4, 0xd5, 0xb8, 0x96, 0x54, 0xd4, 0xec, 0x72, 0xe5, 0x40,
+    0x8f, 0x56, 0xde, 0x82, 0x15, 0x72, 0x4d, 0xd8, 0x0c, 0x07, 0xea, 0xe6,
+    0x44, 0xcd, 0x94, 0x73, 0x5c, 0x04, 0xe8, 0x8e, 0xb7, 0xc7, 0xc9, 0x29,
+    0xdc, 0x04, 0xef, 0x7c, 0x31, 0x9b, 0x50, 0xbc, 0xea, 0x71, 0x1f, 0x28,
+    0x22, 0xb6, 0x04, 0x53, 0x2e, 0x71, 0xc4, 0xf6, 0xbb, 0x88, 0x51, 0xee,
+    0x3e, 0x76, 0x65, 0xb4, 0x4b, 0x1b, 0xa3, 0xec, 0x7b, 0xa7, 0x9d, 0x31,
+    0x5d, 0xb8, 0x9f, 0xab, 0x6b, 0x54, 0x7d, 0xbd, 0xc1, 0x2c, 0x55, 0xb0,
+    0x23, 0x8c, 0x06, 0x60, 0x01, 0x4f, 0x60, 0x85, 0x56, 0x7f, 0xfb, 0x99,
+    0x0c, 0xdc, 0x8c, 0x09, 0x37, 0x46, 0x5b, 0x97, 0x5d, 0xe8, 0x31, 0x00,
+    0x1b, 0x30, 0x9b, 0x02, 0x92, 0x29, 0xb5, 0x20, 0xce, 0x4b, 0x90, 0xfb,
+    0x91, 0x07, 0x5a, 0xd3, 0xf5, 0xa0, 0xe6, 0x8f, 0xf8, 0x73, 0xc5, 0x4b,
+    0xbb, 0xad, 0x2a, 0xeb, 0xa8, 0xb7, 0x68, 0x34, 0x36, 0x47, 0xd5, 0x4b,
+    0x61, 0x89, 0x53, 0xe6, 0xb6, 0xb1, 0x07, 0xe4, 0x08, 0x2e, 0xed, 0x50,
+    0xd4, 0x1e, 0xed, 0x7f, 0xbf, 0x35, 0x68, 0x04, 0x45, 0x72, 0x86, 0x71,
+    0x15, 0x55, 0xdf, 0xe6, 0x30, 0xc0, 0x8b, 0x8a, 0xb0, 0x6c, 0xd0, 0x35,
+    0x57, 0x8f, 0x04, 0x37, 0xbc, 0xe1, 0xb8, 0xbf, 0x27, 0x37, 0x3d, 0xd0,
+    0xc8, 0x46, 0x67, 0x42, 0x51, 0x30, 0x82, 0x05, 0xbd, 0x06, 0x09, 0x2a,
+    0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01, 0xa0, 0x82, 0x05, 0xae,
+    0x04, 0x82, 0x05, 0xaa, 0x30, 0x82, 0x05, 0xa6, 0x30, 0x82, 0x05, 0xa2,
+    0x06, 0x0b, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x0a, 0x01,
+    0x02, 0xa0, 0x82, 0x04, 0xee, 0x30, 0x82, 0x04, 0xea, 0x30, 0x1c, 0x06,
+    0x0a, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x01, 0x03, 0x30,
+    0x0e, 0x04, 0x08, 0x9f, 0xa4, 0x72, 0x2b, 0x6b, 0x0e, 0xcb, 0x9f, 0x02,
+    0x02, 0x08, 0x00, 0x04, 0x82, 0x04, 0xc8, 0xe5, 0x35, 0xb9, 0x72, 0x28,
+    0x20, 0x28, 0xad, 0xe3, 0x01, 0xd7, 0x0b, 0xe0, 0x4e, 0x36, 0xc3, 0x73,
+    0x06, 0xd5, 0xf6, 0x75, 0x1a, 0x78, 0xb2, 0xd8, 0xf6, 0x5a, 0x85, 0x8e,
+    0x50, 0xa3, 0x05, 0x49, 0x02, 0x2d, 0xf8, 0xa3, 0x2f, 0xe6, 0x02, 0x7a,
+    0xd5, 0x0b, 0x1d, 0xf1, 0xd1, 0xe4, 0x16, 0xaa, 0x70, 0x2e, 0x34, 0xdb,
+    0x56, 0xd9, 0x33, 0x94, 0x11, 0xaa, 0x60, 0xd4, 0xfa, 0x5b, 0xd1, 0xb3,
+    0x2e, 0x86, 0x6a, 0x5a, 0x69, 0xdf, 0x11, 0x91, 0xb0, 0xca, 0x82, 0xff,
+    0x63, 0xad, 0x6a, 0x0b, 0x90, 0xa6, 0xc7, 0x9b, 0xef, 0x9a, 0xf8, 0x96,
+    0xec, 0xe4, 0xc4, 0xdf, 0x55, 0x4c, 0x12, 0x07, 0xab, 0x7c, 0x5c, 0x68,
+    0x47, 0xf2, 0x92, 0xfb, 0x94, 0xab, 0xc3, 0x64, 0xd3, 0xfe, 0xb2, 0x16,
+    0xb4, 0x78, 0x80, 0x52, 0xe9, 0x32, 0x39, 0x3b, 0x8d, 0x12, 0x91, 0x36,
+    0xfd, 0xa1, 0x97, 0xc2, 0x0a, 0x4a, 0xf1, 0xb3, 0x8a, 0xe4, 0x01, 0xed,
+    0x0a, 0xda, 0x2e, 0xa0, 0x38, 0xa9, 0x47, 0x3d, 0x3a, 0x64, 0x87, 0x06,
+    0xc3, 0x83, 0x60, 0xaf, 0x84, 0xdb, 0x87, 0xff, 0x70, 0x61, 0x43, 0x7d,
+    0x2d, 0x61, 0x9a, 0xf7, 0x0d, 0xca, 0x0c, 0x0f, 0xbe, 0x43, 0x5b, 0x99,
+    0xe1, 0x90, 0x64, 0x1f, 0xa7, 0x1b, 0xa6, 0xa6, 0x5c, 0x13, 0x70, 0xa3,
+    0xdb, 0xd7, 0xf0, 0xe8, 0x7a, 0xb0, 0xd1, 0x9b, 0x52, 0xa6, 0x4f, 0xd6,
+    0xff, 0x54, 0x4d, 0xa6, 0x15, 0x05, 0x5c, 0xe9, 0x04, 0x6a, 0xc3, 0x49,
+    0x12, 0x2f, 0x24, 0x03, 0xc3, 0x80, 0x06, 0xa6, 0x07, 0x8b, 0x96, 0xe7,
+    0x39, 0x31, 0x6d, 0xd3, 0x1b, 0xa5, 0x45, 0x58, 0x04, 0xe7, 0x87, 0xdf,
+    0x26, 0xfb, 0x1b, 0x9f, 0x92, 0x93, 0x32, 0x12, 0x9a, 0xc9, 0xe6, 0xcb,
+    0x88, 0x14, 0x9f, 0x23, 0x0b, 0x52, 0xa2, 0xb8, 0x32, 0x6c, 0xa9, 0x33,
+    0xa1, 0x17, 0xe8, 0x4a, 0xd4, 0x5c, 0x7d, 0xb3, 0xa3, 0x64, 0x86, 0x03,
+    0x7c, 0x7c, 0x3f, 0x99, 0xdc, 0x21, 0x9f, 0x93, 0xc6, 0xb9, 0x1d, 0xe0,
+    0x21, 0x79, 0x78, 0x35, 0xdc, 0x1e, 0x27, 0x3c, 0x73, 0x7f, 0x0f, 0xd6,
+    0x4f, 0xde, 0xe9, 0xb4, 0xb7, 0xe3, 0xf5, 0x72, 0xce, 0x42, 0xf3, 0x91,
+    0x5b, 0x84, 0xba, 0xbb, 0xae, 0xf0, 0x87, 0x0f, 0x50, 0xa4, 0x5e, 0x80,
+    0x23, 0x57, 0x2b, 0xa0, 0xa3, 0xc3, 0x8a, 0x2f, 0xa8, 0x7a, 0x1a, 0x65,
+    0x8f, 0x62, 0xf8, 0x3e, 0xe2, 0xcd, 0xbc, 0x63, 0x56, 0x8e, 0x77, 0xf3,
+    0xf9, 0x69, 0x10, 0x57, 0xa8, 0xaf, 0x67, 0x2a, 0x9f, 0x7f, 0x7e, 0xeb,
+    0x1d, 0x99, 0xa6, 0x67, 0xcd, 0x9e, 0x42, 0x2e, 0x5e, 0x4e, 0x61, 0x24,
+    0xfa, 0xca, 0x2a, 0xeb, 0x62, 0x1f, 0xa3, 0x14, 0x0a, 0x06, 0x4b, 0x77,
+    0x78, 0x77, 0x9b, 0xf1, 0x03, 0xcc, 0xb5, 0xfe, 0xfb, 0x7a, 0x77, 0xa6,
+    0x82, 0x9f, 0xe5, 0xde, 0x9d, 0x0d, 0x4d, 0x37, 0xc6, 0x12, 0x73, 0x6d,
+    0xea, 0xbb, 0x48, 0xf0, 0xd2, 0x81, 0xcc, 0x1a, 0x47, 0xfa, 0xa4, 0xd2,
+    0xb2, 0x27, 0xa0, 0xfc, 0x30, 0x04, 0xdb, 0x05, 0xd3, 0x0b, 0xbc, 0x4d,
+    0x7a, 0x99, 0xef, 0x7f, 0x26, 0x01, 0xd4, 0x07, 0x0b, 0x1e, 0x99, 0x06,
+    0x3c, 0xde, 0x3d, 0x1c, 0x21, 0x82, 0x68, 0x46, 0x35, 0x38, 0x61, 0xea,
+    0xd4, 0xc2, 0x65, 0x09, 0x39, 0x87, 0xb4, 0xd3, 0x5d, 0x3c, 0xa3, 0x79,
+    0xe4, 0x01, 0x4e, 0xbf, 0x18, 0xba, 0x57, 0x3f, 0xdd, 0xea, 0x0a, 0x6b,
+    0x99, 0xfb, 0x93, 0xfa, 0xab, 0xee, 0x08, 0xdf, 0x38, 0x23, 0xae, 0x8d,
+    0xa8, 0x03, 0x13, 0xfe, 0x83, 0x88, 0xb0, 0xc2, 0xf9, 0x90, 0xa5, 0x1c,
+    0x01, 0x6f, 0x71, 0x91, 0x42, 0x35, 0x81, 0x74, 0x71, 0x6c, 0xba, 0x86,
+    0x48, 0xfe, 0x96, 0xd2, 0x88, 0x12, 0x36, 0x4e, 0xa6, 0x2f, 0xd1, 0xdb,
+    0xfa, 0xbf, 0xdb, 0x84, 0x01, 0xfc, 0x7d, 0x7a, 0xac, 0x20, 0xae, 0xf5,
+    0x95, 0xc9, 0xdc, 0x10, 0x5f, 0x4c, 0xae, 0x85, 0x01, 0x8b, 0xfe, 0x77,
+    0x13, 0x01, 0xae, 0x39, 0x59, 0x7e, 0xbc, 0xfd, 0xc9, 0x42, 0xe4, 0x13,
+    0x07, 0x3f, 0xa9, 0x74, 0xd9, 0xd5, 0xfc, 0xb9, 0x78, 0xbe, 0x97, 0xf5,
+    0xe7, 0x36, 0x7f, 0xfa, 0x23, 0x30, 0xeb, 0xab, 0x92, 0xd3, 0xdc, 0x3f,
+    0x7f, 0xc0, 0x77, 0x93, 0xf9, 0x88, 0xe3, 0x4e, 0x13, 0x53, 0x6d, 0x71,
+    0x87, 0xe9, 0x24, 0x2b, 0xae, 0x26, 0xbf, 0x62, 0x51, 0x04, 0x42, 0xe1,
+    0x13, 0x9d, 0xd8, 0x9f, 0x59, 0x87, 0x3f, 0xfc, 0x94, 0xff, 0xcf, 0x88,
+    0x88, 0xe6, 0xeb, 0x6e, 0xc1, 0x96, 0x04, 0x27, 0xc8, 0xda, 0xfa, 0xe8,
+    0x2e, 0xbb, 0x2c, 0x6e, 0xf4, 0xb4, 0x00, 0x7d, 0x8d, 0x3b, 0xef, 0x8b,
+    0x18, 0xa9, 0x5f, 0x32, 0xa9, 0xf2, 0x3a, 0x7e, 0x65, 0x2d, 0x6e, 0x8d,
+    0x75, 0x77, 0xf6, 0xa6, 0xd8, 0xf9, 0x6b, 0x51, 0xe6, 0x66, 0x52, 0x59,
+    0x39, 0x97, 0x22, 0xda, 0xb2, 0xd6, 0x82, 0x5a, 0x6e, 0x61, 0x60, 0x16,
+    0x48, 0x7b, 0xf1, 0xc3, 0x4d, 0x7f, 0x50, 0xfa, 0x4d, 0x58, 0x27, 0x30,
+    0xc8, 0x96, 0xe0, 0x41, 0x4f, 0x6b, 0xeb, 0x88, 0xa2, 0x7a, 0xef, 0x8a,
+    0x88, 0xc8, 0x50, 0x4b, 0x55, 0x66, 0xee, 0xbf, 0xc4, 0x01, 0x82, 0x4c,
+    0xec, 0xde, 0x37, 0x64, 0xd6, 0x1e, 0xcf, 0x3e, 0x2e, 0xfe, 0x84, 0x68,
+    0xbf, 0xa3, 0x68, 0x77, 0xa9, 0x03, 0xe4, 0xf8, 0xd7, 0xb2, 0x6e, 0xa3,
+    0xc4, 0xc3, 0x36, 0x53, 0xf3, 0xdd, 0x7e, 0x4c, 0xf0, 0xe9, 0xb2, 0x44,
+    0xe6, 0x60, 0x3d, 0x00, 0x9a, 0x08, 0xc3, 0x21, 0x17, 0x49, 0xda, 0x49,
+    0xfb, 0x4c, 0x8b, 0xe9, 0x10, 0x66, 0xfe, 0xb7, 0xe0, 0xf9, 0xdd, 0xbf,
+    0x41, 0xfe, 0x04, 0x9b, 0x7f, 0xe8, 0xd6, 0x2e, 0x4d, 0x0f, 0x7b, 0x10,
+    0x73, 0x4c, 0xa1, 0x3e, 0x43, 0xb7, 0xcf, 0x94, 0x97, 0x7e, 0x24, 0xbb,
+    0x87, 0xbf, 0x22, 0xb8, 0x3e, 0xeb, 0x9a, 0x3f, 0xe3, 0x86, 0xee, 0x21,
+    0xbc, 0xf5, 0x44, 0xeb, 0x60, 0x2e, 0xe7, 0x8f, 0x89, 0xa4, 0x91, 0x61,
+    0x28, 0x90, 0x85, 0x68, 0xe0, 0xa9, 0x62, 0x93, 0x86, 0x5a, 0x15, 0xbe,
+    0xb2, 0x76, 0x83, 0xf2, 0x0f, 0x00, 0xc7, 0xb6, 0x57, 0xe9, 0x1f, 0x92,
+    0x49, 0xfe, 0x50, 0x85, 0xbf, 0x39, 0x3d, 0xe4, 0x8b, 0x72, 0x2d, 0x49,
+    0xbe, 0x05, 0x0a, 0x34, 0x56, 0x80, 0xc6, 0x1f, 0x46, 0x59, 0xc9, 0xfe,
+    0x40, 0xfb, 0x78, 0x6d, 0x7a, 0xe5, 0x30, 0xe9, 0x81, 0x55, 0x75, 0x05,
+    0x63, 0xd2, 0x22, 0xee, 0x2e, 0x6e, 0xb9, 0x18, 0xe5, 0x8a, 0x5a, 0x66,
+    0xbd, 0x74, 0x30, 0xe3, 0x8b, 0x76, 0x22, 0x18, 0x1e, 0xef, 0x69, 0xe8,
+    0x9d, 0x07, 0xa7, 0x9a, 0x87, 0x6c, 0x04, 0x4b, 0x74, 0x2b, 0xbe, 0x37,
+    0x2f, 0x29, 0x9b, 0x60, 0x9d, 0x8b, 0x57, 0x55, 0x34, 0xca, 0x41, 0x25,
+    0xae, 0x56, 0x92, 0x34, 0x1b, 0x9e, 0xbd, 0xfe, 0x74, 0xbd, 0x4e, 0x29,
+    0xf0, 0x5e, 0x27, 0x94, 0xb0, 0x9e, 0x23, 0x9f, 0x4a, 0x0f, 0xa1, 0xdf,
+    0xe7, 0xc4, 0xdb, 0xbe, 0x0f, 0x1a, 0x0b, 0x6c, 0xb0, 0xe1, 0x06, 0x7c,
+    0x5a, 0x5b, 0x81, 0x1c, 0xb6, 0x12, 0xec, 0x6f, 0x3b, 0xbb, 0x84, 0x36,
+    0xd5, 0x28, 0x16, 0xea, 0x51, 0xa8, 0x99, 0x24, 0x8f, 0xe7, 0xf8, 0xe9,
+    0xce, 0xa1, 0x65, 0x96, 0x6f, 0x4e, 0x2f, 0xb7, 0x6f, 0x65, 0x39, 0xad,
+    0xfd, 0x2e, 0xa0, 0x37, 0x32, 0x2f, 0xf3, 0x95, 0xa1, 0x3a, 0xa1, 0x9d,
+    0x2c, 0x9e, 0xa1, 0x4b, 0x7e, 0xc9, 0x7e, 0x86, 0xaa, 0x16, 0x00, 0x82,
+    0x1d, 0x36, 0xbf, 0x98, 0x0a, 0x82, 0x5b, 0xcc, 0xc4, 0x6a, 0xad, 0xa0,
+    0x1f, 0x47, 0x98, 0xde, 0x8d, 0x68, 0x38, 0x3f, 0x33, 0xe2, 0x08, 0x3b,
+    0x2a, 0x65, 0xd9, 0x2f, 0x53, 0x68, 0xb8, 0x78, 0xd0, 0x1d, 0xbb, 0x2a,
+    0x73, 0x19, 0xba, 0x58, 0xea, 0xf1, 0x0a, 0xaa, 0xa6, 0xbe, 0x27, 0xd6,
+    0x00, 0x6b, 0x4e, 0x43, 0x8e, 0x5b, 0x19, 0xc1, 0x37, 0x0f, 0xfb, 0x81,
+    0x72, 0x10, 0xb6, 0x20, 0x32, 0xcd, 0xa2, 0x7c, 0x90, 0xd4, 0xf5, 0xcf,
+    0x1c, 0xcb, 0x14, 0x24, 0x7a, 0x4d, 0xf5, 0xd5, 0xd9, 0xce, 0x6a, 0x64,
+    0xc9, 0xd3, 0xa7, 0x36, 0x6f, 0x1d, 0xf1, 0xe9, 0x71, 0x6c, 0x3d, 0x02,
+    0xa4, 0x62, 0xb1, 0x82, 0x5c, 0x13, 0x4b, 0x6b, 0x68, 0xe2, 0x31, 0xef,
+    0xe4, 0x46, 0xfd, 0xe5, 0xa8, 0x29, 0xe9, 0x1e, 0xad, 0xff, 0x33, 0xdb,
+    0x0b, 0xc0, 0x92, 0xb1, 0xef, 0xeb, 0xb3, 0x6f, 0x96, 0x7b, 0xdf, 0xcd,
+    0x07, 0x19, 0x86, 0x60, 0x98, 0xcf, 0x95, 0xfe, 0x98, 0xdd, 0x29, 0xa6,
+    0x35, 0x7b, 0x46, 0x13, 0x03, 0xa8, 0xd9, 0x7c, 0xb3, 0xdf, 0x9f, 0x14,
+    0xb7, 0x34, 0x5a, 0xc4, 0x12, 0x81, 0xc5, 0x98, 0x25, 0x8d, 0x3e, 0xe3,
+    0xd8, 0x2d, 0xe4, 0x54, 0xab, 0xb0, 0x13, 0xfd, 0xd1, 0x3f, 0x3b, 0xbf,
+    0xa9, 0x45, 0x28, 0x8a, 0x2f, 0x9c, 0x1e, 0x2d, 0xe5, 0xab, 0x13, 0x95,
+    0x97, 0xc3, 0x34, 0x37, 0x8d, 0x93, 0x66, 0x31, 0x81, 0xa0, 0x30, 0x23,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x15, 0x31,
+    0x16, 0x04, 0x14, 0xa5, 0x23, 0x9b, 0x7e, 0xe6, 0x45, 0x71, 0xbf, 0x48,
+    0xc6, 0x27, 0x3c, 0x96, 0x87, 0x63, 0xbd, 0x1f, 0xde, 0x72, 0x12, 0x30,
+    0x79, 0x06, 0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x11, 0x01,
+    0x31, 0x6c, 0x1e, 0x6a, 0x00, 0x4d, 0x00, 0x69, 0x00, 0x63, 0x00, 0x72,
+    0x00, 0x6f, 0x00, 0x73, 0x00, 0x6f, 0x00, 0x66, 0x00, 0x74, 0x00, 0x20,
+    0x00, 0x45, 0x00, 0x6e, 0x00, 0x68, 0x00, 0x61, 0x00, 0x6e, 0x00, 0x63,
+    0x00, 0x65, 0x00, 0x64, 0x00, 0x20, 0x00, 0x52, 0x00, 0x53, 0x00, 0x41,
+    0x00, 0x20, 0x00, 0x61, 0x00, 0x6e, 0x00, 0x64, 0x00, 0x20, 0x00, 0x41,
+    0x00, 0x45, 0x00, 0x53, 0x00, 0x20, 0x00, 0x43, 0x00, 0x72, 0x00, 0x79,
+    0x00, 0x70, 0x00, 0x74, 0x00, 0x6f, 0x00, 0x67, 0x00, 0x72, 0x00, 0x61,
+    0x00, 0x70, 0x00, 0x68, 0x00, 0x69, 0x00, 0x63, 0x00, 0x20, 0x00, 0x50,
+    0x00, 0x72, 0x00, 0x6f, 0x00, 0x76, 0x00, 0x69, 0x00, 0x64, 0x00, 0x65,
+    0x00, 0x72, 0x30, 0x31, 0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
+    0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14, 0x93, 0xa8, 0xb2, 0x7e, 0xb7,
+    0xab, 0xf1, 0x1c, 0x3c, 0x36, 0x58, 0xdc, 0x67, 0x6d, 0x42, 0xa6, 0xfc,
+    0x53, 0x01, 0xe6, 0x04, 0x08, 0x77, 0x57, 0x22, 0xa1, 0x7d, 0xb9, 0xa2,
+    0x69, 0x02, 0x02, 0x08, 0x00
+};
+
+static void test_communication(void)
+{
+    int ret;
+    SOCKET sock;
+    SECURITY_STATUS status;
+    ULONG attrs;
+    SCHANNEL_CRED cred;
+    CredHandle cred_handle;
+    CtxtHandle context, context2;
+    SecPkgCredentials_NamesA names;
+    SecPkgContext_StreamSizes sizes;
+    SecPkgContext_ConnectionInfo conn_info;
+    SecPkgContext_KeyInfoA key_info;
+    const CERT_CONTEXT *cert;
+    CRYPT_DATA_BLOB pfx;
+    HCERTSTORE store;
+    SecPkgContext_NegotiationInfoA info;
+    SecPkgContext_CipherInfo cipher;
+    SecBufferDesc buffers[2];
+    SecBuffer *buf;
+    unsigned buf_size = 8192;
+    unsigned char *data;
+    unsigned data_size;
+
+    test_context_output_buffer_size(SP_PROT_TLS1_CLIENT, SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION,
+                                    ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM);
+
+    /* Create a socket and connect to test.winehq.org */
+    if ((sock = create_ssl_socket( "test.winehq.org" )) == -1) return;
+
+    /* Create client credentials */
+    init_cred(&cred);
+    cred.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION;
+
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+        &cred, NULL, NULL, &cred_handle, NULL);
+    ok(status == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", status);
+    if (status != SEC_E_OK) return;
+
+    /* Initialize the connection */
+    init_buffers(&buffers[0], 4, buf_size);
+    init_buffers(&buffers[1], 4, buf_size);
+
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost",
+        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+        0, 0, NULL, 0, &context, &buffers[0], &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", status);
+
+    buffers[1].cBuffers = 1;
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buffers[0].pBuffers[0].cbBuffer = 1;
+    memset(buffers[1].pBuffers[0].pvBuffer, 0xfa, buf_size);
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == 0, "Output buffer size was not set to 0.\n");
+
+    buffers[1].cBuffers = 1;
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buffers[0].pBuffers[0].cbBuffer = 1;
+    memset(buffers[1].pBuffers[0].pvBuffer, 0, buf_size);
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == 0, "Output buffer size was not set to 0.\n");
+
+    buffers[0].pBuffers[0].cbBuffer = 0;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INSUFFICIENT_MEMORY || status == SEC_E_INVALID_TOKEN,
+       "Expected SEC_E_INSUFFICIENT_MEMORY or SEC_E_INVALID_TOKEN, got %08lx\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == 0, "Output buffer size was not set to 0.\n");
+
+    status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, NULL, 0, &context, NULL, &attrs, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+
+    buffers[0].pBuffers[0].cbBuffer = buf_size;
+    status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, NULL, 0, &context, &buffers[0], &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", status);
+
+    buf = &buffers[0].pBuffers[0];
+    send(sock, buf->pvBuffer, buf->cbBuffer, 0);
+    buf->cbBuffer = buf_size;
+
+    context2.dwLower = context2.dwUpper = 0xdeadbeef;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, NULL, 0, &context2, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INCOMPLETE_MESSAGE, "Got unexpected status %#lx.\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == buf_size, "Output buffer size changed.\n");
+    ok(buffers[0].pBuffers[0].BufferType == SECBUFFER_TOKEN, "Output buffer type changed.\n");
+    ok( context2.dwLower == 0xdeadbeef, "Did not expect dwLower to be set on new context\n");
+    ok( context2.dwUpper == 0xdeadbeef, "Did not expect dwUpper to be set on new context\n");
+
+    buffers[1].cBuffers = 2;
+    buffers[1].pBuffers[0].cbBuffer = 0;
+    buffers[1].pBuffers[1].cbBuffer = 0;
+    buffers[1].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INCOMPLETE_MESSAGE, "Got unexpected status %#lx.\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == buf_size, "Output buffer size changed.\n");
+    ok(buffers[0].pBuffers[0].BufferType == SECBUFFER_TOKEN, "Output buffer type changed.\n");
+    ok(buffers[1].pBuffers[1].cbBuffer == 5 ||
+       broken(buffers[1].pBuffers[1].cbBuffer == 0), /* < win10 */ "Wrong buffer size.\n");
+    ok(buffers[1].pBuffers[1].BufferType == SECBUFFER_MISSING ||
+       broken(buffers[1].pBuffers[1].BufferType == SECBUFFER_EMPTY), /* < win10 */ "Wrong buffer type.\n");
+
+    buf = &buffers[1].pBuffers[0];
+    buf->cbBuffer = buf_size;
+    ret = receive_data(sock, buf);
+    if (ret == -1)
+        return;
+
+    buffers[1].pBuffers[0].cbBuffer = 4;
+    buffers[1].pBuffers[1].cbBuffer = 0;
+    buffers[1].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+    buffers[1].pBuffers[1].cbBuffer = 0;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INCOMPLETE_MESSAGE, "Got unexpected status %#lx.\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == buf_size, "Output buffer size changed.\n");
+    ok(buffers[0].pBuffers[0].BufferType == SECBUFFER_TOKEN, "Output buffer type changed.\n");
+    ok(buffers[1].pBuffers[1].cbBuffer == 1 ||
+       broken(buffers[1].pBuffers[1].cbBuffer == 0), /* < win10 */ "Wrong buffer size.\n");
+    ok(buffers[1].pBuffers[1].BufferType == SECBUFFER_MISSING ||
+       broken(buffers[1].pBuffers[1].BufferType == SECBUFFER_EMPTY), /* < win10 */ "Wrong buffer type.\n");
+
+    context2.dwLower = context2.dwUpper = 0xdeadbeef;
+    buffers[1].pBuffers[0].cbBuffer = 5;
+    buffers[1].pBuffers[1].cbBuffer = 0;
+    buffers[1].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+    buffers[1].pBuffers[1].cbBuffer = 0;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+            0, 0, &buffers[1], 0, &context2, &buffers[0], &attrs, NULL);
+    ok(status == SEC_E_INCOMPLETE_MESSAGE, "Got unexpected status %#lx.\n", status);
+    ok(buffers[0].pBuffers[0].cbBuffer == buf_size, "Output buffer size changed.\n");
+    ok(buffers[0].pBuffers[0].BufferType == SECBUFFER_TOKEN, "Output buffer type changed.\n");
+    ok(buffers[1].pBuffers[1].cbBuffer > 5 ||
+       broken(buffers[1].pBuffers[1].cbBuffer == 0), /* < win10 */ "Wrong buffer size\n" );
+    ok(buffers[1].pBuffers[1].BufferType == SECBUFFER_MISSING ||
+       broken(buffers[1].pBuffers[1].BufferType == SECBUFFER_EMPTY), /* < win10 */ "Wrong buffer type.\n");
+    ok( context2.dwLower == 0xdeadbeef, "Did not expect dwLower to be set on new context\n");
+    ok( context2.dwUpper == 0xdeadbeef, "Did not expect dwUpper to be set on new context\n");
+
+    buffers[1].cBuffers = 1;
+    buffers[1].pBuffers[0].cbBuffer = ret;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM|ISC_REQ_USE_SUPPLIED_CREDS,
+            0, 0, &buffers[1], 0, &context2, &buffers[0], &attrs, NULL);
+    buffers[1].pBuffers[0].cbBuffer = buf_size;
+    while (status == SEC_I_CONTINUE_NEEDED)
+    {
+        buf = &buffers[0].pBuffers[0];
+        send(sock, buf->pvBuffer, buf->cbBuffer, 0);
+        buf->cbBuffer = buf_size;
+
+        ok( context.dwLower == context2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+            context.dwLower, context2.dwLower);
+        ok( context.dwUpper == context2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+            context.dwUpper, context2.dwUpper);
+
+        buf = &buffers[1].pBuffers[0];
+        ret = receive_data(sock, buf);
+        if (ret == -1)
+            return;
+
+        context2.dwLower = context2.dwUpper = 0xdeadbeef;
+        buf->BufferType = SECBUFFER_TOKEN;
+
+        buffers[1].cBuffers = 2;
+        buffers[1].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+        buffers[1].pBuffers[1].cbBuffer = 0xdeadbeef;
+
+        status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_USE_SUPPLIED_CREDS,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+        ok(status == SEC_E_INVALID_TOKEN, "Got unexpected status %#lx.\n", status);
+
+        buffers[1].cBuffers = 1;
+        status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_USE_SUPPLIED_CREDS,
+            0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+        buffers[1].pBuffers[0].cbBuffer = buf_size;
+    }
+
+    ok(buffers[0].pBuffers[0].cbBuffer == 0, "Output buffer size was not set to 0.\n");
+    ok(status == SEC_E_OK, "InitializeSecurityContext failed: %08lx\n", status);
+    if(status != SEC_E_OK) {
+        skip("Handshake failed\n");
+        return;
+    }
+    ok(attrs == (ISC_RET_REPLAY_DETECT | ISC_RET_SEQUENCE_DETECT | ISC_RET_CONFIDENTIALITY |
+                 ISC_RET_STREAM | ISC_RET_USED_SUPPLIED_CREDS), "got %08lx\n", attrs);
+
+    status = QueryCredentialsAttributesA(&cred_handle, SECPKG_CRED_ATTR_NAMES, &names);
+    ok(status == SEC_E_NO_CREDENTIALS, "expected SEC_E_NO_CREDENTIALS, got %08lx\n", status);
+
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (void*)&cert);
+    ok(status == SEC_E_OK, "QueryContextAttributesW(SECPKG_ATTR_REMOTE_CERT_CONTEXT) failed: %08lx\n", status);
+    if(status == SEC_E_OK) {
+        SecPkgContext_Bindings bindings = {0xdeadbeef, (void*)0xdeadbeef};
+
+        test_remote_cert(cert);
+
+        status = QueryContextAttributesA(&context, SECPKG_ATTR_ENDPOINT_BINDINGS, &bindings);
+        todo_wine
+        ok(status == SEC_E_OK, "QueryContextAttributesW(SECPKG_ATTR_ENDPOINT_BINDINGS) failed: %08lx\n", status);
+        if (status == SEC_E_OK)
+        {
+            static const char prefix[] = "tls-server-end-point:";
+            const char *p;
+            BYTE hash[64];
+            DWORD hash_size;
+
+            ok(bindings.BindingsLength == sizeof(*bindings.Bindings) + sizeof(prefix)-1 + 48 /* hash size */,
+               "bindings.BindingsLength = %lu\n", bindings.BindingsLength);
+            ok(!bindings.Bindings->dwInitiatorAddrType, "dwInitiatorAddrType = %lx\n", bindings.Bindings->dwInitiatorAddrType);
+            ok(!bindings.Bindings->cbInitiatorLength, "cbInitiatorLength = %lx\n", bindings.Bindings->cbInitiatorLength);
+            ok(!bindings.Bindings->dwInitiatorOffset, "dwInitiatorOffset = %lx\n", bindings.Bindings->dwInitiatorOffset);
+            ok(!bindings.Bindings->dwAcceptorAddrType, "dwAcceptorAddrType = %lx\n", bindings.Bindings->dwAcceptorAddrType);
+            ok(!bindings.Bindings->cbAcceptorLength, "cbAcceptorLength = %lx\n", bindings.Bindings->cbAcceptorLength);
+            ok(!bindings.Bindings->dwAcceptorOffset, "dwAcceptorOffset = %lx\n", bindings.Bindings->dwAcceptorOffset);
+            ok(sizeof(*bindings.Bindings) + bindings.Bindings->cbApplicationDataLength == bindings.BindingsLength,
+               "cbApplicationDataLength = %lx\n", bindings.Bindings->cbApplicationDataLength);
+            ok(bindings.Bindings->dwApplicationDataOffset == sizeof(*bindings.Bindings),
+               "dwApplicationDataOffset = %lx\n", bindings.Bindings->dwApplicationDataOffset);
+            p = (const char*)(bindings.Bindings+1);
+            ok(!memcmp(p, prefix, sizeof(prefix)-1), "missing prefix\n");
+            p += sizeof(prefix)-1;
+
+            hash_size = sizeof(hash);
+            ret = CryptHashCertificate(0, CALG_SHA_384, 0, cert->pbCertEncoded, cert->cbCertEncoded, hash, &hash_size);
+            ok(ret, "got %lu\n", GetLastError());
+            ok(hash_size == 48, "hash_size = %lu\n", hash_size);
+            ok(!memcmp(hash, p, hash_size), "unexpected hash part\n");
+            FreeContextBuffer(bindings.Bindings);
+        }
+
+        status = QueryContextAttributesA(&context, SECPKG_ATTR_UNIQUE_BINDINGS, &bindings);
+        ok(status == SEC_E_OK, "QueryContextAttributesW(SECPKG_ATTR_UNIQUE_BINDINGS) failed: %08lx\n", status);
+        if (status == SEC_E_OK)
+        {
+            const char *p;
+            static const char prefix[] = "tls-unique:";
+
+            ok(bindings.BindingsLength > sizeof(*bindings.Bindings) + sizeof(prefix)-1,
+               "bindings.BindingsLength = %lu\n", bindings.BindingsLength);
+            ok(!bindings.Bindings->dwInitiatorAddrType, "dwInitiatorAddrType = %lx\n", bindings.Bindings->dwInitiatorAddrType);
+            ok(!bindings.Bindings->cbInitiatorLength, "cbInitiatorLength = %lx\n", bindings.Bindings->cbInitiatorLength);
+            ok(!bindings.Bindings->dwInitiatorOffset, "dwInitiatorOffset = %lx\n", bindings.Bindings->dwInitiatorOffset);
+            ok(!bindings.Bindings->dwAcceptorAddrType, "dwAcceptorAddrType = %lx\n", bindings.Bindings->dwAcceptorAddrType);
+            ok(!bindings.Bindings->cbAcceptorLength, "cbAcceptorLength = %lx\n", bindings.Bindings->cbAcceptorLength);
+            ok(!bindings.Bindings->dwAcceptorOffset, "dwAcceptorOffset = %lx\n", bindings.Bindings->dwAcceptorOffset);
+            ok(sizeof(*bindings.Bindings) + bindings.Bindings->cbApplicationDataLength == bindings.BindingsLength,
+               "cbApplicationDataLength = %lx\n", bindings.Bindings->cbApplicationDataLength);
+            ok(bindings.Bindings->dwApplicationDataOffset == sizeof(*bindings.Bindings),
+               "dwApplicationDataOffset = %lx\n", bindings.Bindings->dwApplicationDataOffset);
+            p = (const char*)(bindings.Bindings+1);
+            ok(!memcmp(p, prefix, sizeof(prefix)-1), "wrong prefix\n");
+            FreeContextBuffer(bindings.Bindings);
+        }
+        CertFreeCertificateContext(cert);
+    }
+
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_CONNECTION_INFO, (void*)&conn_info);
+    ok(status == SEC_E_OK, "QueryContextAttributesW(SECPKG_ATTR_CONNECTION_INFO) failed: %08lx\n", status);
+    if(status == SEC_E_OK) {
+        ok(conn_info.dwCipherStrength >= 128, "conn_info.dwCipherStrength = %ld\n", conn_info.dwCipherStrength);
+        ok(!conn_info.dwHashStrength, "conn_info.dwHashStrength = %ld\n", conn_info.dwHashStrength);
+    }
+
+    memset(&cipher, 0, sizeof(cipher));
+    cipher.dwVersion = SECPKGCONTEXT_CIPHERINFO_V1;
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_CIPHER_INFO, &cipher);
+    ok(status == SEC_E_OK, "got %08lx\n", status);
+    if (status == SEC_E_OK)
+    {
+        ok(cipher.dwProtocol == 0x303, "got %lx\n", cipher.dwProtocol);
+        todo_wine
+        ok(cipher.dwCipherSuite == 0xc02c || broken(cipher.dwCipherSuite == 0x9f) /* <= win8 */,
+           "got %lx\n", cipher.dwCipherSuite);
+        todo_wine
+        ok(cipher.dwBaseCipherSuite == 0xc02c || broken(cipher.dwCipherSuite == 0x9f) /* <= win8 */,
+           "got %lx\n", cipher.dwBaseCipherSuite);
+        ok(!wcscmp(cipher.szCipherSuite, L"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384") ||
+           !wcscmp(cipher.szCipherSuite, L"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384_P384") /* <= win8 */,
+           "got %s\n", wine_dbgstr_w(cipher.szCipherSuite));
+        ok(!wcscmp(cipher.szCipher, L"AES"), "got %s\n", wine_dbgstr_w(cipher.szCipher));
+        ok(cipher.dwCipherLen == 256, "got %lu\n", cipher.dwCipherLen);
+        ok(cipher.dwCipherBlockLen == 16, "got %lu\n", cipher.dwCipherBlockLen);
+        ok(!cipher.szHash[0], "got %s\n", wine_dbgstr_w(cipher.szHash));
+        ok(!cipher.dwHashLen, "got %lu\n", cipher.dwHashLen);
+        ok(!wcscmp(cipher.szExchange, L"ECDH") || !wcscmp(cipher.szExchange, L"ECDH_P384") ||
+           !wcscmp(cipher.szExchange, L"DH") /* <= win8 */, "got %s\n", wine_dbgstr_w(cipher.szExchange));
+        ok(cipher.dwMinExchangeLen == 0 || cipher.dwMinExchangeLen == 256 /* < win10 */ ||
+           cipher.dwMinExchangeLen == 384 /* <= win8 */, "got %lu\n", cipher.dwMinExchangeLen);
+        ok(cipher.dwMaxExchangeLen == 65536 || cipher.dwMaxExchangeLen == 256 /* < win10 */ ||
+           cipher.dwMinExchangeLen == 384 /* <= win8 */, "got %lu\n", cipher.dwMaxExchangeLen);
+        ok(!wcscmp(cipher.szCertificate, L"ECDSA"), "got %s\n", wine_dbgstr_w(cipher.szCertificate));
+        todo_wine
+        ok(cipher.dwKeyType == 0x1d || cipher.dwKeyType == 0x17 || cipher.dwKeyType == 0x18 /* < win10 */ ||
+           broken(!cipher.dwKeyType) /* <= win8 */, "got %#lx\n", cipher.dwKeyType);
+    }
+
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_KEY_INFO, &key_info);
+    ok(status == SEC_E_OK, "QueryContextAttributesW(SECPKG_ATTR_KEY_INFO) failed: %08lx\n", status);
+    if(status == SEC_E_OK) {
+        ok(key_info.SignatureAlgorithm == CALG_ECDSA,
+           "key_info.SignatureAlgorithm = %04lx\n", key_info.SignatureAlgorithm);
+        ok(!strcmp(key_info.sSignatureAlgorithmName, "ECDSA"),
+           "key_info.sSignatureAlgorithmName = %s\n", key_info.sSignatureAlgorithmName);
+        ok(key_info.KeySize >= 128, "key_info.KeySize = %ld\n", key_info.KeySize);
+    }
+
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_STREAM_SIZES, &sizes);
+    ok(status == SEC_E_OK, "QueryContextAttributesW(SECPKG_ATTR_STREAM_SIZES) failed: %08lx\n", status);
+
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_NEGOTIATION_INFO, &info);
+    ok(status == SEC_E_UNSUPPORTED_FUNCTION, "QueryContextAttributesA returned %08lx\n", status);
+
+    reset_buffers(&buffers[0]);
+
+    /* Send a simple request so we get data for testing DecryptMessage */
+    buf = &buffers[0].pBuffers[0];
+    data = buf->pvBuffer;
+    buf->BufferType = SECBUFFER_STREAM_HEADER;
+    buf->cbBuffer = sizes.cbHeader;
+    ++buf;
+    buf->BufferType = SECBUFFER_DATA;
+    buf->pvBuffer = data + sizes.cbHeader;
+    buf->cbBuffer = sizeof(http_request) - 1;
+    memcpy(buf->pvBuffer, http_request, sizeof(http_request) - 1);
+    ++buf;
+    buf->BufferType = SECBUFFER_STREAM_TRAILER;
+    buf->pvBuffer = data + sizes.cbHeader + sizeof(http_request) -1;
+    buf->cbBuffer = sizes.cbTrailer;
+
+    status = EncryptMessage(&context, 0, &buffers[0], 0);
+    ok(status == SEC_E_OK, "EncryptMessage failed: %08lx\n", status);
+    if (status != SEC_E_OK)
+        return;
+
+    buf = &buffers[0].pBuffers[0];
+    send(sock, buf->pvBuffer,
+         buffers[0].pBuffers[0].cbBuffer + buffers[0].pBuffers[1].cbBuffer + buffers[0].pBuffers[2].cbBuffer, 0);
+
+    reset_buffers(&buffers[0]);
+    buf->cbBuffer = buf_size;
+    data_size = receive_data(sock, buf);
+
+    /* Too few buffers */
+    --buffers[0].cBuffers;
+    status = DecryptMessage(&context, &buffers[0], 0, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+
+    /* No data buffer */
+    ++buffers[0].cBuffers;
+    status = DecryptMessage(&context, &buffers[0], 0, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+
+    /* Two data buffers */
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_DATA;
+    buffers[0].pBuffers[1].BufferType = SECBUFFER_DATA;
+    status = DecryptMessage(&context, &buffers[0], 0, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+
+    /* Too few empty buffers */
+    buffers[0].pBuffers[1].BufferType = SECBUFFER_EXTRA;
+    status = DecryptMessage(&context, &buffers[0], 0, NULL);
+    ok(status == SEC_E_INVALID_TOKEN, "Expected SEC_E_INVALID_TOKEN, got %08lx\n", status);
+
+    /* Incomplete data */
+    buffers[0].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+    buffers[0].pBuffers[1].cbBuffer = 1;
+    buffers[0].pBuffers[0].cbBuffer = (data[3]<<8) | data[4];
+    status = DecryptMessage(&context, &buffers[0], 0, NULL);
+    ok(status == SEC_E_INCOMPLETE_MESSAGE, "Expected SEC_E_INCOMPLETE_MESSAGE, got %08lx\n", status);
+    ok(buffers[0].pBuffers[0].BufferType == SECBUFFER_MISSING, "Expected first buffer to be SECBUFFER_MISSING\n");
+    ok(buffers[0].pBuffers[0].cbBuffer == 5, "Expected first buffer to be a five bytes\n");
+    ok(buffers[0].pBuffers[1].BufferType == SECBUFFER_MISSING, "Unexpected buffer type\n");
+    ok(buffers[0].pBuffers[1].cbBuffer == 5, "Unexpected buffer size\n");
+
+    /* Renegotiate */
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_DATA;
+    buffers[0].pBuffers[0].cbBuffer = data_size;
+    buffers[0].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+    buffers[0].pBuffers[1].cbBuffer = 0;
+    buffers[0].pBuffers[2].BufferType = SECBUFFER_EMPTY;
+    buffers[0].pBuffers[2].cbBuffer = 0;
+    status = DecryptMessage(&context, &buffers[0], 0, NULL);
+    ok(status == SEC_I_RENEGOTIATE, "Expected SEC_I_RENEGOTIATE, got %08lx\n", status);
+    ok(buffers[0].pBuffers[0].BufferType == SECBUFFER_STREAM_HEADER, "got %lu\n", buffers[0].pBuffers[0].BufferType);
+    todo_wine ok(buffers[0].pBuffers[0].cbBuffer == 13, "got %lu\n", buffers[0].pBuffers[0].cbBuffer);
+    ok(buffers[0].pBuffers[1].BufferType == SECBUFFER_DATA, "got %lu\n", buffers[0].pBuffers[1].BufferType);
+    ok(buffers[0].pBuffers[1].cbBuffer == 0, "got %lu\n", buffers[0].pBuffers[1].cbBuffer);
+    ok(buffers[0].pBuffers[2].BufferType == SECBUFFER_STREAM_TRAILER, "got %lu\n", buffers[0].pBuffers[2].BufferType);
+    todo_wine ok(buffers[0].pBuffers[2].cbBuffer == 20, "got %lu\n", buffers[0].pBuffers[2].cbBuffer);
+
+    pfx.pbData = (BYTE *)pfxdata;
+    pfx.cbData = sizeof(pfxdata);
+    store = PFXImportCertStore(&pfx, NULL, CRYPT_EXPORTABLE|CRYPT_USER_KEYSET|PKCS12_NO_PERSIST_KEY);
+    ok(store != NULL, "got %lu\n", GetLastError());
+
+    cert = CertFindCertificateInStore(store, X509_ASN_ENCODING, 0, CERT_FIND_ANY, NULL, NULL);
+    ok(cert != NULL, "got %lu\n", GetLastError());
+
+    cred.paCred = &cert;
+    cred.cCreds = 1;
+
+    FreeCredentialsHandle(&cred_handle);
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+        &cred, NULL, NULL, &cred_handle, NULL);
+    ok(status == SEC_E_OK, "AcquireCredentialsHandleA failed: %08lx\n", status);
+
+    init_buffers(&buffers[0], 4, buf_size);
+    init_buffers(&buffers[1], 4, buf_size);
+
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM,
+        0, 0, NULL, 0, &context, &buffers[0], &attrs, NULL);
+    todo_wine ok(status == SEC_I_CONTINUE_NEEDED, "Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", status);
+    if (status != SEC_I_CONTINUE_NEEDED)
+    {
+        skip("skipping remaining renegotiate test\n");
+        goto done;
+    }
+
+    buf = &buffers[0].pBuffers[0];
+    send(sock, buf->pvBuffer, buf->cbBuffer, 0);
+    buf->cbBuffer = buf_size;
+
+    buf = &buffers[1].pBuffers[0];
+    buf->cbBuffer = buf_size;
+    ret = receive_data(sock, buf);
+    if (ret == -1)
+        return;
+
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM|ISC_REQ_USE_SUPPLIED_CREDS, 0, 0, &buffers[1], 0, &context2,
+        &buffers[0], &attrs, NULL);
+    buffers[1].pBuffers[0].cbBuffer = buf_size;
+    while (status == SEC_I_CONTINUE_NEEDED)
+    {
+        buf = &buffers[0].pBuffers[0];
+        send(sock, buf->pvBuffer, buf->cbBuffer, 0);
+        buf->cbBuffer = buf_size;
+
+        todo_wine ok( context.dwLower == context2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+                      context.dwLower, context2.dwLower);
+        todo_wine ok( context.dwUpper == context2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+                      context.dwUpper, context2.dwUpper);
+
+        buf = &buffers[1].pBuffers[0];
+        ret = receive_data(sock, buf);
+        if (ret == -1)
+            return;
+
+        context2.dwLower = context2.dwUpper = 0xdeadbeef;
+        buf->BufferType = SECBUFFER_TOKEN;
+        status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_USE_SUPPLIED_CREDS, 0, 0, &buffers[1], 0, &context2, &buffers[0], &attrs, NULL);
+        buffers[1].pBuffers[0].cbBuffer = buf_size;
+    }
+    ok(status == SEC_E_ALGORITHM_MISMATCH || broken(status == SEC_E_CERT_EXPIRED) /* < win10 1507 */,
+       "got %08lx\n", status);
+
+done:
+    DeleteSecurityContext(&context);
+
+    status = QueryContextAttributesW(&context, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (void*)&cert);
+    ok(status == SEC_E_INVALID_HANDLE, "QueryContextAttributesW(SECPKG_ATTR_REMOTE_CERT_CONTEXT) got %08lx\n", status);
+
+    FreeCredentialsHandle(&cred_handle);
+
+    CertFreeCertificateContext(cert);
+    CertCloseStore(store, 0);
+
+    free_buffers(&buffers[0]);
+    free_buffers(&buffers[1]);
+
+    closesocket(sock);
+}
+
+static void test_application_protocol_negotiation(void)
+{
+    int ret;
+    SOCKET sock;
+    SECURITY_STATUS status;
+    ULONG attrs;
+    SCHANNEL_CRED cred;
+    CredHandle cred_handle;
+    CtxtHandle context, context2;
+    SecPkgContext_ApplicationProtocol protocol;
+    SecBufferDesc buffers[3];
+    SecBuffer *buf;
+    unsigned buf_size = 8192;
+    unsigned char *alpn_buffer;
+    unsigned int *extension_len;
+    unsigned short *list_len;
+    int list_start_index, offset = 0;
+
+    if ((sock = create_ssl_socket( "test.winehq.org" )) == -1) return;
+
+    init_cred(&cred);
+    cred.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION;
+
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+        &cred, NULL, NULL, &cred_handle, NULL);
+    ok(status == SEC_E_OK, "got %08lx\n", status);
+    if (status != SEC_E_OK) return;
+
+    init_buffers(&buffers[0], 4, buf_size);
+    init_buffers(&buffers[1], 4, buf_size);
+    init_buffers(&buffers[2], 1, 128);
+
+    alpn_buffer = buffers[2].pBuffers[0].pvBuffer;
+    extension_len = (unsigned int *)&alpn_buffer[offset];
+    offset += sizeof(*extension_len);
+    *(unsigned int *)&alpn_buffer[offset] = SecApplicationProtocolNegotiationExt_ALPN;
+    offset += sizeof(unsigned int);
+    list_len = (unsigned short *)&alpn_buffer[offset];
+    offset += sizeof(*list_len);
+    list_start_index = offset;
+
+    alpn_buffer[offset++] = sizeof("http/1.1") - 1;
+    memcpy(&alpn_buffer[offset], "http/1.1", sizeof("http/1.1") - 1);
+    offset += sizeof("http/1.1") - 1;
+    alpn_buffer[offset++] = sizeof("h2") - 1;
+    memcpy(&alpn_buffer[offset], "h2", sizeof("h2") - 1);
+    offset += sizeof("h2") - 1;
+
+    *list_len = offset - list_start_index;
+    *extension_len = *list_len + sizeof(*extension_len) + sizeof(*list_len);
+
+    buffers[2].pBuffers[0].BufferType = SECBUFFER_APPLICATION_PROTOCOLS;
+    buffers[2].pBuffers[0].cbBuffer = offset;
+
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    status = InitializeSecurityContextA(&cred_handle, NULL, (SEC_CHAR *)"localhost",
+        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM, 0, 0, &buffers[2], 0, &context, &buffers[0], &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "got %08lx\n", status);
+
+    buf = &buffers[0].pBuffers[0];
+    send(sock, buf->pvBuffer, buf->cbBuffer, 0);
+    buf->cbBuffer = buf_size;
+
+    buf = &buffers[1].pBuffers[0];
+    buf->cbBuffer = buf_size;
+    ret = receive_data(sock, buf);
+    if (ret == -1)
+        return;
+
+    context2.dwLower = context2.dwUpper = 0xdeadbeef;
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM|ISC_REQ_USE_SUPPLIED_CREDS, 0, 0, &buffers[1], 0, &context2,
+        &buffers[0], &attrs, NULL);
+    buffers[1].pBuffers[0].cbBuffer = buf_size;
+    while (status == SEC_I_CONTINUE_NEEDED)
+    {
+        buf = &buffers[0].pBuffers[0];
+        send(sock, buf->pvBuffer, buf->cbBuffer, 0);
+        buf->cbBuffer = buf_size;
+
+        ok( context.dwLower == context2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+            context.dwLower, context2.dwLower);
+        ok( context.dwUpper == context2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+            context.dwUpper, context2.dwUpper);
+
+        buf = &buffers[1].pBuffers[0];
+        ret = receive_data(sock, buf);
+        if (ret == -1)
+            return;
+
+        context2.dwLower = context2.dwUpper = 0xdeadbeef;
+        buf->BufferType = SECBUFFER_TOKEN;
+        status = InitializeSecurityContextA(&cred_handle, &context, (SEC_CHAR *)"localhost",
+            ISC_REQ_USE_SUPPLIED_CREDS, 0, 0, &buffers[1], 0, NULL, &buffers[0], &attrs, NULL);
+        buffers[1].pBuffers[0].cbBuffer = buf_size;
+    }
+
+    ok (status == SEC_E_OK, "got %08lx\n", status);
+    if (status != SEC_E_OK)
+    {
+        skip("Handshake failed\n");
+        return;
+    }
+
+    memset(&protocol, 0, sizeof(protocol));
+    status = QueryContextAttributesA(&context, SECPKG_ATTR_APPLICATION_PROTOCOL, &protocol);
+    ok(status == SEC_E_OK || broken(status == SEC_E_UNSUPPORTED_FUNCTION) /* < win8 */, "got %08lx\n", status);
+    if (status == SEC_E_OK)
+    {
+        ok(protocol.ProtoNegoStatus == SecApplicationProtocolNegotiationStatus_Success, "got %u\n", protocol.ProtoNegoStatus);
+        ok(protocol.ProtoNegoExt == SecApplicationProtocolNegotiationExt_ALPN, "got %u\n", protocol.ProtoNegoExt);
+        ok(protocol.ProtocolIdSize == 2, "got %u\n", protocol.ProtocolIdSize);
+        ok(!memcmp(protocol.ProtocolId, "h2", 2), "wrong protocol id\n");
+    }
+
+    DeleteSecurityContext(&context);
+    FreeCredentialsHandle(&cred_handle);
+
+    free_buffers(&buffers[0]);
+    free_buffers(&buffers[1]);
+    free_buffers(&buffers[2]);
+
+    closesocket(sock);
+}
+
+static void test_server_protocol_negotiation(void) {
+    BOOL ret;
+    SECURITY_STATUS status;
+    ULONG attrs;
+    SCHANNEL_CRED client_cred, server_cred;
+    CredHandle client_cred_handle, server_cred_handle;
+    CtxtHandle client_context, server_context, client_context2, server_context2;
+    SecPkgContext_ApplicationProtocol protocol;
+    SecBufferDesc buffers[3];
+    PCCERT_CONTEXT cert;
+    HCRYPTPROV csp;
+    HCRYPTKEY key;
+    CRYPT_KEY_PROV_INFO keyProvInfo;
+    WCHAR ms_def_prov_w[MAX_PATH];
+    unsigned buf_size = 8192;
+    unsigned char *alpn_buffer;
+    unsigned int *extension_len;
+    unsigned short *list_len;
+    int list_start_index, offset = 0;
+
+    lstrcpyW(ms_def_prov_w, MS_DEF_PROV_W);
+    keyProvInfo.pwszContainerName = cspNameW;
+    keyProvInfo.pwszProvName = ms_def_prov_w;
+    keyProvInfo.dwProvType = PROV_RSA_FULL;
+    keyProvInfo.dwFlags = 0;
+    keyProvInfo.cProvParam = 0;
+    keyProvInfo.rgProvParam = NULL;
+    keyProvInfo.dwKeySpec = AT_SIGNATURE;
+
+    cert = CertCreateCertificateContext(X509_ASN_ENCODING, selfSignedCert, sizeof(selfSignedCert));
+    ret = CertSetCertificateContextProperty(cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &keyProvInfo);
+    ok(ret, "CertSetCertificateContextProperty failed: %08lx", GetLastError());
+    ret = CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_NEWKEYSET);
+    ok(ret, "CryptAcquireContextW failed: %08lx\n", GetLastError());
+    ret = CryptImportKey(csp, privKey, sizeof(privKey), 0, 0, &key);
+    ok(ret, "CryptImportKey failed: %08lx\n", GetLastError());
+    if (!ret) return;
+
+    init_cred(&client_cred);
+    init_cred(&server_cred);
+    client_cred.grbitEnabledProtocols = SP_PROT_TLS1_CLIENT;
+    client_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION;
+    server_cred.grbitEnabledProtocols = SP_PROT_TLS1_SERVER;
+    server_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION;
+    server_cred.cCreds = 1;
+    server_cred.paCred = &cert;
+
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &client_cred,
+                                       NULL, NULL, &client_cred_handle, NULL);
+    ok(status == SEC_E_OK, "got %08lx\n", status);
+    if (status != SEC_E_OK) return;
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_INBOUND,  NULL, &server_cred,
+                                       NULL, NULL, &server_cred_handle, NULL);
+    ok(status == SEC_E_OK, "got %08lx\n", status);
+    if (status != SEC_E_OK) return;
+
+    init_buffers(&buffers[0], 4, buf_size);
+    init_buffers(&buffers[1], 4, buf_size);
+    init_buffers(&buffers[2], 1, 128);
+
+    alpn_buffer = buffers[2].pBuffers[0].pvBuffer;
+    extension_len = (unsigned int *)&alpn_buffer[offset];
+    offset += sizeof(*extension_len);
+    *(unsigned int *)&alpn_buffer[offset] = SecApplicationProtocolNegotiationExt_ALPN;
+    offset += sizeof(unsigned int);
+    list_len = (unsigned short *)&alpn_buffer[offset];
+    offset += sizeof(*list_len);
+    list_start_index = offset;
+
+    alpn_buffer[offset++] = sizeof("http/1.1") - 1;
+    memcpy(&alpn_buffer[offset], "http/1.1", sizeof("http/1.1") - 1);
+    offset += sizeof("http/1.1") - 1;
+    alpn_buffer[offset++] = sizeof("h2") - 1;
+    memcpy(&alpn_buffer[offset], "h2", sizeof("h2") - 1);
+    offset += sizeof("h2") - 1;
+
+    *list_len = offset - list_start_index;
+    *extension_len = *list_len + sizeof(*extension_len) + sizeof(*list_len);
+
+    buffers[2].pBuffers[0].BufferType = SECBUFFER_APPLICATION_PROTOCOLS;
+    buffers[2].pBuffers[0].cbBuffer = offset;
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    status = InitializeSecurityContextA(&client_cred_handle, NULL, (SEC_CHAR *)"localhost",
+                                        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM, 0, 0, &buffers[2], 0,
+                                        &client_context, &buffers[0], &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "got %08lx\n", status);
+
+    buffers[1].pBuffers[0].cbBuffer = buf_size;
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buffers[0].pBuffers[1] = buffers[2].pBuffers[0];
+    status = AcceptSecurityContext(&server_cred_handle, NULL, &buffers[0], ASC_REQ_CONFIDENTIALITY|ASC_REQ_STREAM,
+                                   0, &server_context, &buffers[1], &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "got %08lx\n", status);
+    memset(&buffers[0].pBuffers[1], 0, sizeof(buffers[0].pBuffers[1]));
+
+    client_context2.dwLower = client_context2.dwUpper = 0xdeadbeef;
+    buffers[0].pBuffers[0].cbBuffer = buf_size;
+    status = InitializeSecurityContextA(&client_cred_handle, &client_context, (SEC_CHAR *)"localhost",
+                                        ISC_REQ_CONFIDENTIALITY|ISC_REQ_STREAM|ISC_REQ_USE_SUPPLIED_CREDS, 0, 0,
+                                        &buffers[1], 0, &client_context2, &buffers[0], &attrs, NULL);
+    ok(client_context.dwLower == client_context2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+       client_context.dwLower, client_context2.dwLower);
+    ok(client_context.dwUpper == client_context2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+       client_context.dwUpper, client_context2.dwUpper);
+    ok(status == SEC_I_CONTINUE_NEEDED, "got %08lx\n", status);
+
+    server_context2.dwLower = server_context2.dwUpper = 0xdeadbeef;
+    buffers[1].pBuffers[0].cbBuffer = buf_size;
+    status = AcceptSecurityContext(&server_cred_handle, &server_context, &buffers[0],
+                                   ASC_REQ_CONFIDENTIALITY|ASC_REQ_STREAM, 0, &server_context2, &buffers[1],
+                                   &attrs, NULL);
+    ok(server_context.dwLower == server_context2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+       server_context.dwLower, server_context2.dwLower);
+    ok(server_context.dwUpper == server_context2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+       server_context.dwUpper, server_context2.dwUpper);
+    ok(status == SEC_E_OK, "got %08lx\n", status);
+
+    buffers[0].pBuffers[0].cbBuffer = buf_size;
+    status = InitializeSecurityContextA(&client_cred_handle, &client_context, (SEC_CHAR *)"localhost",
+                                        ISC_REQ_USE_SUPPLIED_CREDS, 0, 0, &buffers[1], 0, NULL, &buffers[0],
+                                        &attrs, NULL);
+    ok(status == SEC_E_OK, "got %08lx\n", status);
+
+    memset(&protocol, 0, sizeof(protocol));
+    status = QueryContextAttributesA(&client_context, SECPKG_ATTR_APPLICATION_PROTOCOL, &protocol);
+    ok(status == SEC_E_OK || broken(status == SEC_E_UNSUPPORTED_FUNCTION) /* < win8 */, "got %08lx\n", status);
+    if (status == SEC_E_OK)
+    {
+        ok(protocol.ProtoNegoStatus == SecApplicationProtocolNegotiationStatus_Success, "got %u\n",
+           protocol.ProtoNegoStatus);
+        ok(protocol.ProtoNegoExt == SecApplicationProtocolNegotiationExt_ALPN, "got %u\n", protocol.ProtoNegoExt);
+        ok(protocol.ProtocolIdSize == 8, "got %u\n", protocol.ProtocolIdSize);
+        ok(!memcmp(protocol.ProtocolId, "http/1.1", 8), "wrong protocol id\n");
+    }
+
+    DeleteSecurityContext(&client_context);
+    DeleteSecurityContext(&server_context);
+    FreeCredentialsHandle(&client_cred_handle);
+    FreeCredentialsHandle(&server_cred_handle);
+
+    free_buffers(&buffers[0]);
+    free_buffers(&buffers[1]);
+    free_buffers(&buffers[2]);
+
+    CryptDestroyKey(key);
+    CryptReleaseContext(csp, 0);
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    CertFreeCertificateContext(cert);
+}
+
+static void init_dtls_output_buffer(SecBufferDesc *buffer)
+{
+    buffer->pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buffer->pBuffers[0].cbBuffer = 1420;
+    buffer->pBuffers[1].BufferType = SECBUFFER_ALERT;
+    buffer->pBuffers[1].cbBuffer = 1024;
+    if (!buffer->pBuffers[1].pvBuffer)
+        buffer->pBuffers[1].pvBuffer = HeapAlloc( GetProcessHeap(), 0, 1024 );
+}
+
+static void test_dtls(void)
+{
+    SECURITY_STATUS status;
+    TimeStamp exp;
+    SCHANNEL_CRED cred;
+    CredHandle cred_handle, cred_handle2;
+    CtxtHandle ctx_handle, ctx_handle2;
+    SecBufferDesc buffers[3];
+    ULONG flags_req, flags_ret, attr, prev_buf_len;
+    char *buf, *buf2;
+
+    init_cred( &cred );
+    cred.grbitEnabledProtocols = SP_PROT_DTLS_CLIENT | SP_PROT_DTLS1_2_CLIENT;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS;
+
+    status = AcquireCredentialsHandleA( NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL,
+                                        &cred_handle, &exp );
+    if (status == SEC_E_ALGORITHM_MISMATCH)
+    {
+        win_skip( "no DTLS support\n" );
+        return;
+    }
+    ok( status == SEC_E_OK, "got %08lx\n", status );
+
+    /* Should fail if both DTLS and TLS protocols are requested */
+    cred.grbitEnabledProtocols |= SP_PROT_TLS1_CLIENT;
+    status = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL,
+                                       &cred_handle2, &exp);
+    ok(status == SEC_E_ALGORITHM_MISMATCH, "status = %08lx\n", status);
+
+    cred.grbitEnabledProtocols = SP_PROT_DTLS1_X_CLIENT | SP_PROT_TLS1_SERVER;
+    status = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL,
+                                       &cred_handle2, &exp);
+    ok(status == SEC_E_ALGORITHM_MISMATCH, "status = got %08lx\n", status);
+
+    cred.grbitEnabledProtocols = SP_PROT_DTLS1_X_CLIENT | SP_PROT_SSL3_SERVER;
+    status = AcquireCredentialsHandleA(NULL, unisp_name_a, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL,
+                                       &cred_handle2, &exp);
+    ok(status == SEC_E_ALGORITHM_MISMATCH, "status = got %08lx\n", status);
+
+    flags_req = ISC_REQ_MANUAL_CRED_VALIDATION | ISC_REQ_EXTENDED_ERROR | ISC_REQ_DATAGRAM |
+                ISC_REQ_USE_SUPPLIED_CREDS | ISC_REQ_CONFIDENTIALITY | ISC_REQ_SEQUENCE_DETECT |
+                ISC_REQ_REPLAY_DETECT;
+    test_context_output_buffer_size(SP_PROT_DTLS_CLIENT | SP_PROT_DTLS1_2_CLIENT, SCH_CRED_NO_DEFAULT_CREDS,
+                                    flags_req);
+
+    init_buffers( &buffers[0], 1, 128 );
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_DTLS_MTU;
+    *(WORD *)(buffers[0].pBuffers[0].pvBuffer) = 1024;
+    buffers[0].pBuffers[0].cbBuffer = 2;
+
+    init_buffers( &buffers[1], 2, 2048 );
+    init_dtls_output_buffer(&buffers[1]);
+
+    attr = 0;
+    exp.LowPart = exp.HighPart = 0xdeadbeef;
+    status = InitializeSecurityContextA( &cred_handle, NULL, (SEC_CHAR *)"winetest", flags_req, 0, 16, &buffers[0], 0,
+                                         &ctx_handle, &buffers[1], &attr, &exp );
+    ok( status == SEC_I_CONTINUE_NEEDED, "got %08lx\n", status );
+
+    flags_ret = ISC_RET_MANUAL_CRED_VALIDATION | ISC_RET_STREAM | ISC_RET_EXTENDED_ERROR |
+                ISC_RET_DATAGRAM | ISC_RET_USED_SUPPLIED_CREDS | ISC_RET_CONFIDENTIALITY |
+                ISC_RET_SEQUENCE_DETECT | ISC_RET_REPLAY_DETECT;
+    ok( attr == flags_ret, "got %08lx\n", attr );
+    ok( !exp.LowPart, "got %08lx\n", exp.LowPart );
+    ok( !exp.HighPart, "got %08lx\n", exp.HighPart );
+    ok( buffers[1].pBuffers[1].BufferType == SECBUFFER_ALERT, "Expected buffertype SECBUFFER_ALERT, got %#lx\n",
+        buffers[1].pBuffers[1].BufferType);
+    ok( !buffers[1].pBuffers[1].cbBuffer, "Expected SECBUFFER_ALERT buffer to be empty, got %#lx\n",
+        buffers[1].pBuffers[1].cbBuffer);
+    prev_buf_len = buffers[1].pBuffers[0].cbBuffer;
+    buf = HeapAlloc( GetProcessHeap(), 0, prev_buf_len );
+    memcpy( buf, buffers[1].pBuffers[0].pvBuffer, prev_buf_len );
+    ok( buf[10] == 0, "Expected initial packet to have sequence number value of 0, got %d\n", buf[10]);
+
+    /* If we don't set the SECBUFFER_ALERT cbBuffer value we will get SEC_E_INSUFFICIENT_MEMORY. */
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buffers[1].pBuffers[0].cbBuffer = 1420;
+
+    attr = 0;
+    exp.LowPart = exp.HighPart = 0xdeadbeef;
+    ctx_handle2.dwLower = ctx_handle2.dwUpper = 0xdeadbeef;
+    status = InitializeSecurityContextA( &cred_handle, &ctx_handle, (SEC_CHAR *)"winetest", flags_req, 0, 16, NULL, 0,
+                                         &ctx_handle2, &buffers[1], &attr, &exp );
+    ok( status == SEC_E_INSUFFICIENT_MEMORY, "got %08lx\n", status );
+
+    flags_ret = ISC_RET_CONFIDENTIALITY | ISC_RET_SEQUENCE_DETECT | ISC_RET_REPLAY_DETECT;
+    todo_wine ok( attr == flags_ret, "got %08lx\n", attr );
+    ok( !exp.LowPart, "got %08lx\n", exp.LowPart );
+    ok( !exp.HighPart, "got %08lx\n", exp.HighPart );
+    ok( ctx_handle2.dwLower == 0xdeadbeef, "Did not expect dwLower to be set on new context\n");
+    ok( ctx_handle2.dwUpper == 0xdeadbeef, "Did not expect dwUpper to be set on new context\n");
+
+    /* No new input buffer value, just repeats the same behavior as before. */
+    init_dtls_output_buffer(&buffers[1]);
+
+    attr = 0;
+    exp.LowPart = exp.HighPart = 0xdeadbeef;
+    ctx_handle2.dwLower = ctx_handle2.dwUpper = 0xdeadbeef;
+    status = InitializeSecurityContextA( &cred_handle, &ctx_handle, (SEC_CHAR *)"winetest", flags_req, 0, 16, NULL, 0,
+                                         &ctx_handle2, &buffers[1], &attr, &exp );
+    ok( status == SEC_I_CONTINUE_NEEDED, "got %08lx\n", status );
+
+    flags_ret = ISC_RET_MANUAL_CRED_VALIDATION | ISC_RET_STREAM | ISC_RET_EXTENDED_ERROR |
+                ISC_RET_DATAGRAM | ISC_RET_USED_SUPPLIED_CREDS | ISC_RET_CONFIDENTIALITY |
+                ISC_RET_SEQUENCE_DETECT | ISC_RET_REPLAY_DETECT;
+    ok( attr == flags_ret, "got %08lx\n", attr );
+    todo_wine ok( exp.LowPart, "got %08lx\n", exp.LowPart );
+    todo_wine ok( exp.HighPart, "got %08lx\n", exp.HighPart );
+    ok( buffers[1].pBuffers[1].BufferType == SECBUFFER_ALERT, "Expected buffertype SECBUFFER_ALERT, got %#lx\n",
+        buffers[1].pBuffers[1].BufferType);
+    ok( !buffers[1].pBuffers[1].cbBuffer, "Expected SECBUFFER_ALERT buffer to be empty, got %#lx\n",
+        buffers[1].pBuffers[1].cbBuffer);
+    ok( ctx_handle.dwLower == ctx_handle2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+        ctx_handle.dwLower, ctx_handle2.dwLower);
+    ok( ctx_handle.dwUpper == ctx_handle2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+        ctx_handle.dwUpper, ctx_handle2.dwUpper);
+
+    /* With no new input buffer, output buffer length should match prior call. */
+    ok(buffers[1].pBuffers[0].cbBuffer == prev_buf_len, "Output buffer size mismatch, expected %#lx, got %#lx\n",
+            prev_buf_len, buffers[1].pBuffers[0].cbBuffer);
+
+    /* The retransmission packet and the original packet should only differ in their sequence number value. */
+    buf2 = (char *)buffers[1].pBuffers[0].pvBuffer;
+    ok( buf2[10] == 1, "Expected retransmitted packet to have sequence number value of 1, got %d\n", buf2[10]);
+    ok( !memcmp(buf2, buf, 9), "Lower portion mismatch between retransmitted packet and original packet\n");
+    ok( !memcmp(buf2 + 11, buf + 11, prev_buf_len - 11),
+        "Upper portion mismatch between retransmitted packet and original packet\n");
+
+    free_buffers( &buffers[0] );
+    HeapFree(GetProcessHeap(), 0, buf);
+    HeapFree(GetProcessHeap(), 0, buffers[1].pBuffers[1].pvBuffer);
+    free_buffers( &buffers[1] );
+    DeleteSecurityContext( &ctx_handle );
+    FreeCredentialsHandle( &cred_handle );
+}
+
+static void test_connection_shutdown(void)
+{
+    static const BYTE message[] = {0x15, 0x03, 0x01, 0x00, 0x02, 0x01, 0x00};
+    static const BYTE message2[] = {0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x2a};
+    CtxtHandle context, context2;
+    SecBufferDesc buffers[2];
+    SECURITY_STATUS status;
+    CredHandle cred_handle;
+    SCHANNEL_CRED cred;
+    SecBuffer *buf;
+    SCHANNEL_ALERT_TOKEN alert;
+    ULONG attrs;
+    void *tmp;
+
+    init_cred(&cred);
+    cred.grbitEnabledProtocols = SP_PROT_TLS1_CLIENT;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+
+    status = AcquireCredentialsHandleA( NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+                                        &cred, NULL, NULL, &cred_handle, NULL );
+    ok( status == SEC_E_OK, "got %08lx\n", status );
+
+    init_buffers( &buffers[0], 2, 24 );
+    init_buffers( &buffers[1], 1, 1000 );
+    buffers[0].cBuffers = 1;
+    buffers[0].pBuffers[0].BufferType = SECBUFFER_EMPTY;
+    buffers[1].cBuffers = 1;
+    buffers[1].pBuffers[0].BufferType = SECBUFFER_TOKEN;
+    buffers[1].pBuffers[0].cbBuffer = 1000;
+    tmp = buffers[1].pBuffers[0].pvBuffer;
+    buffers[1].pBuffers[0].pvBuffer = NULL;
+    status = InitializeSecurityContextA( &cred_handle, NULL, (SEC_CHAR *)"localhost",
+                                         ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM,
+                                         0, 0, &buffers[0], 0, &context, &buffers[1], &attrs, NULL );
+    ok( status == SEC_I_CONTINUE_NEEDED, "Expected SEC_I_CONTINUE_NEEDED, got %08lx\n", status );
+    ok( !!buffers[1].pBuffers[0].pvBuffer, "Got NULL buffer.\n" );
+    FreeContextBuffer( buffers[1].pBuffers[0].pvBuffer );
+    buffers[1].pBuffers[0].pvBuffer = tmp;
+
+    buf = &buffers[0].pBuffers[0];
+    buffers[0].cBuffers = 2;
+    buf->cbBuffer = sizeof(DWORD);
+    *(DWORD *)buf->pvBuffer = SCHANNEL_SHUTDOWN;
+    buf->BufferType = SECBUFFER_TOKEN;
+    buffers[0].pBuffers[1] = buffers[0].pBuffers[0];
+
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_INVALID_TOKEN, "got %08lx.\n", status );
+
+    buffers[0].pBuffers[1].cbBuffer = 0;
+    buffers[0].pBuffers[1].BufferType = SECBUFFER_EMPTY;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_INVALID_TOKEN, "got %08lx.\n", status );
+
+    *(DWORD *)buf->pvBuffer = SCHANNEL_RENEGOTIATE;
+    buffers[0].cBuffers = 1;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_UNSUPPORTED_FUNCTION, "got %08lx.\n", status );
+
+    status = ApplyControlToken(NULL, buffers);
+    ok( status == SEC_E_INVALID_HANDLE, "got %08lx.\n", status );
+
+    status = ApplyControlToken( &context, NULL );
+    ok( status == SEC_E_INTERNAL_ERROR, "got %08lx.\n", status );
+
+    *(DWORD *)buf->pvBuffer = SCHANNEL_SHUTDOWN;
+
+    buf->BufferType = SECBUFFER_ALERT;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_INVALID_TOKEN, "got %08lx.\n", status );
+    buf->BufferType = SECBUFFER_DATA;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_INVALID_TOKEN, "got %08lx.\n", status );
+
+    buf->BufferType = SECBUFFER_TOKEN;
+
+    buf->cbBuffer = 2;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_UNSUPPORTED_FUNCTION, "got %08lx.\n", status );
+
+    buf->cbBuffer = sizeof(DWORD) + 1;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+
+    buf->cbBuffer = 1000;
+    buf->BufferType = SECBUFFER_TOKEN;
+    context2.dwLower = context2.dwUpper = 0xdeadbeef;
+    status = InitializeSecurityContextA( &cred_handle, &context, NULL, 0, 0, 0, &buffers[1], 0,
+                                         &context2, &buffers[0], &attrs, NULL );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+    ok( context.dwLower == context2.dwLower, "dwLower mismatch, expected %#Ix, got %#Ix\n",
+                                             context.dwLower, context2.dwLower );
+    ok( context.dwUpper == context2.dwUpper, "dwUpper mismatch, expected %#Ix, got %#Ix\n",
+                                             context.dwUpper, context2.dwUpper );
+    ok( buf->cbBuffer == sizeof(message), "got cbBuffer %#lx.\n", buf->cbBuffer );
+    ok( !memcmp( buf->pvBuffer, message, sizeof(message) ), "message data mismatch.\n" );
+
+    buf->BufferType = SECBUFFER_TOKEN;
+    buf->cbBuffer = 1000;
+    context2.dwLower = context2.dwUpper = 0xdeadbeef;
+    status = InitializeSecurityContextA( &cred_handle, &context, NULL, 0, 0, 0, NULL, 0,
+                                         &context2, &buffers[1], &attrs, NULL );
+    ok( status == SEC_E_INCOMPLETE_MESSAGE, "got %08lx.\n", status );
+    ok( buf->cbBuffer == 1000, "got cbBuffer %#lx.\n", buf->cbBuffer );
+    ok( context2.dwLower == 0xdeadbeef, "dwLower mismatch, got %#Ix\n", context2.dwLower );
+    ok( context2.dwUpper == 0xdeadbeef, "dwUpper mismatch, got %#Ix\n", context2.dwUpper );
+
+    buf->cbBuffer = sizeof(DWORD);
+    *(DWORD *)buf->pvBuffer = SCHANNEL_SHUTDOWN;
+    buf->BufferType = SECBUFFER_TOKEN;
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+
+    buffers[1].pBuffers[0].cbBuffer = 1000;
+    status = InitializeSecurityContextA( &cred_handle, &context, NULL, 0, 0, 0,
+                                         NULL, 0, NULL, &buffers[1], &attrs, NULL );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+    ok( buffers[1].pBuffers[0].cbBuffer == sizeof(message), "got cbBuffer %#lx.\n", buffers[1].pBuffers[0].cbBuffer );
+    ok( !memcmp( buffers[1].pBuffers[0].pvBuffer, message, sizeof(message) ), "message data mismatch.\n" );
+
+    alert.dwTokenType = SCHANNEL_ALERT;
+    alert.dwAlertType = TLS1_ALERT_FATAL;
+    alert.dwAlertNumber = TLS1_ALERT_BAD_CERTIFICATE;
+    memcpy(buf->pvBuffer, &alert, sizeof(alert));
+    buf->cbBuffer = sizeof(alert);
+    status = ApplyControlToken( &context, buffers );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+
+    buffers[1].pBuffers[0].cbBuffer = 1000;
+    status = InitializeSecurityContextA( &cred_handle, &context, NULL, 0, 0, 0,
+                                         NULL, 0, NULL, &buffers[1], &attrs, NULL );
+    ok( status == SEC_E_OK, "got %08lx.\n", status );
+    ok( buffers[1].pBuffers[0].cbBuffer == sizeof(message2), "got cbBuffer %#lx.\n", buffers[1].pBuffers[0].cbBuffer );
+    ok( !memcmp( buffers[1].pBuffers[0].pvBuffer, message2, sizeof(message2) ), "message data mismatch.\n" );
+
+    free_buffers( &buffers[0] );
+    free_buffers( &buffers[1] );
+    DeleteSecurityContext( &context );
+    FreeCredentialsHandle( &cred_handle );
+}
+
+static void test_ncrypt_key_credentials(void)
+{
+    SCHANNEL_CRED schanCred;
+    CredHandle cred;
+    SECURITY_STATUS st;
+    CRYPT_DATA_BLOB pfx;
+    HCERTSTORE store;
+    const CERT_CONTEXT *cert;
+    NCRYPT_KEY_HANDLE ncrypt_key = 0;
+    DWORD key_spec = 0;
+    BOOL free_key = FALSE;
+    BOOL ret;
+
+    pfx.pbData = (BYTE *)pfxdata;
+    pfx.cbData = sizeof(pfxdata);
+    store = PFXImportCertStore(&pfx, NULL, CRYPT_EXPORTABLE | PKCS12_ALWAYS_CNG_KSP);
+    ok(store != NULL, "PFXImportCertStore failed: %lu\n", GetLastError());
+    if (!store) return;
+
+    cert = CertFindCertificateInStore(store, X509_ASN_ENCODING, 0, CERT_FIND_ANY, NULL, NULL);
+    ok(cert != NULL, "CertFindCertificateInStore failed: %lu\n", GetLastError());
+    if (!cert)
+    {
+        CertCloseStore(store, 0);
+        return;
+    }
+
+    /* Verify the key is NCrypt. */
+    ret = CryptAcquireCertificatePrivateKey(cert, CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG, NULL,
+        &ncrypt_key, &key_spec, &free_key);
+    ok(ret, "CryptAcquireCertificatePrivateKey failed: %lu\n", GetLastError());
+    todo_wine
+    ok(key_spec == CERT_NCRYPT_KEY_SPEC,
+       "expected CERT_NCRYPT_KEY_SPEC, got %lu\n", key_spec);
+
+    /* AcquireCredentialsHandle should succeed with an NCrypt key. */
+    init_cred(&schanCred);
+    schanCred.cCreds = 1;
+    schanCred.paCred = &cert;
+    st = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND,
+        NULL, &schanCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA outbound with NCrypt key failed: %08lx\n", st);
+    if (st == SEC_E_OK) FreeCredentialsHandle(&cred);
+
+    st = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_INBOUND,
+        NULL, &schanCred, NULL, NULL, &cred, NULL);
+    ok(st == SEC_E_OK, "AcquireCredentialsHandleA inbound with NCrypt key failed: %08lx\n", st);
+    if (st == SEC_E_OK) FreeCredentialsHandle(&cred);
+
+    /* Clean up the key handle. */
+    if (ret && key_spec == CERT_NCRYPT_KEY_SPEC)
+        NCryptFreeObject(ncrypt_key);
+    else if (ret && free_key)
+        CryptReleaseContext(ncrypt_key, 0);
+
+    CertFreeCertificateContext(cert);
+    CertCloseStore(store, 0);
+}
+
+static SECURITY_STATUS s2_encrypt(CtxtHandle *ctx, const SecPkgContext_StreamSizes *sizes,
+                                  const unsigned char *data, ULONG len,
+                                  unsigned char **out, ULONG *out_len)
+{
+    /* One contiguous block: header | data | trailer(s). The data buffer's
+     * cbBuffer carries the logical plaintext length while the physical block
+     * leaves room for the per-record expansion of a multi-record message. */
+    ULONG records = len ? (len + 16382) / 16383 : 1;
+    ULONG block = sizes->cbHeader + len + records * (sizes->cbHeader + sizes->cbTrailer) + 64;
+    unsigned char *buf = malloc(block);
+    SecBufferDesc desc;
+    SecBuffer b[3];
+    SECURITY_STATUS status;
+
+    if (!buf) return SEC_E_INSUFFICIENT_MEMORY;
+    memcpy(buf + sizes->cbHeader, data, len);
+
+    b[0].BufferType = SECBUFFER_STREAM_HEADER;
+    b[0].cbBuffer = sizes->cbHeader;
+    b[0].pvBuffer = buf;
+    b[1].BufferType = SECBUFFER_DATA;
+    b[1].cbBuffer = len;
+    b[1].pvBuffer = buf + sizes->cbHeader;
+    b[2].BufferType = SECBUFFER_STREAM_TRAILER;
+    b[2].cbBuffer = block - sizes->cbHeader - len;
+    b[2].pvBuffer = buf + sizes->cbHeader + len;
+    desc.ulVersion = SECBUFFER_VERSION;
+    desc.cBuffers = 3;
+    desc.pBuffers = b;
+
+    status = EncryptMessage(ctx, 0, &desc, 0);
+    if (status != SEC_E_OK)
+    {
+        free(buf);
+        return status;
+    }
+
+    *out_len = b[0].cbBuffer + b[1].cbBuffer + b[2].cbBuffer;
+    *out = buf;
+    return SEC_E_OK;
+}
+
+/* Decrypt pending_len bytes at pending (growing the pending window from
+ * stream in fragment-sized chunks), appending plaintext to out. Exercises
+ * SEC_E_INCOMPLETE_MESSAGE/SECBUFFER_MISSING and SECBUFFER_EXTRA handling. */
+static SECURITY_STATUS s2_decrypt_all(CtxtHandle *ctx, const unsigned char *stream, ULONG stream_len,
+                                      ULONG fragment, unsigned char *out, ULONG out_cap, ULONG *out_len)
+{
+    static unsigned char pending[262144];
+    ULONG pending_len = 0, stream_off = 0, collected = 0;
+    SECURITY_STATUS status = SEC_E_OK;
+    int guard = 0;
+
+    *out_len = 0;
+    while (stream_off < stream_len || pending_len)
+    {
+        SecBufferDesc desc;
+        SecBuffer b[4];
+
+        if (!pending_len || status == SEC_E_INCOMPLETE_MESSAGE)
+        {
+            ULONG chunk = stream_len - stream_off;
+
+            if (fragment && chunk > fragment)
+                chunk = fragment;
+            memcpy(pending + pending_len, stream + stream_off, chunk);
+            pending_len += chunk;
+            stream_off += chunk;
+        }
+
+        b[0].BufferType = SECBUFFER_DATA;
+        b[0].cbBuffer = pending_len;
+        b[0].pvBuffer = pending;
+        b[1].BufferType = SECBUFFER_EMPTY;
+        b[1].cbBuffer = 0;
+        b[1].pvBuffer = NULL;
+        b[2].BufferType = SECBUFFER_EMPTY;
+        b[2].cbBuffer = 0;
+        b[2].pvBuffer = NULL;
+        b[3].BufferType = SECBUFFER_EMPTY;
+        b[3].cbBuffer = 0;
+        b[3].pvBuffer = NULL;
+        desc.ulVersion = SECBUFFER_VERSION;
+        desc.cBuffers = 4;
+        desc.pBuffers = b;
+
+        status = DecryptMessage(ctx, &desc, 0, NULL);
+        if (status == SEC_E_INCOMPLETE_MESSAGE)
+        {
+            if (stream_off >= stream_len)
+            {
+                trace("INCOMPLETE_MESSAGE with the full stream delivered\n");
+                return status;
+            }
+            continue;
+        }
+        if (status != SEC_E_OK)
+            return status;
+
+        if (b[1].BufferType == SECBUFFER_DATA)
+        {
+            if (collected + b[1].cbBuffer > out_cap)
+                return SEC_E_INSUFFICIENT_MEMORY;
+            memcpy(out + collected, b[1].pvBuffer, b[1].cbBuffer);
+            collected += b[1].cbBuffer;
+        }
+        else
+            trace("no SECBUFFER_DATA in decrypt output\n");
+
+        if (b[3].BufferType == SECBUFFER_EXTRA && b[3].cbBuffer)
+        {
+            memmove(pending, b[3].pvBuffer, b[3].cbBuffer);
+            pending_len = b[3].cbBuffer;
+        }
+        else
+            pending_len = 0;
+
+        if (++guard > 100000)
+        {
+            trace("decrypt loop exceeded the progress guard\n");
+            return SEC_E_INTERNAL_ERROR;
+        }
+    }
+
+    *out_len = collected;
+    return SEC_E_OK;
+}
+
+static void test_schannel_s2_loopback(void)
+{
+    static const char message[] =
+        "Schannel S2 loopback: multi-record EncryptMessage, fragmented DecryptMessage, "
+        "SECBUFFER_MISSING/EXTRA accounting, close_notify shutdown.";
+    static unsigned char plaintext[65536], decrypted[262144];
+    unsigned char *encrypted, *encrypted2;
+    ULONG encrypted_len, encrypted2_len, decrypted_len;
+    ULONG attrs, i, msg_len;
+    SECURITY_STATUS client_status, server_status, status;
+    CredHandle client_cred_handle, server_cred_handle;
+    CtxtHandle client_context, server_context;
+    SCHANNEL_CRED client_cred, server_cred;
+    PCCERT_CONTEXT cert;
+    HCRYPTPROV csp;
+    HCRYPTKEY key;
+    CRYPT_KEY_PROV_INFO keyProvInfo;
+    WCHAR ms_def_prov_w[MAX_PATH];
+    SecPkgContext_StreamSizes sizes;
+    SecBufferDesc c_in, c_out, s_in, s_out;
+    SecBuffer c_in_buf, c_out_buf, s_in_buf, s_out_buf;
+    unsigned char client_tok[8192], server_tok[8192];
+    ULONG client_tok_len = 0, server_tok_len = 0;
+    DWORD shutdown = SCHANNEL_SHUTDOWN;
+    SecBufferDesc shutdown_desc;
+    SecBuffer shutdown_buf;
+
+    lstrcpyW(ms_def_prov_w, MS_DEF_PROV_W);
+    keyProvInfo.pwszContainerName = cspNameW;
+    keyProvInfo.pwszProvName = ms_def_prov_w;
+    keyProvInfo.dwProvType = PROV_RSA_FULL;
+    keyProvInfo.dwFlags = 0;
+    keyProvInfo.cProvParam = 0;
+    keyProvInfo.rgProvParam = NULL;
+    keyProvInfo.dwKeySpec = AT_SIGNATURE;
+
+    cert = CertCreateCertificateContext(X509_ASN_ENCODING, selfSignedCert, sizeof(selfSignedCert));
+    ok(cert != NULL, "CertCreateCertificateContext failed\n");
+    if (!cert) return;
+    status = CertSetCertificateContextProperty(cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &keyProvInfo);
+    ok(status, "CertSetCertificateContextProperty failed: %08lx\n", GetLastError());
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    status = CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_NEWKEYSET);
+    ok(status, "CryptAcquireContextW failed: %08lx\n", GetLastError());
+    if (!status) { CertFreeCertificateContext(cert); return; }
+    status = CryptImportKey(csp, privKey, sizeof(privKey), 0, 0, &key);
+    ok(status, "CryptImportKey failed: %08lx\n", GetLastError());
+    if (!status) { CryptReleaseContext(csp, 0); CertFreeCertificateContext(cert); return; }
+
+    init_cred(&client_cred);
+    init_cred(&server_cred);
+    client_cred.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+    client_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+    server_cred.grbitEnabledProtocols = SP_PROT_TLS1_2_SERVER;
+    server_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+    server_cred.cCreds = 1;
+    server_cred.paCred = &cert;
+
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+                                       &client_cred, NULL, NULL, &client_cred_handle, NULL);
+    ok(status == SEC_E_OK, "client AcquireCredentialsHandleA failed: %08lx\n", status);
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_INBOUND, NULL,
+                                       &server_cred, NULL, NULL, &server_cred_handle, NULL);
+    ok(status == SEC_E_OK, "server AcquireCredentialsHandleA failed: %08lx\n", status);
+
+    c_in.ulVersion = c_out.ulVersion = s_in.ulVersion = s_out.ulVersion = SECBUFFER_VERSION;
+    c_in.cBuffers = c_out.cBuffers = s_in.cBuffers = s_out.cBuffers = 1;
+    c_in.pBuffers = &c_in_buf;
+    c_out.pBuffers = &c_out_buf;
+    s_in.pBuffers = &s_in_buf;
+    s_out.pBuffers = &s_out_buf;
+
+    client_status = server_status = SEC_I_CONTINUE_NEEDED;
+    c_out_buf.BufferType = SECBUFFER_TOKEN;
+    c_out_buf.cbBuffer = sizeof(client_tok);
+    c_out_buf.pvBuffer = client_tok;
+    status = InitializeSecurityContextA(&client_cred_handle, NULL, (SEC_CHAR *)"localhost",
+                                        ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM, 0, 0, NULL, 0,
+                                        &client_context, &c_out, &attrs, NULL);
+    ok(status == SEC_I_CONTINUE_NEEDED, "client hello got %08lx\n", status);
+    client_status = status;
+    client_tok_len = c_out_buf.cbBuffer;
+
+    for (i = 0; i < 16 && (client_status != SEC_E_OK || server_status != SEC_E_OK); i++)
+    {
+        if (server_status != SEC_E_OK && client_tok_len)
+        {
+            s_in_buf.BufferType = SECBUFFER_TOKEN;
+            s_in_buf.cbBuffer = client_tok_len;
+            s_in_buf.pvBuffer = client_tok;
+            s_out_buf.BufferType = SECBUFFER_TOKEN;
+            s_out_buf.cbBuffer = sizeof(server_tok);
+            s_out_buf.pvBuffer = server_tok;
+            server_status = AcceptSecurityContext(&server_cred_handle,
+                                                  i ? &server_context : NULL, &s_in,
+                                                  ASC_REQ_CONFIDENTIALITY | ASC_REQ_STREAM, 0,
+                                                  &server_context, &s_out, &attrs, NULL);
+            server_tok_len = s_out_buf.cbBuffer;
+            client_tok_len = 0;
+            if (server_status != SEC_E_OK && server_status != SEC_I_CONTINUE_NEEDED)
+                break;
+        }
+        if (client_status != SEC_E_OK && server_tok_len)
+        {
+            c_in_buf.BufferType = SECBUFFER_TOKEN;
+            c_in_buf.cbBuffer = server_tok_len;
+            c_in_buf.pvBuffer = server_tok;
+            c_out_buf.BufferType = SECBUFFER_TOKEN;
+            c_out_buf.cbBuffer = sizeof(client_tok);
+            c_out_buf.pvBuffer = client_tok;
+            client_status = InitializeSecurityContextA(&client_cred_handle, &client_context,
+                                                       (SEC_CHAR *)"localhost",
+                                                       ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM, 0, 0,
+                                                       &c_in, 0, NULL, &c_out, &attrs, NULL);
+            client_tok_len = c_out_buf.cbBuffer;
+            server_tok_len = 0;
+            if (client_status != SEC_E_OK && client_status != SEC_I_CONTINUE_NEEDED)
+                break;
+        }
+    }
+    ok(client_status == SEC_E_OK, "client handshake did not complete: %08lx\n", client_status);
+    ok(server_status == SEC_E_OK, "server handshake did not complete: %08lx\n", server_status);
+    if (client_status != SEC_E_OK || server_status != SEC_E_OK) goto done;
+
+    memset(&sizes, 0, sizeof(sizes));
+    status = QueryContextAttributesA(&client_context, SECPKG_ATTR_STREAM_SIZES, &sizes);
+    ok(status == SEC_E_OK, "QueryContextAttributesA(STREAM_SIZES) failed: %08lx\n", status);
+    ok(sizes.cbMaximumMessage != 0, "cbMaximumMessage is 0\n");
+
+    for (i = 0; i < sizeof(plaintext); i++)
+        plaintext[i] = (unsigned char)(i * 31 + 7);
+
+    /* Single-record sizes plus the record-boundary case. Windows refuses
+     * messages above cbMaximumMessage (16384 here) with SEC_E_ENCRYPT_FAILURE
+     * instead of splitting them; the engine matches that. */
+    {
+        static const ULONG roundtrip_sizes[] = { 1, 1000, 16383, 16384 };
+
+        for (i = 0; i < sizeof(roundtrip_sizes) / sizeof(roundtrip_sizes[0]); i++)
+        {
+            msg_len = roundtrip_sizes[i];
+            status = s2_encrypt(&client_context, &sizes, plaintext, msg_len, &encrypted, &encrypted_len);
+            ok(status == SEC_E_OK, "encrypt %lu bytes failed: %08lx\n", msg_len, status);
+            if (status != SEC_E_OK) continue;
+            if (msg_len > sizes.cbMaximumMessage)
+                ok(encrypted_len > msg_len, "multi-record encrypt %lu did not grow (%lu)\n",
+                   msg_len, encrypted_len);
+
+            status = s2_decrypt_all(&server_context, encrypted, encrypted_len, 0,
+                                    decrypted, sizeof(decrypted), &decrypted_len);
+            ok(status == SEC_E_OK, "decrypt %lu bytes failed: %08lx\n", msg_len, status);
+            ok(decrypted_len == msg_len && !memcmp(decrypted, plaintext, msg_len),
+               "round-trip %lu bytes corrupted (got %lu)\n", msg_len, decrypted_len);
+            free(encrypted);
+        }
+
+        status = s2_encrypt(&client_context, &sizes, plaintext, 65536, &encrypted, &encrypted_len);
+        ok(status == SEC_E_ENCRYPT_FAILURE, "encrypt above the maximum got %08lx\n", status);
+        if (status == SEC_E_OK)
+            free(encrypted);
+    }
+
+    /* Fragmented delivery: the 16384-byte stream fed in 7-byte pieces must
+     * survive the SEC_E_INCOMPLETE_MESSAGE/SECBUFFER_MISSING resumption. */
+    status = s2_encrypt(&client_context, &sizes, plaintext, 16384, &encrypted, &encrypted_len);
+    ok(status == SEC_E_OK, "encrypt 16384 failed: %08lx\n", status);
+    if (status == SEC_E_OK)
+    {
+        status = s2_decrypt_all(&server_context, encrypted, encrypted_len, 7,
+                                decrypted, sizeof(decrypted), &decrypted_len);
+        ok(status == SEC_E_OK, "fragmented decrypt failed: %08lx\n", status);
+        ok(decrypted_len == 16384 && !memcmp(decrypted, plaintext, 16384),
+           "fragmented round-trip corrupted (got %lu)\n", decrypted_len);
+        free(encrypted);
+    }
+
+    /* Adversarial input: garbage must not decrypt, loop or crash. The exact
+     * Windows status is pinned in the S2 battery baseline and asserted here. */
+    memset(decrypted, 0xAA, 64);
+    memset(decrypted + 64, 0x55, 64);
+    status = s2_decrypt_all(&server_context, decrypted, 128, 0,
+                            decrypted + 128, sizeof(decrypted) - 128, &decrypted_len);
+    ok(status != SEC_E_OK, "garbage input decrypted successfully: %08lx\n", status);
+
+    /* Shutdown: ApplyControlToken(SCHANNEL_SHUTDOWN) + empty EncryptMessage
+     * produces the close_notify bytes; the peer reads them as an empty
+     * message; a later EncryptMessage still succeeds on Windows (the pin
+     * shows SEC_E_OK), so the test expects SEC_E_OK too. */
+    shutdown_buf.BufferType = SECBUFFER_TOKEN;
+    shutdown_buf.cbBuffer = sizeof(shutdown);
+    shutdown_buf.pvBuffer = &shutdown;
+    shutdown_desc.ulVersion = SECBUFFER_VERSION;
+    shutdown_desc.cBuffers = 1;
+    shutdown_desc.pBuffers = &shutdown_buf;
+    status = ApplyControlToken(&client_context, &shutdown_desc);
+    ok(status == SEC_E_OK, "ApplyControlToken(SCHANNEL_SHUTDOWN) failed: %08lx\n", status);
+
+    status = s2_encrypt(&client_context, &sizes, (unsigned char *)message, 0, &encrypted, &encrypted_len);
+    ok(status == SEC_E_OK, "empty EncryptMessage after shutdown failed: %08lx\n", status);
+    ok(encrypted_len > 0, "close_notify produced no bytes\n");
+    if (status == SEC_E_OK)
+    {
+        status = s2_decrypt_all(&server_context, encrypted, encrypted_len, 0,
+                                decrypted, sizeof(decrypted), &decrypted_len);
+        ok(status == SEC_E_OK && decrypted_len == 0,
+           "peer should read close_notify as an empty message: %08lx, %lu bytes\n",
+           status, decrypted_len);
+        free(encrypted);
+    }
+
+    status = s2_encrypt(&client_context, &sizes, (unsigned char *)message,
+                        sizeof(message) - 1, &encrypted2, &encrypted2_len);
+    ok(status == SEC_E_OK, "EncryptMessage after shutdown got %08lx\n", status);
+    if (status == SEC_E_OK)
+        free(encrypted2);
+
+done:
+    DeleteSecurityContext(&client_context);
+    DeleteSecurityContext(&server_context);
+    FreeCredentialsHandle(&client_cred_handle);
+    FreeCredentialsHandle(&server_cred_handle);
+    CryptDestroyKey(key);
+    CryptReleaseContext(csp, 0);
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    CertFreeCertificateContext(cert);
+}
+
+static void test_schannel_s2_verify_reject(void)
+{
+    ULONG attrs, i;
+    SECURITY_STATUS client_status, server_status, status;
+    CredHandle client_cred_handle, server_cred_handle;
+    CtxtHandle client_context, server_context;
+    SCHANNEL_CRED client_cred, server_cred;
+    PCCERT_CONTEXT cert;
+    HCRYPTPROV csp;
+    HCRYPTKEY key;
+    CRYPT_KEY_PROV_INFO keyProvInfo;
+    WCHAR ms_def_prov_w[MAX_PATH];
+    SecBufferDesc c_in, c_out, s_in, s_out;
+    SecBuffer c_in_buf, c_out_buf, s_in_buf, s_out_buf;
+    unsigned char client_tok[8192], server_tok[8192];
+    ULONG client_tok_len = 0, server_tok_len = 0;
+
+    lstrcpyW(ms_def_prov_w, MS_DEF_PROV_W);
+    keyProvInfo.pwszContainerName = cspNameW;
+    keyProvInfo.pwszProvName = ms_def_prov_w;
+    keyProvInfo.dwProvType = PROV_RSA_FULL;
+    keyProvInfo.dwFlags = 0;
+    keyProvInfo.cProvParam = 0;
+    keyProvInfo.rgProvParam = NULL;
+    keyProvInfo.dwKeySpec = AT_SIGNATURE;
+
+    cert = CertCreateCertificateContext(X509_ASN_ENCODING, selfSignedCert, sizeof(selfSignedCert));
+    ok(cert != NULL, "CertCreateCertificateContext failed\n");
+    if (!cert) return;
+    status = CertSetCertificateContextProperty(cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &keyProvInfo);
+    ok(status, "CertSetCertificateContextProperty failed: %08lx\n", GetLastError());
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    status = CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_NEWKEYSET);
+    ok(status, "CryptAcquireContextW failed: %08lx\n", GetLastError());
+    if (!status) { CertFreeCertificateContext(cert); return; }
+    status = CryptImportKey(csp, privKey, sizeof(privKey), 0, 0, &key);
+    ok(status, "CryptImportKey failed: %08lx\n", GetLastError());
+    if (!status) { CryptReleaseContext(csp, 0); CertFreeCertificateContext(cert); return; }
+
+    init_cred(&client_cred);
+    init_cred(&server_cred);
+    client_cred.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+    /* Deliberately no SCH_CRED_MANUAL_CRED_VALIDATION: the self-signed
+     * fixture is untrusted, so crypt32 verification must reject it. */
+    client_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS;
+    server_cred.grbitEnabledProtocols = SP_PROT_TLS1_2_SERVER;
+    server_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+    server_cred.cCreds = 1;
+    server_cred.paCred = &cert;
+
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+                                       &client_cred, NULL, NULL, &client_cred_handle, NULL);
+    ok(status == SEC_E_OK, "client AcquireCredentialsHandleA failed: %08lx\n", status);
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_INBOUND, NULL,
+                                       &server_cred, NULL, NULL, &server_cred_handle, NULL);
+    ok(status == SEC_E_OK, "server AcquireCredentialsHandleA failed: %08lx\n", status);
+
+    c_in.ulVersion = c_out.ulVersion = s_in.ulVersion = s_out.ulVersion = SECBUFFER_VERSION;
+    c_in.cBuffers = c_out.cBuffers = s_in.cBuffers = s_out.cBuffers = 1;
+    c_in.pBuffers = &c_in_buf;
+    c_out.pBuffers = &c_out_buf;
+    s_in.pBuffers = &s_in_buf;
+    s_out.pBuffers = &s_out_buf;
+
+    client_status = server_status = SEC_I_CONTINUE_NEEDED;
+    c_out_buf.BufferType = SECBUFFER_TOKEN;
+    c_out_buf.cbBuffer = sizeof(client_tok);
+    c_out_buf.pvBuffer = client_tok;
+    status = InitializeSecurityContextA(&client_cred_handle, NULL, (SEC_CHAR *)"localhost",
+                                        ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM, 0, 0, NULL, 0,
+                                        &client_context, &c_out, &attrs, NULL);
+    client_status = status;
+    client_tok_len = c_out_buf.cbBuffer;
+
+    for (i = 0; i < 16 && (client_status != SEC_E_OK || server_status != SEC_E_OK); i++)
+    {
+        if (server_status != SEC_E_OK && client_tok_len)
+        {
+            s_in_buf.BufferType = SECBUFFER_TOKEN;
+            s_in_buf.cbBuffer = client_tok_len;
+            s_in_buf.pvBuffer = client_tok;
+            s_out_buf.BufferType = SECBUFFER_TOKEN;
+            s_out_buf.cbBuffer = sizeof(server_tok);
+            s_out_buf.pvBuffer = server_tok;
+            server_status = AcceptSecurityContext(&server_cred_handle,
+                                                  i ? &server_context : NULL, &s_in,
+                                                  ASC_REQ_CONFIDENTIALITY | ASC_REQ_STREAM, 0,
+                                                  &server_context, &s_out, &attrs, NULL);
+            server_tok_len = s_out_buf.cbBuffer;
+            client_tok_len = 0;
+        }
+        if (client_status != SEC_E_OK && server_tok_len)
+        {
+            c_in_buf.BufferType = SECBUFFER_TOKEN;
+            c_in_buf.cbBuffer = server_tok_len;
+            c_in_buf.pvBuffer = server_tok;
+            c_out_buf.BufferType = SECBUFFER_TOKEN;
+            c_out_buf.cbBuffer = sizeof(client_tok);
+            c_out_buf.pvBuffer = client_tok;
+            client_status = InitializeSecurityContextA(&client_cred_handle, &client_context,
+                                                       (SEC_CHAR *)"localhost",
+                                                       ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM, 0, 0,
+                                                       &c_in, 0, NULL, &c_out, &attrs, NULL);
+            client_tok_len = c_out_buf.cbBuffer;
+            server_tok_len = 0;
+        }
+        if (client_status != SEC_E_OK && client_status != SEC_I_CONTINUE_NEEDED)
+            break;
+    }
+
+    ok(client_status == SEC_E_UNTRUSTED_ROOT || client_status == SEC_E_CERT_UNKNOWN,
+       "untrusted peer must be rejected, got %08lx\n", client_status);
+
+    DeleteSecurityContext(&client_context);
+    if (server_status == SEC_E_OK)
+        DeleteSecurityContext(&server_context);
+    FreeCredentialsHandle(&client_cred_handle);
+    FreeCredentialsHandle(&server_cred_handle);
+    CryptDestroyKey(key);
+    CryptReleaseContext(csp, 0);
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    CertFreeCertificateContext(cert);
+}
+
+static SECURITY_STATUS s2_handshake_to_end(CredHandle *client_cred, CredHandle *server_cred,
+        const char *target, CtxtHandle *client_context, CtxtHandle *server_context,
+        unsigned char *client_tok, ULONG client_tok_size,
+        unsigned char *server_tok, ULONG server_tok_size, SECURITY_STATUS *server_status_out)
+{
+    ULONG attrs, i;
+    SECURITY_STATUS client_status, server_status;
+    SecBufferDesc c_in, c_out, s_in, s_out;
+    SecBuffer c_in_buf, c_out_buf, s_in_buf, s_out_buf;
+    ULONG client_tok_len, server_tok_len;
+
+    c_in.ulVersion = c_out.ulVersion = s_in.ulVersion = s_out.ulVersion = SECBUFFER_VERSION;
+    c_in.cBuffers = c_out.cBuffers = s_in.cBuffers = s_out.cBuffers = 1;
+    c_in.pBuffers = &c_in_buf;
+    c_out.pBuffers = &c_out_buf;
+    s_in.pBuffers = &s_in_buf;
+    s_out.pBuffers = &s_out_buf;
+
+    client_status = server_status = SEC_I_CONTINUE_NEEDED;
+    c_out_buf.BufferType = SECBUFFER_TOKEN;
+    c_out_buf.cbBuffer = client_tok_size;
+    c_out_buf.pvBuffer = client_tok;
+    client_status = InitializeSecurityContextA(client_cred, NULL, (SEC_CHAR *)target,
+                                               ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM, 0, 0,
+                                               NULL, 0, client_context, &c_out, &attrs, NULL);
+    client_tok_len = c_out_buf.cbBuffer;
+
+    for (i = 0; i < 16 && (client_status != SEC_E_OK || server_status != SEC_E_OK); i++)
+    {
+        if (server_status != SEC_E_OK && client_tok_len)
+        {
+            s_in_buf.BufferType = SECBUFFER_TOKEN;
+            s_in_buf.cbBuffer = client_tok_len;
+            s_in_buf.pvBuffer = client_tok;
+            s_out_buf.BufferType = SECBUFFER_TOKEN;
+            s_out_buf.cbBuffer = server_tok_size;
+            s_out_buf.pvBuffer = server_tok;
+            server_status = AcceptSecurityContext(server_cred,
+                                                  i ? server_context : NULL, &s_in,
+                                                  ASC_REQ_CONFIDENTIALITY | ASC_REQ_STREAM, 0,
+                                                  server_context, &s_out, &attrs, NULL);
+            server_tok_len = s_out_buf.cbBuffer;
+            client_tok_len = 0;
+        }
+        if (client_status != SEC_E_OK && server_tok_len)
+        {
+            c_in_buf.BufferType = SECBUFFER_TOKEN;
+            c_in_buf.cbBuffer = server_tok_len;
+            c_in_buf.pvBuffer = server_tok;
+            c_out_buf.BufferType = SECBUFFER_TOKEN;
+            c_out_buf.cbBuffer = client_tok_size;
+            c_out_buf.pvBuffer = client_tok;
+            client_status = InitializeSecurityContextA(client_cred, client_context,
+                                                       (SEC_CHAR *)target,
+                                                       ISC_REQ_CONFIDENTIALITY | ISC_REQ_STREAM, 0, 0,
+                                                       &c_in, 0, NULL, &c_out, &attrs, NULL);
+            client_tok_len = c_out_buf.cbBuffer;
+            server_tok_len = 0;
+        }
+        if (client_status != SEC_E_OK && client_status != SEC_I_CONTINUE_NEEDED)
+            break;
+    }
+
+    *server_status_out = server_status;
+    return client_status;
+}
+
+static void s2_setup_fixture(PCCERT_CONTEXT *cert_out, HCRYPTPROV *csp_out, HCRYPTKEY *key_out)
+{
+    PCCERT_CONTEXT cert;
+    HCRYPTPROV csp;
+    HCRYPTKEY key;
+    SECURITY_STATUS status;
+    CRYPT_KEY_PROV_INFO keyProvInfo;
+    WCHAR ms_def_prov_w[MAX_PATH];
+
+    *cert_out = NULL;
+    *csp_out = 0;
+    *key_out = 0;
+
+    lstrcpyW(ms_def_prov_w, MS_DEF_PROV_W);
+    keyProvInfo.pwszContainerName = cspNameW;
+    keyProvInfo.pwszProvName = ms_def_prov_w;
+    keyProvInfo.dwProvType = PROV_RSA_FULL;
+    keyProvInfo.dwFlags = 0;
+    keyProvInfo.cProvParam = 0;
+    keyProvInfo.rgProvParam = NULL;
+    keyProvInfo.dwKeySpec = AT_SIGNATURE;
+
+    cert = CertCreateCertificateContext(X509_ASN_ENCODING, selfSignedCert, sizeof(selfSignedCert));
+    ok(cert != NULL, "CertCreateCertificateContext failed\n");
+    if (!cert) return;
+    status = CertSetCertificateContextProperty(cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &keyProvInfo);
+    ok(status, "CertSetCertificateContextProperty failed: %08lx\n", GetLastError());
+    CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    status = CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_NEWKEYSET);
+    ok(status, "CryptAcquireContextW failed: %08lx\n", GetLastError());
+    if (!status) { CertFreeCertificateContext(cert); return; }
+    status = CryptImportKey(csp, privKey, sizeof(privKey), 0, 0, &key);
+    ok(status, "CryptImportKey failed: %08lx\n", GetLastError());
+    if (!status) { CryptReleaseContext(csp, 0); CertFreeCertificateContext(cert); return; }
+
+    *cert_out = cert;
+    *csp_out = csp;
+    *key_out = key;
+}
+
+static void s2_teardown_fixture(PCCERT_CONTEXT cert, HCRYPTPROV csp, HCRYPTKEY key)
+{
+    if (key) CryptDestroyKey(key);
+    if (csp)
+    {
+        CryptReleaseContext(csp, 0);
+        CryptAcquireContextW(&csp, cspNameW, MS_DEF_PROV_W, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    }
+    if (cert) CertFreeCertificateContext(cert);
+}
+
+/* Trust the fixture root, then verify both sides of the hostname policy:
+ * a wrong target name fails, the certificate's own CN succeeds. Without a
+ * trusted root the trust error would short-circuit the name check (the P2
+ * finding), so the root is installed into ROOT for the duration. */
+static BOOL s2_root_install_allowed(void)
+{
+    char buf[8];
+    DWORD len = GetEnvironmentVariableA("S2_ALLOW_ROOT_INSTALL", buf, sizeof(buf));
+
+    if (len == 1 && buf[0] == '1')
+        return TRUE;
+
+    /* The certificate verification under test runs inside secur32 against
+     * the default chain engine and the system stores, so the fixture must be
+     * installed into ROOT for the duration of this test. That is fine in the
+     * disposable lab VM, but never on a real Windows host by default: skip
+     * there unless S2_ALLOW_ROOT_INSTALL=1 says so. */
+    {
+        HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+        HKEY key;
+        char product[64];
+        DWORD size = sizeof(product), type;
+        BOOL windows = FALSE;
+
+        if (ntdll && GetProcAddress(ntdll, "wine_get_version"))
+            return TRUE;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                          0, KEY_READ, &key) == ERROR_SUCCESS)
+        {
+            if (RegQueryValueExA(key, "ProductName", NULL, &type, (BYTE *)product, &size) == ERROR_SUCCESS &&
+                type == REG_SZ && strstr(product, "Windows"))
+                windows = TRUE;
+            RegCloseKey(key);
+        }
+        return !windows;
+    }
+}
+
+static void test_schannel_s2_hostname_mismatch(void)
+{
+    static unsigned char client_tok[8192], server_tok[8192];
+    SECURITY_STATUS status, server_status;
+    CredHandle client_cred_handle, server_cred_handle;
+    CtxtHandle client_context, server_context;
+    SCHANNEL_CRED client_cred, server_cred;
+    PCCERT_CONTEXT cert, root_copy;
+    HCERTSTORE root_store;
+    HCRYPTPROV csp;
+    HCRYPTKEY key;
+
+    s2_setup_fixture(&cert, &csp, &key);
+    if (!cert || !csp || !key) { s2_teardown_fixture(cert, csp, key); return; }
+
+    if (!s2_root_install_allowed())
+    {
+        skip("ROOT-store install not allowed on this host (set S2_ALLOW_ROOT_INSTALL=1 to enable)\n");
+        s2_teardown_fixture(cert, csp, key);
+        return;
+    }
+
+    root_store = CertOpenSystemStoreA(0, "ROOT");
+    ok(root_store != NULL, "CertOpenSystemStoreA(ROOT) failed: %08lx\n", GetLastError());
+    if (!root_store) { s2_teardown_fixture(cert, csp, key); return; }
+    if (!CertAddCertificateContextToStore(root_store, cert, CERT_STORE_ADD_REPLACE_EXISTING, &root_copy))
+    {
+        skip("cannot add the test root to the ROOT store (elevated rights needed)\n");
+        CertCloseStore(root_store, 0);
+        s2_teardown_fixture(cert, csp, key);
+        return;
+    }
+
+    init_cred(&client_cred);
+    init_cred(&server_cred);
+    client_cred.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+    client_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS;
+    server_cred.grbitEnabledProtocols = SP_PROT_TLS1_2_SERVER;
+    server_cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+    server_cred.cCreds = 1;
+    server_cred.paCred = &cert;
+
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL,
+                                       &client_cred, NULL, NULL, &client_cred_handle, NULL);
+    ok(status == SEC_E_OK, "client AcquireCredentialsHandleA failed: %08lx\n", status);
+    status = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_INBOUND, NULL,
+                                       &server_cred, NULL, NULL, &server_cred_handle, NULL);
+    ok(status == SEC_E_OK, "server AcquireCredentialsHandleA failed: %08lx\n", status);
+
+    /* Wrong name: the fixture CN is "Juan Lang", the target is not. */
+    status = s2_handshake_to_end(&client_cred_handle, &server_cred_handle, "localhost",
+                                 &client_context, &server_context,
+                                 client_tok, sizeof(client_tok), server_tok, sizeof(server_tok),
+                                 &server_status);
+    ok(status == SEC_E_WRONG_PRINCIPAL || broken(status == SEC_E_CERT_UNKNOWN),
+       "hostname mismatch must fail with SEC_E_WRONG_PRINCIPAL, got %08lx\n", status);
+    DeleteSecurityContext(&client_context);
+    if (server_status == SEC_E_OK)
+        DeleteSecurityContext(&server_context);
+
+    /* Right name: the same credentials and trusted root must succeed. */
+    status = s2_handshake_to_end(&client_cred_handle, &server_cred_handle, "Juan Lang",
+                                 &client_context, &server_context,
+                                 client_tok, sizeof(client_tok), server_tok, sizeof(server_tok),
+                                 &server_status);
+    ok(status == SEC_E_OK, "handshake against the fixture CN failed: %08lx\n", status);
+    DeleteSecurityContext(&client_context);
+    if (server_status == SEC_E_OK)
+        DeleteSecurityContext(&server_context);
+
+    FreeCredentialsHandle(&client_cred_handle);
+    FreeCredentialsHandle(&server_cred_handle);
+
+    CertDeleteCertificateFromStore(root_copy);
+    CertCloseStore(root_store, 0);
+    s2_teardown_fixture(cert, csp, key);
+}
+
+START_TEST(schannel)
+{
+    WSADATA wsa_data;
+
+    WSAStartup(0x0202, &wsa_data);
+
+    test_cread_attrs();
+    testAcquireSecurityContext();
+    test_ncrypt_key_credentials();
+    test_InitializeSecurityContext();
+    test_communication();
+    test_application_protocol_negotiation();
+    test_server_protocol_negotiation();
+    test_dtls();
+    test_connection_shutdown();
+    test_schannel_s2_loopback();
+    test_schannel_s2_verify_reject();
+    test_schannel_s2_hostname_mismatch();
+}

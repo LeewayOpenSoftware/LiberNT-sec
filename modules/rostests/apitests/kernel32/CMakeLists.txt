@@ -1,0 +1,165 @@
+
+add_subdirectory(muitest)
+add_subdirectory(redirptest)
+add_subdirectory(utf8acp)
+
+add_message_headers(ANSI FormatMessage.mc)
+
+list(APPEND SOURCE
+    ConsoleAlias.c
+    ApiSetCoreSynch.c
+    BaseSetLastNTError.c
+    BaseThreadInitThunk.c
+    CallbackCallingConventions.c
+    Arm64ThreadContext.c
+    ConsoleCP.c
+    ConsoleDbcsCells.c
+    ConsoleProcessInheritance.c
+    ConsoleVirtualTerminal.c
+    CreateAfterMissingName.c
+    CreateDirectoryRoot.c
+    CreateProcess.c
+    DefaultActCtx.c
+    DeleteFileCase.c
+    DeviceIoControl.c
+    dosdev.c
+    EnumSystemCodePages.c
+    FindActCtxSectionStringW.c
+    FileStorageInfo.c
+    FindFiles.c
+    IsValidRelativeSecurityDescriptor.c
+    DosPathToSessionPath.c
+    IsValidLocaleName.c
+    CompatLinks.c
+    LdrDllNotification.c
+    ForwardCycles.c
+    DllDirectories.c
+    ManifestSettings.c
+    Utf8ActiveCodePage.c
+    TramoE.c
+    TramoE2.c
+    VerifyScripts.c
+    GetDurationFormat.c
+    TimeZoneEx.c
+    FindNLSString.c
+    FindPackagesByPackageFamily.c
+    FLS.c
+    FormatMessage.c
+    GetComputerNameEx.c
+    GetCPInfo.c
+    GetCurrentDirectory.c
+    GetCurrentThreadStackLimits.c
+    GetDriveType.c
+    GetEnvironmentVariable.c
+    GetFinalPathNameByHandle.c
+    GetLocaleInfo.c
+    GetModuleFileName.c
+    GetNumaNodeProcessorMaskEx.c
+    GetOsSafeBootMode.c
+    GetPackageFamilyName.c
+    GetProcessorSystemCycleTime.c
+    AppModelInternal.c
+    GetSystemWow64Directory.c
+    GetTempFileName.c
+    GetTempPath2.c
+    GetThreadTimes.c
+    GetVolumeInformation.c
+    HeapLowFragmentation.c
+    InitOnce.c
+    WineGroups12.c
+    InversionL1.c
+    InversionL2.c
+    interlck.c
+    IoCompletion.c
+    IsDBCSLeadByteEx.c
+    JapaneseCalendar.c
+    JobObject.c
+    JobObjectUI.c
+    LCMapString.c
+    LoadLibraryExW.c
+    LockFileEx.c
+    OpenFileByIdRename.c
+    PagingFileOpen.c
+    QuantumRoundRobin.c
+    RegisterWaitPeriodic.c
+    SandboxLaunch.c
+    SystemImageCatalog.c
+    TebSegmentAfterWait.c
+    SharedMemorySecurity.c
+    SharedMemoryTransfer.c
+    StarvationBoost.c
+    SystemTimeChangeTimers.c
+    StdHandleInheritance.c
+    LocaleNameToLCID.c
+    lstrcpynW.c
+    lstrlen.c
+    Mailslot.c
+    MuiResources.c
+    MultiByteToWideChar.c
+    NumaApis.c
+    Pipes.c
+    PackageNames.c
+    PixeloramaCompat.c
+    ProcessPreferredUILanguages.c
+    PseudoConsoleCtrlC.c
+    PssSnapshot.c
+    PrivMoveFileIdentityW.c
+    QueryPerformanceCounter.c
+    QueueUserAPC.c
+    QueryProcessCycleTime.c
+    ReadFile.c
+    RenameDirectoryOldPath.c
+    ResizePseudoConsole.c
+    SetComputerNameExW.c
+    SetConsoleWindowInfo.c
+    SetCurrentDirectory.c
+    SetFileAllocationInfo.c
+    SetThreadStackGuarantee.c
+    SetUnhandledExceptionFilter.c
+    SetWaitableTimerEx.c
+    WaitableTimerHighResolution.c
+    SwitchToThreadCost.c
+    SuspendThread.c
+    SystemFirmware.c
+    TerminateProcess.c
+    ThreadPowerThrottling.c
+    ProcessPowerThrottling.c
+    TunnelCache.c
+    UEFIFirmware.c
+    WaitFileHandle.c
+    WaitForMultipleObjects.c
+    WerRegisterFile.c
+    WideCharToMultiByte.c
+    Wow64GetThreadContext.c
+    WriteFile.c
+    WriteFileSeekBack.c
+    XState.c
+)
+
+list(APPEND PCH_SKIP_SOURCE
+    testlist.c)
+
+add_executable(kernel32_apitest
+    ${SOURCE}
+    ${PCH_SKIP_SOURCE}
+    kernel32_apitest.rc)
+
+target_link_libraries(kernel32_apitest wine ${PSEH_LIB})
+set_module_type(kernel32_apitest win32cui)
+add_delay_importlibs(kernel32_apitest advapi32 shlwapi)
+add_importlibs(kernel32_apitest netapi32 user32 msvcrt kernel32 ntdll)
+add_dependencies(kernel32_apitest FormatMessage utf8acp_on utf8acp_off)
+add_pch(kernel32_apitest precomp.h "${PCH_SKIP_SOURCE}")
+add_rostests_file(TARGET kernel32_apitest)
+
+list(APPEND MANIFEST_FILES
+    classtest.manifest
+    classtest2.manifest
+    comctl32dep.manifest
+    dep1.manifest
+    deptest.manifest
+    xmlns.manifest)
+
+foreach(item ${MANIFEST_FILES})
+    add_rostests_file(FILE "${CMAKE_CURRENT_SOURCE_DIR}/${item}")
+endforeach(item)

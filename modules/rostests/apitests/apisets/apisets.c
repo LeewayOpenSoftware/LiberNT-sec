@@ -1,0 +1,166 @@
+/*
+ * PROJECT:     ReactOS API tests
+ * LICENSE:     LGPL-2.1-or-later (https://spdx.org/licenses/LGPL-2.1-or-later)
+ * PURPOSE:     Validate the apiset lookup in ApiSetResolveToHost
+ * COPYRIGHT:   Copyright 2024 Mark Jansen <mark.jansen@reactos.org>
+ */
+
+#include <ndk/umtypes.h>
+#include <ndk/rtlfuncs.h>
+#include <apitest.h>
+#include "apisetsp.h"
+
+static void
+resolve_single(PCUNICODE_STRING Apiset)
+{
+    UNICODE_STRING Tmp = {0};
+    NTSTATUS Status = RtlDuplicateUnicodeString(RTL_DUPLICATE_UNICODE_STRING_NULL_TERMINATE, Apiset, &Tmp);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+
+    BOOLEAN Resolved = FALSE;
+    UNICODE_STRING Result = {0};
+
+    Status = ApiSetResolveToHost(~0u, &Tmp, &Resolved, &Result);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    ok_eq_bool(Resolved, TRUE);
+    ok(Result.Buffer != NULL, "Got NULL\n");
+}
+
+static void
+resolve_fail_single(PCUNICODE_STRING Apiset)
+{
+    UNICODE_STRING Tmp = {0};
+    NTSTATUS Status = RtlDuplicateUnicodeString(RTL_DUPLICATE_UNICODE_STRING_NULL_TERMINATE, Apiset, &Tmp);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+
+    BOOLEAN Resolved = FALSE;
+    UNICODE_STRING Result = {0, 0, (PWSTR)0xbadbeef};
+
+    Status = ApiSetResolveToHost(~0u, &Tmp, &Resolved, &Result);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    ok_eq_bool(Resolved, FALSE);
+    ok_ptr(Result.Buffer, (PWSTR)0xbadbeef);
+}
+
+static void
+test_single(PCUNICODE_STRING Apiset)
+{
+    winetest_push_context("%S", Apiset->Buffer);
+    resolve_single(Apiset);
+    winetest_pop_context();
+}
+
+static void
+fail_single(PCUNICODE_STRING Apiset)
+{
+    winetest_push_context("%S", Apiset->Buffer);
+    resolve_fail_single(Apiset);
+    winetest_pop_context();
+}
+
+
+START_TEST(apisets)
+{
+    // Ensure we can find some manually selected ones (both with and without extension):
+    UNICODE_STRING Console1 = RTL_CONSTANT_STRING(L"api-MS-Win-Core-Console-L1-1-0.dll");
+    UNICODE_STRING Console2 = RTL_CONSTANT_STRING(L"api-MS-Win-Core-Console-L1-1-0");
+    UNICODE_STRING Handle1 = RTL_CONSTANT_STRING(L"api-MS-Win-Core-Handle-L1-1-0.dll");
+    UNICODE_STRING Handle2 = RTL_CONSTANT_STRING(L"api-MS-Win-Core-Handle-L1-1-0");
+    UNICODE_STRING Heap1 = RTL_CONSTANT_STRING(L"api-MS-Win-Core-Heap-L1-1-0.dll");
+    UNICODE_STRING Heap2 = RTL_CONSTANT_STRING(L"api-MS-Win-Core-Heap-L1-1-0");
+
+    test_single(&Console1);
+    test_single(&Console2);
+    test_single(&Handle1);
+    test_single(&Handle2);
+    test_single(&Heap1);
+    test_single(&Heap2);
+
+    // Walk the entire table, to ensure we can find each entry
+    for (DWORD n = 0; n < g_ApisetsCount; ++n)
+    {
+        PCUNICODE_STRING Apiset = &g_Apisets[n].Name;
+        winetest_push_context("%ld: %S", n, Apiset->Buffer);
+        resolve_single(Apiset);
+        winetest_pop_context();
+    }
+
+    UNICODE_STRING Fail1 = RTL_CONSTANT_STRING(L"");
+    UNICODE_STRING Fail2 = RTL_CONSTANT_STRING(L"api-");
+    UNICODE_STRING Fail3 = RTL_CONSTANT_STRING(L"ext");
+
+    fail_single(&Fail1);
+    fail_single(&Fail2);
+    fail_single(&Fail3);
+}
+
+static void
+resolve_version(PCUNICODE_STRING Apiset, DWORD Version, PBOOLEAN Resolved, PUNICODE_STRING Host)
+{
+    UNICODE_STRING Tmp = {0};
+    NTSTATUS Status = RtlDuplicateUnicodeString(RTL_DUPLICATE_UNICODE_STRING_NULL_TERMINATE, Apiset, &Tmp);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+
+    *Resolved = FALSE;
+    Status = ApiSetResolveToHost(Version, &Tmp, Resolved, Host);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+
+    RtlFreeUnicodeString(&Tmp);
+}
+
+START_TEST(win11_fallback)
+{
+    /* Boot safety: the Windows 11 version mask is APISET_WIN11|APISET_WIN10, so a
+     * Win10-era contract with no WIN11 bit must still resolve to the same host. */
+    UNICODE_STRING Names[] = {
+        RTL_CONSTANT_STRING(L"api-ms-win-core-console-l1-1-0"),
+        RTL_CONSTANT_STRING(L"api-ms-win-core-handle-l1-1-0"),
+        RTL_CONSTANT_STRING(L"api-ms-win-core-heap-l1-1-0"),
+    };
+    DWORD i;
+
+    for (i = 0; i < RTL_NUMBER_OF(Names); ++i)
+    {
+        UNICODE_STRING Host10 = {0}, Host11 = {0};
+        BOOLEAN Resolved10 = FALSE, Resolved11 = FALSE;
+
+        winetest_push_context("%S", Names[i].Buffer);
+        resolve_version(&Names[i], APISET_WIN10, &Resolved10, &Host10);
+        resolve_version(&Names[i], APISET_WIN11 | APISET_WIN10, &Resolved11, &Host11);
+        ok_eq_bool(Resolved10, TRUE);
+        ok_eq_bool(Resolved11, TRUE);
+        if (Resolved10 && Resolved11)
+            ok(RtlEqualUnicodeString(&Host10, &Host11, TRUE), "Win11 host must match the Win10 host\n");
+        winetest_pop_context();
+    }
+}
+
+typedef struct _TEST_API_SET_NAMESPACE
+{
+    ULONG Version;
+    ULONG Size;
+    ULONG Flags;
+    ULONG Count;
+    ULONG EntryOffset;
+    ULONG HashOffset;
+    ULONG HashFactor;
+} TEST_API_SET_NAMESPACE;
+
+START_TEST(apisetmap)
+{
+    /* The schema the kernel maps into the PEB (D3.2). Needs a real boot; when the
+     * field is NULL (schema not mapped) the loader uses the static table instead. */
+    PVOID Map = NtCurrentPeb()->ApiSetMap;
+    const TEST_API_SET_NAMESPACE *Schema;
+
+    if (Map == NULL)
+    {
+        skip("PEB ApiSetMap is NULL; the static apiset table is in use\n");
+        return;
+    }
+
+    Schema = Map;
+    ok(Schema->Version == 6, "ApiSetMap version %lu, expected 6\n", Schema->Version);
+    ok(Schema->Count > 0, "ApiSetMap has no entries\n");
+    ok(Schema->Size >= sizeof(*Schema), "ApiSetMap size %lu too small\n", Schema->Size);
+}

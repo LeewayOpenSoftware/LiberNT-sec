@@ -1,0 +1,23 @@
+@ stdcall ClientSideInstallW(ptr ptr wstr long)
+@ stdcall DevInstallW(ptr ptr wstr long)
+@ stdcall DevInstallInfW(wstr wstr long ptr)
+@ stdcall DrvInstEnumJobs(ptr ptr)
+@ stdcall DrvInstGetJob(int64 ptr)
+@ stdcall DrvInstRollback(wstr)
+@ stdcall DrvInstSubmitDevice(wstr long ptr)
+@ stdcall DrvInstSubmitInf(wstr wstr long ptr)
+@ stdcall DrvInstWait(int64 long ptr)
+@ stdcall InstallDevInst(ptr wstr long ptr)
+@ stdcall InstallDevInstEx(ptr wstr long ptr long)
+@ stdcall InstallNewDevice(ptr ptr ptr)
+@ stub InstallSelectedDevice
+@ stdcall InstallSelectedDriverW(ptr ptr wstr long ptr)
+@ stub InstallWindowsUpdateDriver
+@ stub RollbackDriver
+@ stdcall UpdateDriverForPlugAndPlayDevicesA(ptr str str long ptr)
+@ stdcall UpdateDriverForPlugAndPlayDevicesW(ptr wstr wstr long ptr)
+@ stdcall DiInstallDevice(ptr ptr ptr ptr long ptr)
+@ stdcall DiInstallDriverA(ptr str long ptr)
+@ stdcall DiInstallDriverW(ptr wstr long ptr)
+@ stdcall DiRollbackDriver(ptr ptr ptr long ptr)
+@ stdcall DiShowUpdateDevice(ptr ptr ptr long ptr)

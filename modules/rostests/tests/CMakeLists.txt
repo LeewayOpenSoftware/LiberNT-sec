@@ -1,0 +1,7 @@
+add_subdirectory(mmixer_test)
+add_subdirectory(dpiprobe)
+add_subdirectory(dllexport)
+add_subdirectory(guiconversion)
+add_subdirectory(handletable)
+add_subdirectory(spec2def)
+add_subdirectory(taskbarpinning)

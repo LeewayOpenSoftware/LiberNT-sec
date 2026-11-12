@@ -1,0 +1,1346 @@
+
+#ifndef _NTFSLIB_NEW_H_
+#define _NTFSLIB_NEW_H_
+
+#ifdef NTFSLIB_PORTABLE
+#include "ntfsenv.h"
+#elif !defined(_WINNT_)
+#include <ntdef.h>
+#endif
+
+#include "ntfsattribdef.h"
+
+#pragma pack(push, 1)
+struct BootSector
+{
+    UCHAR  JumpInstruction[3];     // Offset 0x00, Size 3
+    UCHAR  OEM_ID[8];              // Offset 0x03, Size 8
+    UINT16 BytesPerSector;         // Offset 0x0B, Size 2
+    UINT8  SectorsPerCluster;      // Offset 0x0D, Size 1
+    UCHAR  Reserved0[7];           // Offset 0x0E, Size 7
+    UINT8  MediaDescriptor;        // Offset 0x15, Size 1
+    UCHAR  Reserved1[2];           // Offset 0x16, Size 2
+    UINT16 SectorsPerTrack;        // Offset 0x18, Size 2
+    UINT16 NumberOfHeads;          // Offset 0x1A, Size 2
+    UINT32 HiddenSectors;          // Offset 0x1C, Size 4
+    UCHAR  Reserved3[4];           // Offset 0x20, Size 4
+    UINT32 Unknown;                // Offset 0x24, Size 4
+    UINT64 SectorsInVolume;        // Offset 0x28, Size 8
+    UINT64 MFTLCN;                 // Offset 0x30, Size 8
+    UINT64 MFTMirrLCN;             // Offset 0x38, Size 8
+    INT8   ClustersPerFileRecord;  // Offset 0x40, Size 4
+    UCHAR  Reserved4[3];
+    INT8   ClustersPerIndexRecord; // Offset 0x44, Size 4
+    UCHAR  Reserved5[3];
+    UINT64 SerialNumber;           // Offset 0x48, Size 8
+    UINT32 Checksum;               // Offset 0x50, Size 4
+    UCHAR  BootStrap[426];
+    USHORT EndSector;
+};
+#pragma pack(pop)
+typedef struct BootSector BootSector;
+typedef struct BootSector* PBootSector;
+
+/* NTFS file record numbers */
+enum FileRecordNumbers
+{
+    _MFT     = 0,
+    _MFTMirr = 1,
+    _LogFile = 2,
+    _Volume  = 3,
+    _AttrDef = 4,
+    _Root    = 5,
+    _Bitmap  = 6,
+    _Boot    = 7,
+    _BadClus = 8,
+    _Secure  = 9,
+    _UpCase  = 10,
+    _Extend  = 11,
+};
+
+/* File records up to and including this number are reserved for
+ * NTFS metadata files and are hidden from directory enumeration.
+ */
+#define NTFS_LAST_RESERVED_FILE_RECORD 15
+/*
+ * NTFS also keeps records 16 to 23 for itself: Windows marks them in use at
+ * format time and never allocates a file there. This is the first record a
+ * file may take, used by the format and by the record allocator. The readers
+ * keep hiding only records up to NTFS_LAST_RESERVED_FILE_RECORD, so a file
+ * that an earlier format left in 16 to 23 stays visible and unchanged.
+ */
+#define NTFS_FIRST_USER_FILE_RECORD 24
+
+/* File record flags */
+#define FR_IN_USE        0x01
+#define FR_IS_DIRECTORY  0x02
+#define FR_IS_EXTENSION  0x04
+#define FR_SPECIAL_INDEX 0x08
+
+/* NTFS file permission flags */
+#define FILE_PERM_READONLY   0x0001
+#define FILE_PERM_HIDDEN     0x0002
+#define FILE_PERM_SYSTEM     0x0004
+#define FILE_PERM_ARCHIVE    0x0020
+#define FILE_PERM_DEVICE     0x0040
+#define FILE_PERM_NORMAL     0x0080
+#define FILE_PERM_TEMP       0x0100
+#define FILE_PERM_SPARSE     0x0200
+#define FILE_PERM_REPARSE_PT 0x0400
+#define FILE_PERM_COMPRESSED 0x0800
+#define FILE_PERM_OFFLINE    0x1000
+#define FILE_PERM_NOT_INDXED 0x2000
+#define FILE_PERM_ENCRYPTED  0x4000
+#define FILE_PERM_RECALL_ON_OPEN 0x00040000
+
+typedef struct
+{
+    UCHAR  TypeID[4];              // Offset 0x00, Size 4 ('FILE' or 'INDX')
+    UINT16 UpdateSequenceOffset;   // Offset 0x04, Size 2
+    UINT16 SizeOfUpdateSequence;   // Offset 0x06, Size 2
+    UINT64 LogFileSequenceNumber;  // Offset 0x08, Size 8
+} NTFSRecordHeader, *PNTFSRecordHeader;
+
+typedef struct
+{
+    NTFSRecordHeader Header;       // Offset 0x00, Size 16
+    UINT16 SequenceNumber;         // Offset 0x10, Size 2
+    UINT16 HardLinkCount;          // Offset 0x12, Size 2
+    UINT16 AttributeOffset;        // Offset 0x14, Size 2
+    UINT16 Flags;                  // Offset 0x16, Size 2
+    UINT32 ActualSize;             // Offset 0x18, Size 4
+    UINT32 AllocatedSize;          // Offset 0x1C, Size 4
+    UINT64 BaseFileRecord;         // Offset 0x20, Size 8
+    UINT16 NextAttributeID;        // Offset 0x28, Size 2
+    UINT16 Padding;
+    UINT32 MFTRecordNumber;        // Offset 0x2C, Size 4
+} FileRecordHeader, *PFileRecordHeader;
+
+typedef struct
+{
+    NTFSRecordHeader RecordHeader;
+    ULONGLONG VCN;
+    IndexNodeHeader IndexHeader;
+} IndexBuffer, *PIndexBuffer;
+
+// =========================
+// NTFS C API
+// =========================
+
+/* Forward declarations */
+typedef struct NtfsDirectory NtfsDirectory;
+typedef NtfsDirectory* PNtfsDirectory;
+
+typedef struct NtfsFileRecord NtfsFileRecord;
+typedef NtfsFileRecord* PNtfsFileRecord;
+
+typedef struct NtfsLogFileService NtfsLogFileService;
+typedef NtfsLogFileService* PNtfsLogFileService;
+
+typedef struct NtfsMasterFileTable NtfsMasterFileTable;
+typedef NtfsMasterFileTable* PNtfsMasterFileTable;
+
+typedef struct NtfsVolume NtfsVolume;
+typedef NtfsVolume* PNtfsVolume;
+
+#define NTFS_MAX_FILE_NAME_LENGTH 255
+#define NTFS_MAXIMUM_REPARSE_DATA_BUFFER_SIZE (16 * 1024)
+#define NTFS_IO_REPARSE_TAG_MOUNT_POINT ((UINT32)0xA0000003)
+#define NTFS_IO_REPARSE_TAG_SYMLINK ((UINT32)0xA000000C)
+#define NTFS_IO_REPARSE_TAG_WOF ((UINT32)0x80000017)
+#define NTFS_SYMLINK_FLAG_RELATIVE ((UINT32)0x00000001)
+#define NTFS_WOF_PROVIDER_FILE ((UINT32)2)
+#define NTFS_WOF_HIDDEN_ATTRIBUTES ((ULONG)(FILE_PERM_SPARSE | FILE_PERM_REPARSE_PT | FILE_PERM_RECALL_ON_OPEN))
+#define NTFS_WOF_COMPRESSION_XPRESS4K ((UINT32)0)
+#define NTFS_WOF_COMPRESSION_LZX ((UINT32)1)
+#define NTFS_WOF_COMPRESSION_XPRESS8K ((UINT32)2)
+#define NTFS_WOF_COMPRESSION_XPRESS16K ((UINT32)3)
+#define NTFS_EA_FLAG_NEED_EA ((UINT8)0x80)
+#define NTFS_BASIC_INFO_CREATION_TIME ((UINT32)0x00000001)
+#define NTFS_BASIC_INFO_LAST_ACCESS_TIME ((UINT32)0x00000002)
+#define NTFS_BASIC_INFO_LAST_WRITE_TIME ((UINT32)0x00000004)
+#define NTFS_BASIC_INFO_CHANGE_TIME ((UINT32)0x00000008)
+#define NTFS_BASIC_INFO_FILE_ATTRIBUTES ((UINT32)0x00000010)
+#define NTFS_BASIC_INFO_ALL_FIELDS ((UINT32)0x0000001f)
+#define NTFS_AUTOMATIC_TIMESTAMP_FIELDS \
+    (NTFS_BASIC_INFO_LAST_ACCESS_TIME | \
+     NTFS_BASIC_INFO_LAST_WRITE_TIME | \
+     NTFS_BASIC_INFO_CHANGE_TIME)
+
+/*
+ * Platform-neutral directory result. Lengths are counts of UTF-16 code
+ * units; Name and ShortName are always NUL terminated by the library.
+ */
+typedef struct NtfsDirectoryEntry
+{
+    UINT64 FileReference;
+    UINT64 CreationTime;
+    UINT64 LastAccessTime;
+    UINT64 LastWriteTime;
+    UINT64 ChangeTime;
+    UINT64 EndOfFile;
+    UINT64 AllocationSize;
+    UINT32 FileAttributes;
+    UINT16 EaSize;
+    UINT32 ReparseTag;
+    UINT16 NameLength;
+    UINT8 ShortNameLength;
+    WCHAR Name[NTFS_MAX_FILE_NAME_LENGTH + 1];
+    WCHAR ShortName[13];
+} NtfsDirectoryEntry, *PNtfsDirectoryEntry;
+
+/*
+ * Platform-neutral counterpart of FILE_ALLOCATED_RANGE_BUFFER. Offsets and
+ * lengths are bytes. Sparse range queries return logical allocation ranges,
+ * not physical disk locations.
+ */
+typedef struct NtfsAllocatedRange
+{
+    UINT64 FileOffset;
+    UINT64 Length;
+} NtfsAllocatedRange, *PNtfsAllocatedRange;
+
+/*
+ * Platform-neutral counterpart of one RETRIEVAL_POINTERS_BUFFER extent.
+ * NextVcn is the exclusive logical-cluster boundary. Lcn is the physical
+ * starting cluster, or -1 for a sparse/unallocated extent.
+ */
+typedef struct NtfsRetrievalExtent
+{
+    UINT64 NextVcn;
+    LONGLONG Lcn;
+} NtfsRetrievalExtent, *PNtfsRetrievalExtent;
+
+/*
+ * Platform-neutral projection of NTFS_VOLUME_DATA_BUFFER plus the version
+ * fields returned by NTFS_EXTENDED_VOLUME_DATA. Counts remain 64-bit all the
+ * way from the boot sector so large volumes are not truncated by a frontend.
+ */
+typedef struct NtfsVolumeInformation
+{
+    UINT64 VolumeSerialNumber;
+    UINT64 NumberSectors;
+    UINT64 TotalClusters;
+    UINT64 FreeClusters;
+    UINT64 TotalReserved;
+    UINT32 BytesPerSector;
+    UINT32 BytesPerCluster;
+    UINT32 BytesPerFileRecordSegment;
+    UINT32 ClustersPerFileRecordSegment;
+    UINT64 MftValidDataLength;
+    UINT64 MftStartLcn;
+    UINT64 Mft2StartLcn;
+    UINT64 MftZoneStart;
+    UINT64 MftZoneEnd;
+    UINT16 MajorVersion;
+    UINT16 MinorVersion;
+} NtfsVolumeInformation, *PNtfsVolumeInformation;
+
+/*
+ * One logical NTFS $DATA stream. Name is the raw attribute name without the
+ * leading ':' or trailing ':$DATA' presentation syntax; NameLength is a
+ * count of UTF-16 code units and Name is always NUL terminated.
+ */
+typedef struct NtfsDataStreamInformation
+{
+    UINT64 DataSize;
+    UINT64 AllocationSize;
+    UINT16 NameLength;
+    WCHAR Name[NTFS_MAX_FILE_NAME_LENGTH + 1];
+} NtfsDataStreamInformation, *PNtfsDataStreamInformation;
+
+/*
+ * Platform-neutral projection of $STANDARD_INFORMATION. Fields is a mask of
+ * NTFS_BASIC_INFO_* values, allowing callers to update an explicit subset
+ * without assigning special meanings to otherwise valid 64-bit timestamps.
+ */
+typedef struct NtfsFileBasicInformation
+{
+    UINT32 Fields;
+    UINT64 CreationTime;
+    UINT64 LastAccessTime;
+    UINT64 LastWriteTime;
+    UINT64 ChangeTime;
+    UINT32 FileAttributes;
+} NtfsFileBasicInformation, *PNtfsFileBasicInformation;
+
+/*
+ * Validated view over a Microsoft symlink or mount-point reparse buffer.
+ * Names point at UTF-16LE bytes, lengths are code-unit counts, and the
+ * pointers remain valid only while the caller-owned raw buffer remains alive.
+ */
+typedef struct NtfsReparseNameView
+{
+    UINT32 ReparseTag;
+    UINT32 Flags;
+    const UCHAR* SubstituteName;
+    ULONG SubstituteNameLength;
+    const UCHAR* PrintName;
+    ULONG PrintNameLength;
+} NtfsReparseNameView, *PNtfsReparseNameView;
+
+/*
+ * Validated zero-copy view over one entry in a caller-owned raw NTFS $EA
+ * buffer. Names are counted single-byte strings; values are opaque bytes.
+ */
+typedef struct NtfsExtendedAttributeView
+{
+    UINT8 Flags;
+    UINT8 NameLength;
+    UINT16 ValueLength;
+    const UCHAR* Name;
+    const UCHAR* Value;
+} NtfsExtendedAttributeView, *PNtfsExtendedAttributeView;
+
+#define NTFS_EA_UPDATE_SET ((UINT32)0)
+#define NTFS_EA_UPDATE_REMOVE ((UINT32)1)
+
+/*
+ * One case-insensitive native NTFS EA update. SET accepts an empty value;
+ * REMOVE ignores Flags, ValueLength, and Value. Updates are applied in array
+ * order (so repeated names have native last-wins behavior), and the complete
+ * batch is merged and size-checked before any on-disk mutation is attempted.
+ */
+typedef struct NtfsExtendedAttributeUpdate
+{
+    UINT32 Operation;
+    UINT8 Flags;
+    UINT8 NameLength;
+    UINT16 ValueLength;
+    const UCHAR* Name;
+    const UCHAR* Value;
+} NtfsExtendedAttributeUpdate, *PNtfsExtendedAttributeUpdate;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Directory functions */
+PNtfsDirectory
+NtfsDirectoryCreate(
+    _In_ PNtfsVolume DiskVolume);
+
+void
+NtfsDirectoryDestroy(
+    _In_opt_ PNtfsDirectory Dir);
+
+NTSTATUS
+NtfsDirectoryLoadDirectory(
+    _In_ PNtfsDirectory Dir,
+    _In_ PNtfsFileRecord File);
+
+NTSTATUS
+NtfsDirectoryReadNext(
+    _In_ PNtfsDirectory Dir,
+    _In_ BOOLEAN RestartScan,
+    _Out_ PNtfsDirectoryEntry Entry);
+
+/* FileRecord functions */
+PNtfsFileRecord
+NtfsFileRecordCreate(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONG FileRecordSize);
+
+void
+NtfsFileRecordDestroy(
+    _In_opt_ NtfsFileRecord *FileRecord);
+
+NTSTATUS
+NtfsFileRecordRefresh(
+    _Inout_ NtfsFileRecord *FileRecord,
+    _In_ NtfsFileRecord *RefreshedRecord);
+
+USHORT
+NtfsFileRecordGetLinkCount(
+    _In_ PNtfsFileRecord Fr);
+
+PFileRecordHeader
+NtfsFileRecordGetHeader(
+    _In_ NtfsFileRecord *FileRecord);
+
+ULONG
+NtfsFileRecordGetNumber(
+    _In_ NtfsFileRecord *FileRecord);
+
+ULONGLONG
+NtfsFileRecordGetReference(
+    _In_ NtfsFileRecord *FileRecord);
+
+PAttribute
+NtfsFileRecordGetAttribute(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType Type,
+    _In_opt_ PWSTR Name);
+
+/*
+ * Returns physical bytes reserved for an attribute. Sparse/compressed
+ * nonresident attributes use CompressedDataSize; ordinary nonresident
+ * attributes use AllocatedSize; resident attributes reserve no data clusters.
+ */
+UINT64
+NtfsAttributeGetPhysicalAllocationSize(
+    _In_opt_ PAttribute Attribute);
+
+NTSTATUS
+NtfsFileRecordGetAttributeData(
+    _In_     PNtfsFileRecord Fr,
+    _In_     AttributeType Type,
+    _In_opt_ PWSTR Name,
+    _Out_    PUCHAR *Data);
+
+NTSTATUS
+NtfsFileRecordCopyData(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType Type,
+    _In_opt_ PWSTR Name,
+    _In_ PUCHAR Buffer,
+    _Inout_ PULONG Length,
+    _In_ ULONGLONG Offset);
+
+NTSTATUS
+NtfsFileRecordGetBasicInformation(
+    _In_ NtfsFileRecord *FileRecord,
+    _Out_ PNtfsFileBasicInformation Information);
+
+NTSTATUS
+NtfsFileRecordSetBasicInformation(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ const NtfsFileBasicInformation *Information);
+
+BOOLEAN
+NtfsFileRecordIsCaseSensitiveDirectory(
+    _In_ NtfsFileRecord *FileRecord);
+
+NTSTATUS
+NtfsFileRecordSetCaseSensitiveDirectory(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ BOOLEAN CaseSensitive);
+
+NTSTATUS
+NtfsFileRecordSetAutomaticTimestampMask(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ UINT32 Fields);
+
+UINT32
+NtfsFileRecordGetAutomaticTimestampMask(
+    _In_ NtfsFileRecord *FileRecord);
+
+NTSTATUS
+NtfsFileRecordUpdateAutomaticTimestamps(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ UINT32 Fields);
+
+/*
+ * Returns the complete on-disk $REPARSE_POINT value. BufferLength is a byte
+ * capacity on input and the required/returned byte count on output. A NULL
+ * or undersized buffer returns STATUS_BUFFER_TOO_SMALL.
+ */
+BOOLEAN
+NtfsFileRecordIsWofBacked(
+    _In_ NtfsFileRecord *FileRecord);
+
+NTSTATUS
+NtfsFileRecordReadReparsePoint(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_opt_ PUCHAR Buffer,
+    _Inout_ PULONG BufferLength);
+
+/*
+ * Creates or replaces the complete native $REPARSE_POINT value. The supplied
+ * tag must match an existing point; third-party tags also require a matching
+ * GUID. Directory-emptiness, symlink-data, and 16 KiB limits are enforced
+ * before mutation.
+ */
+NTSTATUS
+NtfsFileRecordSetReparsePoint(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_reads_bytes_(BufferLength) const UCHAR* Buffer,
+    _In_ ULONG BufferLength);
+
+/*
+ * Removes a native reparse point. Buffer is the FSCTL deletion envelope:
+ * an 8-byte Microsoft header or 24-byte third-party header with zero data
+ * length. Its tag and optional GUID must match the stored value.
+ */
+NTSTATUS
+NtfsFileRecordDeleteReparsePoint(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_reads_bytes_(BufferLength) const UCHAR* Buffer,
+    _In_ ULONG BufferLength);
+
+/*
+ * Restores a WOF FILE-provider stream to ordinary unnamed $DATA, removes its
+ * external-backing metadata, and releases the old backing allocation.
+ * Returns STATUS_OBJECT_NOT_EXTERNALLY_BACKED for an ordinary file.
+ */
+NTSTATUS
+NtfsFileRecordDeleteExternalBacking(
+    _In_ NtfsFileRecord *FileRecord);
+
+/*
+ * Validates and projects IO_REPARSE_TAG_SYMLINK or
+ * IO_REPARSE_TAG_MOUNT_POINT data without allocating or copying strings.
+ */
+NTSTATUS
+NtfsParseNameSurrogateReparsePoint(
+    _In_ const UCHAR* Buffer,
+    _In_ ULONG BufferLength,
+    _Out_ PNtfsReparseNameView View);
+
+/*
+ * Returns the complete, validated on-disk $EA value and its matching
+ * $EA_INFORMATION record. BufferLength is a byte capacity on input and the
+ * required/returned raw byte count on output.
+ */
+NTSTATUS
+NtfsFileRecordReadExtendedAttributes(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_opt_ PUCHAR Buffer,
+    _Inout_ PULONG BufferLength,
+    _Out_opt_ PEAInformationEx Information);
+
+NTSTATUS
+NtfsFileRecordUpdateExtendedAttributes(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_reads_(UpdateCount)
+        const NtfsExtendedAttributeUpdate *Updates,
+    _In_ ULONG UpdateCount);
+
+/*
+ * Returns a validated self-relative security descriptor. NTFS 1.x per-file
+ * attributes and NTFS 3.x $Secure/$SII/$SDS storage use the same API.
+ * BufferLength is a byte capacity on input and the required/returned byte
+ * count on output.
+ */
+NTSTATUS
+NtfsFileRecordReadSecurityDescriptor(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_opt_ PUCHAR Buffer,
+    _Inout_ PULONG BufferLength);
+
+/*
+ * Replaces the file's security with a validated self-relative descriptor
+ * stored in the legacy per-file $SECURITY_DESCRIPTOR attribute and
+ * clears any $Secure SecurityId reference so the local value is
+ * authoritative for every reader.
+ */
+NTSTATUS
+NtfsFileRecordSetSecurityDescriptor(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_reads_bytes_(BufferLength) const UCHAR* Buffer,
+    _In_ ULONG BufferLength);
+
+/*
+ * Projects the entry at *Offset from a validated/raw $EA sequence and advances
+ * *Offset. The first call uses offset zero; a call at the end returns
+ * STATUS_NO_MORE_EAS.
+ */
+NTSTATUS
+NtfsGetNextExtendedAttribute(
+    _In_ const UCHAR* Buffer,
+    _In_ ULONG BufferLength,
+    _Inout_ PULONG Offset,
+    _Out_ PNtfsExtendedAttributeView View);
+
+/*
+ * LZNT1 codec for ordinary NTFS compression. Compress fails with
+ * STATUS_BUFFER_TOO_SMALL when the stream cannot fit OutputCapacity, so
+ * unit writers can bound it by the byte saving they require and fall
+ * back to raw storage.
+ */
+NTSTATUS
+NtfsLznt1Compress(
+    _In_ PUCHAR Input,
+    _In_ ULONG InputSize,
+    _Out_ PUCHAR Output,
+    _In_ ULONG OutputCapacity,
+    _Out_ PULONG FinalSize);
+
+NTSTATUS
+NtfsLznt1Decompress(
+    _Out_ PUCHAR Output,
+    _In_ ULONG OutputSize,
+    _In_ PUCHAR Input,
+    _In_ ULONG InputSize,
+    _Out_ PULONG FinalSize);
+
+NTSTATUS
+NtfsFileRecordWriteFileData(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ PUCHAR Buffer,
+    _Inout_ PULONG Length,
+    _In_ PLARGE_INTEGER Offset);
+
+NTSTATUS
+NtfsFileRecordCreateNamedDataStream(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ PWSTR StreamName);
+
+NTSTATUS
+NtfsFileRecordDeleteNamedDataStream(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ PWSTR StreamName);
+
+/*
+ * Changes the logical size of an existing ordinary $DATA stream. Growth
+ * reads as zero beyond the prior initialized size; shrink releases complete
+ * tail clusters and converts a zero-length nonresident stream to resident.
+ */
+NTSTATUS
+NtfsFileRecordSetFileDataSize(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ ULONGLONG NewSize);
+
+ULONGLONG
+NtfsFileRecordGetAllocationSignature(
+    _In_ NtfsFileRecord *FileRecord);
+
+NTSTATUS
+NtfsFileRecordGetDiskRange(
+    _In_ NtfsFileRecord *FileRecord,
+    _Out_ PULONGLONG Offset,
+    _Out_ PULONG Length);
+
+NTSTATUS NtfsFileRecordSetFileValidDataLength(_In_ NtfsFileRecord *FileRecord, _In_ AttributeType AttrType, _In_opt_ PWSTR StreamName, _In_ ULONGLONG NewValidDataLength);
+
+/*
+ * Changes allocation independently of EOF. Requests below EOF truncate the
+ * stream first; larger requests reserve rounded whole clusters without
+ * advancing data or initialized size.
+ */
+NTSTATUS
+NtfsFileRecordSetFileAllocationSize(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ ULONGLONG NewAllocationSize);
+
+/*
+ * Give back the clusters an append at end of file reserved beyond the
+ * unnamed data stream's end (growth is done in 1 MB steps), as NTFS does when
+ * the last handle is closed. An allocation size set explicitly is kept.
+ * Call it when the caller is done writing through this record.
+ */
+NTSTATUS
+NtfsFileRecordTrimSpeculativeAllocation(
+    _In_ NtfsFileRecord *FileRecord);
+
+/*
+ * Implements the stream semantics of FSCTL_SET_SPARSE. Marking a stream
+ * sparse does not discard allocation. Clearing sparse fully allocates every
+ * hole before removing the sparse state.
+ */
+NTSTATUS
+NtfsFileRecordSetSparse(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ BOOLEAN SetSparse);
+
+NTSTATUS
+NtfsFileRecordSetCompression(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_opt_ PWSTR StreamName,
+    _In_ BOOLEAN Compress);
+
+NTSTATUS
+NtfsFileRecordGetCompression(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_opt_ PWSTR StreamName,
+    _Out_ PBOOLEAN Compressed);
+
+NTSTATUS
+NtfsFileRecordMoveClusters(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ ULONGLONG StartingVcn,
+    _In_ ULONGLONG StartingLcn,
+    _In_ ULONG ClusterCount);
+
+/*
+ * Implements FSCTL_SET_ZERO_DATA semantics without extending EOF. A sparse
+ * stream may release complete NTFS sparse units wholly covered by the range.
+ */
+NTSTATUS
+NtfsFileRecordSetZeroData(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ ULONGLONG FileOffset,
+    _In_ ULONGLONG BeyondFinalZero);
+
+/*
+ * Implements FSCTL_QUERY_ALLOCATED_RANGES semantics. RangeCount is an
+ * element capacity on input and the number of elements written on output.
+ * STATUS_BUFFER_TOO_SMALL means no element fit; STATUS_BUFFER_OVERFLOW means
+ * the returned prefix is valid but more ranges remain.
+ */
+NTSTATUS
+NtfsFileRecordQueryAllocatedRanges(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ ULONGLONG FileOffset,
+    _In_ ULONGLONG Length,
+    _Out_opt_ PNtfsAllocatedRange Ranges,
+    _Inout_ PULONG RangeCount);
+
+/*
+ * Implements FSCTL_GET_RETRIEVAL_POINTERS stream semantics. ExtentCount is
+ * an element capacity on input and the number written on output.
+ * ReturnedStartingVcn is the beginning of the extent containing StartingVcn.
+ */
+NTSTATUS
+NtfsFileRecordQueryRetrievalPointers(
+    _In_ NtfsFileRecord *FileRecord,
+    _In_ AttributeType AttrType,
+    _In_opt_ PWSTR StreamName,
+    _In_ ULONGLONG StartingVcn,
+    _Out_ PULONGLONG ReturnedStartingVcn,
+    _Out_opt_ PNtfsRetrievalExtent Extents,
+    _Inout_ PULONG ExtentCount);
+
+/*
+ * Enumerates logical $DATA streams, including streams whose first extent is
+ * stored in an $ATTRIBUTE_LIST extension record. StreamCount is an element
+ * capacity on input and the number written on output.
+ */
+NTSTATUS
+NtfsFileRecordQueryDataStreams(
+    _In_ NtfsFileRecord *FileRecord,
+    _Out_opt_ PNtfsDataStreamInformation Streams,
+    _Inout_ PULONG StreamCount);
+
+/* LFS functions */
+ULONG
+NtfsLogFileServiceGetClientMajorVersion(
+    _In_ PNtfsLogFileService LFS);
+
+ULONG
+NtfsLogFileServiceGetClientMinorVersion(
+    _In_ PNtfsLogFileService LFS);
+
+/* MFT functions */
+NTSTATUS
+NtfsMasterFileTableGetFileRecordByReference(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ ULONGLONG FileReference,
+    _Out_ PNtfsFileRecord* File);
+
+NTSTATUS
+NtfsMasterFileTableGetLinkName(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ PNtfsFileRecord File,
+    _In_ ULONGLONG ParentReference,
+    _In_ PUNICODE_STRING Name,
+    _Out_ PUNICODE_STRING LinkName);
+
+NTSTATUS
+NtfsMasterFileTableGetLinkShortName(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ PNtfsFileRecord File,
+    _In_ ULONGLONG ParentReference,
+    _In_ PUNICODE_STRING Name,
+    _Out_ PUNICODE_STRING ShortName);
+
+NTSTATUS
+NtfsMasterFileTableIsDescendantDirectory(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ ULONGLONG FileReference,
+    _In_ ULONGLONG AncestorReference,
+    _Out_ PBOOLEAN Descendant);
+
+NTSTATUS
+NtfsMasterFileTableGetFileRecordFromQuery(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ PWCHAR Query,
+    _Out_ PNtfsFileRecord* File);
+
+/*
+ * Resolves a counted UTF-16 path while stopping on an intermediate reparse
+ * point, or on the final component unless OpenFinalReparsePoint is set.
+ * QueryLength is measured in UTF-16 code units. STATUS_REPARSE returns the
+ * owning file record and the byte length of the unparsed path suffix.
+ */
+/*
+ * Resolves one name inside a directory the caller already has open. Avoids
+ * re-walking the path from the root for every open in the same directory.
+ */
+NTSTATUS
+NtfsMasterFileTableGetFileRecordInDirectory(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ PNtfsFileRecord ParentDirectory,
+    _In_reads_(NameLength) PWCHAR Name,
+    _In_ ULONG NameLength,
+    _Out_ PNtfsFileRecord* File);
+
+NTSTATUS
+NtfsMasterFileTableGetFileRecordFromQueryEx(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(QueryLength) PWCHAR Query,
+    _In_ ULONG QueryLength,
+    _In_ BOOLEAN OpenFinalReparsePoint,
+    _Out_ PULONG RemainingNameLength,
+    _Out_ PNtfsFileRecord* File);
+
+/*
+ * Implements FSCTL_GET_NTFS_FILE_RECORD enumeration semantics. The high
+ * 16-bit sequence component of RequestedFileReference is ignored and the
+ * first in-use ordinal at or below the requested ordinal is returned.
+ * BufferLength is a byte capacity on input and the exact record size on
+ * success or STATUS_BUFFER_TOO_SMALL.
+ */
+NTSTATUS
+NtfsMasterFileTableReadFileRecord(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ ULONGLONG RequestedFileReference,
+    _Out_ PULONGLONG ReturnedFileReference,
+    _Out_opt_ PUCHAR Buffer,
+    _Inout_ PULONG BufferLength);
+
+/*
+ * Creates one regular file or empty directory at a counted UTF-16 path.
+ * The parent must already exist. FileAttributes contains ordinary DOS
+ * attributes; the directory bit is supplied separately through IsDirectory.
+ * On success File receives the new, caller-owned file-record handle.
+ */
+NTSTATUS
+NtfsMasterFileTableCreateFile(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(QueryLength) PWCHAR Query,
+    _In_ ULONG QueryLength,
+    _In_ BOOLEAN IsDirectory,
+    _In_ ULONG FileAttributes,
+    _Out_ PNtfsFileRecord* File);
+
+/*
+ * Creates one entry in a directory whose record the caller already holds.
+ * Name is one counted path component. NameKnownMissing may be TRUE only when
+ * the caller has just checked the same parent while serializing namespace
+ * changes. The parent record is updated in place and remains caller-owned.
+ */
+NTSTATUS
+NtfsMasterFileTableCreateFileInDirectory(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ PNtfsFileRecord Parent,
+    _In_reads_(NameLength) PWCHAR Name,
+    _In_ ULONG NameLength,
+    _In_ BOOLEAN IsDirectory,
+    _In_ ULONG FileAttributes,
+    _In_ BOOLEAN NameKnownMissing,
+    _In_opt_ PCWSTR ShortName,
+    _In_ ULONG ShortNameLength,
+    _Out_ PNtfsFileRecord* File);
+
+/*
+ * Removes one name at a counted UTF-16 path. RemoveDirectory selects
+ * Win32 RemoveDirectory semantics: it deletes only empty directories,
+ * while FALSE deletes only ordinary files. Dropping the last name
+ * releases the record set and every owned cluster.
+ */
+NTSTATUS
+NtfsMasterFileTableDeleteFile(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(QueryLength) PWCHAR Query,
+    _In_ ULONG QueryLength,
+    _In_ BOOLEAN RemoveDirectory);
+
+NTSTATUS
+NtfsMasterFileTableDeleteFileEx(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(QueryLength) PWCHAR Query,
+    _In_ ULONG QueryLength,
+    _In_ BOOLEAN RemoveDirectory,
+    _In_opt_ PNtfsFileRecord CanonicalRecord,
+    _In_ BOOLEAN CanDeleteRecord,
+    _Out_opt_ PBOOLEAN RecordDeleted);
+
+/* The last name leaves the record set allocated with a zero link count. */
+NTSTATUS
+NtfsMasterFileTableUnlinkFile(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(QueryLength) PWCHAR Query,
+    _In_ ULONG QueryLength,
+    _In_ BOOLEAN RemoveDirectory,
+    _In_opt_ PNtfsFileRecord CanonicalRecord);
+
+NTSTATUS
+NtfsMasterFileTableDeleteUnlinkedFile(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ ULONGLONG FileReference,
+    _Out_opt_ PBOOLEAN RecordDeleted);
+
+/*
+ * Renames or moves one file or directory between counted UTF-16 paths.
+ * The destination parent must exist; the destination name must be free
+ * except for a pure case change of the same file.
+ */
+NTSTATUS
+NtfsMasterFileTableRenameFile(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(OldQueryLength) PWCHAR OldQuery,
+    _In_ ULONG OldQueryLength,
+    _In_reads_(NewQueryLength) PWCHAR NewQuery,
+    _In_ ULONG NewQueryLength);
+
+NTSTATUS
+NtfsMasterFileTableRenameFileEx(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(OldQueryLength) PWCHAR OldQuery,
+    _In_ ULONG OldQueryLength,
+    _In_reads_(NewQueryLength) PWCHAR NewQuery,
+    _In_ ULONG NewQueryLength,
+    _In_opt_ PCWSTR ShortName,
+    _In_ ULONG ShortNameLength);
+
+/*
+ * Publishes an additional hard link to an existing ordinary file at a
+ * new counted UTF-16 path and raises its link count.
+ */
+NTSTATUS
+NtfsMasterFileTableCreateHardLink(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(ExistingQueryLength)
+        PWCHAR ExistingQuery,
+    _In_ ULONG ExistingQueryLength,
+    _In_reads_(NewQueryLength) PWCHAR NewQuery,
+    _In_ ULONG NewQueryLength);
+
+NTSTATUS
+NtfsMasterFileTableGetPathFromFileReference(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ ULONGLONG FileReference,
+    _Out_ PWCHAR Buffer,
+    _In_ ULONG BufferLength,
+    _Out_ PULONG PathLength);
+
+/* Probe functions */
+NTSTATUS
+NtfsProbePartition(
+    _In_ ULONG BytesPerSector,
+    _In_ PUCHAR BootSectorData);
+
+/* Reads the boot sector through the environment's disk routines
+ * (initialize them first) and mounts the volume if it is NTFS.
+ */
+NTSTATUS
+NtfsProbePartitionAndOpenVolume(
+    _In_ ULONG BytesPerSector,
+    _Out_ PNtfsVolume* VolumeOut);
+
+NTSTATUS
+NtfsProbePartitionAndOpenVolumeEx(
+    _In_ ULONG BytesPerSector,
+    _In_opt_ void* IoContext,
+    _Out_ PNtfsVolume* VolumeOut);
+
+/* Library options */
+void
+NtfsSetShowMetadataFiles(
+    _In_ BOOLEAN Show);
+
+void
+NtfsSetGenerate8dot3Names(
+    _In_ BOOLEAN Generate);
+
+/*
+ * Opens subsequent volumes without journal recovery or write support.
+ * Intended for diagnostic readers such as the Linux FUSE frontend.
+ */
+void
+NtfsSetReadOnlyMode(
+    _In_ BOOLEAN ReadOnly);
+
+/* Volume functions */
+NTSTATUS
+NtfsVolumeGetADSPreference(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ PUNICODE_STRING FileName,
+    _Out_ AttributeType* RequestedType,
+    _Out_ PWSTR* RequestedStream);
+
+NTSTATUS
+NtfsVolumeReadSecurityDescriptorById(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONG SecurityId,
+    _In_opt_ PUCHAR Buffer,
+    _Inout_ PULONG BufferLength);
+
+NTSTATUS
+NtfsVolumeNextReparsePoint(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONG StartTag,
+    _In_ ULONGLONG StartFileReference,
+    _In_ BOOLEAN Inclusive,
+    _Out_ PULONG Tag,
+    _Out_ PULONGLONG FileReference);
+
+void
+NtfsVolumeDestroy(
+    _In_opt_ PNtfsVolume DiskVolume);
+
+ULONG
+NtfsVolumeGetBytesPerSector(
+    _In_ PNtfsVolume DiskVolume);
+
+UINT64
+NtfsVolumeGetClustersInVolume(
+    _In_ PNtfsVolume DiskVolume);
+
+UINT64
+NtfsVolumeGetReservedClusters(
+    _In_ PNtfsVolume DiskVolume);
+
+NTSTATUS
+NtfsVolumeReloadSize(
+    _In_ PNtfsVolume DiskVolume);
+
+void
+NtfsVolumeSetAllocationLimit(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONGLONG ClusterLimit);
+
+NTSTATUS
+NtfsVolumeAreClustersFree(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONGLONG StartingLcn,
+    _In_ ULONGLONG EndingLcn,
+    _Out_ PBOOLEAN Free);
+
+NTSTATUS
+NtfsVolumeGetFreeClusters(
+    _In_ PNtfsVolume DiskVolume,
+    _Out_ PLARGE_INTEGER FreeClusters);
+
+/*
+ * Returns the geometry and core metadata needed by
+ * FSCTL_GET_NTFS_VOLUME_DATA.
+ */
+NTSTATUS
+NtfsVolumeQueryInformation(
+    _In_ PNtfsVolume DiskVolume,
+    _Out_ PNtfsVolumeInformation Information);
+
+/*
+ * Reads the allocation bits backing FSCTL_GET_VOLUME_BITMAP. StartingLcn is
+ * rounded down to a byte boundary. BitmapLength is a byte capacity on input
+ * and the number written on output; BitmapSize is a count of valid clusters.
+ */
+NTSTATUS
+NtfsVolumeReadBitmap(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONGLONG StartingLcn,
+    _Out_ PULONGLONG ReturnedStartingLcn,
+    _Out_ PULONGLONG BitmapSize,
+    _Out_opt_ PUCHAR Bitmap,
+    _Inout_ PULONG BitmapLength);
+
+PNtfsLogFileService
+NtfsVolumeGetLFS(
+    _In_ PNtfsVolume DiskVolume);
+
+PNtfsMasterFileTable
+NtfsVolumeGetMft(
+    _In_ PNtfsVolume DiskVolume);
+
+USHORT
+NtfsVolumeGetMajorVersion(
+    _In_ PNtfsVolume DiskVolume);
+
+USHORT
+NtfsVolumeGetMinorVersion(
+    _In_ PNtfsVolume DiskVolume);
+
+UINT8
+NtfsVolumeGetSectorsPerCluster(
+    _In_ PNtfsVolume DiskVolume);
+
+UINT64
+NtfsVolumeGetSerialNumber(
+    _In_ PNtfsVolume DiskVolume);
+
+NTSTATUS
+NtfsVolumeGetVolumeLabel(
+    _In_ PNtfsVolume DiskVolume,
+    _Out_ PWSTR VolumeLabel,
+    _Out_ PUSHORT Length);
+
+BOOLEAN
+NtfsVolumeIsReadOnly(
+    _In_ PNtfsVolume DiskVolume);
+
+NTSTATUS
+NtfsVolumeSetVolumeLabel(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ PWSTR VolumeLabel,
+    _In_ ULONG Length);
+
+typedef enum NtfsCheckEvent
+{
+    NtfsCheckRecordCorrupt,
+    NtfsCheckRecordBitmap,
+    NtfsCheckBadRunList,
+    NtfsCheckClusterOutOfRange,
+    NtfsCheckCrossLinked,
+    NtfsCheckIndexCorrupt,
+    NtfsCheckIndexBadEntry,
+    NtfsCheckIndexStaleEntry,
+    NtfsCheckIndexEntryFixed,
+    NtfsCheckIndexEntryRemoved,
+    NtfsCheckNameNotIndexed,
+    NtfsCheckUsedClustersFree,
+    NtfsCheckLostClusters,
+    NtfsCheckLostClustersFreed,
+    NtfsCheckUsedClustersClaimed,
+    NtfsCheckRecordFreed,
+    NtfsCheckRecordBitmapFixed,
+    NtfsCheckNameRelinked,
+    NtfsCheckCrossLinkResolved,
+    NtfsCheckLostAndFound,
+    NtfsCheckFileRecovered,
+    NtfsCheckAttributeListBad,
+    NtfsCheckAttributeListFixed,
+    NtfsCheckDataAttributeInserted,
+    NtfsCheckIndexNameMissing,
+    NtfsCheckLostNameRemoved,
+    /* Index repairs and the freeing of unused clusters were skipped (in-use
+     * clusters are still claimed). Argument1: structural
+     * problems left; Argument2: the first file record still holding one, or
+     * ~0 if none can be named. Not counted as a problem. */
+    NtfsCheckRepairsBlocked,
+    /* A name of an orphan could not be added back to its parent index.
+     * Argument1: the file record; Argument2: the NTSTATUS in the high 32 bits
+     * and the parent's file record in the low 32 bits. Diagnostic only; the
+     * orphan stays counted by NtfsCheckNameNotIndexed. */
+    NtfsCheckNameRelinkFailed,
+    /* A name the index walk did not count is found by a lookup in its parent
+     * directory, so it was not added again. Argument1: the file record;
+     * Argument2: the parent's file record. Diagnostic only. */
+    NtfsCheckNameFoundUncounted,
+    /* The attribute list of a file cannot be read or parsed. Argument1: the
+     * file record; Argument2: the NTSTATUS. */
+    NtfsCheckAttributeListUnreadable,
+    /* An attribute list that is unreadable, or names only the base record,
+     * was removed: every attribute of the file lives in its base record.
+     * Argument1: the file record. */
+    NtfsCheckAttributeListRemoved,
+    /* An index block is marked in use but no node of the index points to it.
+     * Argument1: the directory's file record; Argument2: the block's VCN. */
+    NtfsCheckIndexBlockUnreferenced,
+    /* An index whose tree could not be walked was emptied, so its names can
+     * be added back from the files' own names. Argument1: the directory's
+     * file record; Argument2: the index blocks that were in use. */
+    NtfsCheckIndexReset,
+    /* A second index entry for a name that is already counted. Argument1:
+     * the directory's file record; Argument2: the file reference. */
+    NtfsCheckIndexDuplicateEntry,
+    /* A node held entries above its range, which its right sibling holds
+     * after a split cut short; they were cut from the node. Argument1: the
+     * directory's file record; Argument2: the node's VCN. */
+    NtfsCheckIndexTailTrimmed,
+    NtfsCheckAttributeListUnneeded,
+    NtfsCheckRecordBeyondMft,
+    NtfsCheckRecordBeyondMftInUse,
+    NtfsCheckAttributeSizeInvalid,
+    NtfsCheckAttributeMappingMismatch,
+    NtfsCheckIndexEntryNotRemoved,
+    NtfsCheckMftBitmapNotWritten,       /* Arg1 = NTSTATUS, Arg2 = bitmap length in bytes */
+    NtfsCheckRecordKept,                /* Arg1 = file record, Arg2 = faults; not deleted */
+    /* An unreadable attribute list was written again from the attributes of
+     * the base record and of its extension records. Argument1: the file
+     * record; Argument2: the extension records found. */
+    NtfsCheckAttributeListRebuilt,
+    /* After the check and its repairs, the shape verifier found a broken
+     * invariant (src/verify), counted in Errors. Argument1: the
+     * NtfsShapeInvariant in bits 48-63, the file record in bits 0-47;
+     * Argument2: the fault's Detail. */
+    NtfsCheckShapeFault,
+    /* The shape verifier did not walk Argument1 indexes because each has more
+     * than Argument2 bytes of allocation (NTFS_CHECK_SHAPE_INDEX_BYTES). */
+    NtfsCheckShapeIndexesSkipped,
+    /* The shape verifier could not run; Argument1: NTSTATUS. Not an error. */
+    NtfsCheckShapeNotRun
+} NtfsCheckEvent;
+
+typedef struct NtfsCheckResult
+{
+    UINT64 FileRecords;
+    UINT64 Directories;
+    UINT64 IndexEntries;
+    UINT64 UsedClusters;
+    UINT64 LostClusters;
+    UINT64 FreedClusters;
+    UINT64 ClaimedClusters;
+    UINT64 FixedIndexEntries;
+    UINT64 RemovedIndexEntries;
+    UINT64 RelinkedNames;
+    UINT64 FreedRecords;
+    UINT64 ResolvedCrossLinks;
+    UINT64 RecoveredFiles;
+    UINT64 RepairedAttributeLists;
+    UINT64 RemovedNames;
+    UINT64 Errors;
+    /* Problems the first pass found, before any repair (Errors is what is
+     * left after the repairs and the verify pass). */
+    UINT64 FoundErrors;
+    /* MFT bitmap bits corrected for records found in use or free. */
+    UINT64 FixedRecordBitmapBits;
+    /* Indexes emptied because their tree could not be walked. */
+    UINT64 ResetIndexes;
+    /* Index blocks in use that no node referenced, released. */
+    UINT64 ReleasedIndexBlocks;
+    /* Files the shape verifier went through after the check (it stops at the
+     * first broken invariant), and indexes it skipped as too large. */
+    UINT64 ShapeFiles;
+    UINT64 ShapeSkippedIndexes;
+} NtfsCheckResult, *PNtfsCheckResult;
+
+typedef void (*PNtfsCheckCallback)(
+    _In_opt_ void* Context,
+    _In_ NtfsCheckEvent Event,
+    _In_ UINT64 Argument1,
+    _In_ UINT64 Argument2);
+
+NTSTATUS
+NtfsVolumeCheck(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ BOOLEAN Repair,
+    _In_opt_ PNtfsCheckCallback Callback,
+    _In_opt_ void* Context,
+    _Out_ PNtfsCheckResult Result);
+
+/*
+ * Shape invariants of one file, read back from the disk (src/verify). The
+ * checked build runs them after each mutation; autochk and the host tests
+ * can run them on any file. Record is the file record the fault names,
+ * Detail depends on the invariant.
+ */
+typedef enum NtfsShapeInvariant
+{
+    NtfsShapeOk = 0,
+    NtfsShapeRecordUnreadable,          /* Detail: NTSTATUS */
+    NtfsShapeRecordMalformed,           /* Detail: attribute offset */
+    NtfsShapeNotBaseRecord,             /* Detail: its base reference */
+    NtfsShapeListUnreadable,            /* Detail: NTSTATUS */
+    NtfsShapeListEntryBad,              /* Detail: offset in the list */
+    NtfsShapeListEntryMissing,          /* Record: the record named; Detail: attribute type */
+    NtfsShapeAttributeNotListed,        /* Detail: attribute type */
+    NtfsShapeExtensionWithoutList,      /* Record: the extension; Detail: its base */
+    NtfsShapeExtensionNotListed,        /* Record: the extension; Detail: its base */
+    NtfsShapeMappingGap,                /* Detail: attribute type */
+    NtfsShapeIndexRootBad,              /* Detail: depends */
+    NtfsShapeIndexBlockBeyondAllocation,/* Detail: VCN */
+    NtfsShapeIndexBlockInvalid,         /* Detail: VCN */
+    NtfsShapeIndexBlockFree,            /* Detail: VCN (referenced, bitmap bit clear) */
+    NtfsShapeIndexBlockShared,          /* Detail: VCN (referenced twice) */
+    NtfsShapeIndexBlockUnreachable      /* Detail: VCN (in use, not referenced) */
+} NtfsShapeInvariant;
+
+typedef struct NtfsShapeFault
+{
+    NtfsShapeInvariant Invariant;
+    ULONGLONG Record;
+    ULONGLONG Detail;
+} NtfsShapeFault, *PNtfsShapeFault;
+
+/* Scan the whole MFT for extension records of the file (slow). */
+#define NTFS_VERIFY_SCAN_EXTENSIONS 0x1
+/* Internal: the bounded checked-build hook. */
+#define NTFS_VERIFY_HOOK            0x2
+
+/* STATUS_FILE_CORRUPT_ERROR with Fault filled when an invariant is broken. */
+NTSTATUS
+NtfsVerifyRecordShape(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONGLONG FileRecord,
+    _In_ ULONG Flags,
+    _Out_ PNtfsShapeFault Fault);
+
+NTSTATUS
+NtfsVerifyIndexShape(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONGLONG FileRecord,
+    _In_ PCWSTR IndexName,
+    _In_ ULONG Flags,
+    _Out_ PNtfsShapeFault Fault);
+
+/* Every file and every index of the volume, in one MFT pass; stops at the
+ * first broken invariant. */
+NTSTATUS
+NtfsVerifyVolumeShape(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONG Flags,
+    _Out_ PULONGLONG FilesChecked,
+    _Out_ PNtfsShapeFault Fault);
+
+typedef struct NtfsShapeVolumeStats
+{
+    ULONGLONG FilesChecked;
+    ULONGLONG IndexesChecked;
+    /* Indexes not walked: more than IndexByteLimit bytes of allocation. */
+    ULONGLONG IndexesSkipped;
+} NtfsShapeVolumeStats, *PNtfsShapeVolumeStats;
+
+/* NtfsVerifyVolumeShape with a bound: an index with more than IndexByteLimit
+ * bytes of allocation is counted in IndexesSkipped and not walked (0: walk
+ * every index). The check (NtfsVolumeCheck) runs it with
+ * NTFS_CHECK_SHAPE_INDEX_BYTES. */
+#define NTFS_CHECK_SHAPE_INDEX_BYTES (64ULL * 1024 * 1024)
+
+NTSTATUS
+NtfsVerifyVolumeShapeBounded(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ ULONG Flags,
+    _In_ ULONGLONG IndexByteLimit,
+    _Out_ PNtfsShapeVolumeStats Stats,
+    _Out_ PNtfsShapeFault Fault);
+
+NTSTATUS
+NtfsVolumeQueryFlags(
+    _In_ PNtfsVolume DiskVolume,
+    _Out_ PUSHORT Flags);
+
+NTSTATUS
+NtfsVolumeSetFlags(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ USHORT Set,
+    _In_ USHORT Clear);
+
+BOOLEAN
+NtfsVolumeNeedsStartupRepair(
+    _In_ USHORT Flags);
+
+NTSTATUS
+NtfsVolumeEnableDirtyTracking(
+    _In_ PNtfsVolume DiskVolume);
+
+NTSTATUS
+NtfsVolumeMarkClean(
+    _In_ PNtfsVolume DiskVolume);
+
+void
+NtfsVolumeRetainDirty(
+    _In_ PNtfsVolume DiskVolume,
+    _In_ BOOLEAN Retain);
+
+NTSTATUS
+NtfsVolumeMarkCleanForShutdown(
+    _In_ PNtfsVolume DiskVolume);
+
+/* After a read met corrupt structure, write and retain the dirty flag now
+ * rather than at the next write or the dismount. Once per mount, cheap when
+ * nothing is pending. Caller holds the metadata lock. */
+NTSTATUS
+NtfsVolumeCommitCorruptionDirty(
+    _In_ PNtfsVolume DiskVolume);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _NTFSLIB_NEW_H_ */
