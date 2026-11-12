@@ -161,32 +161,51 @@ jobs:
       id: images
       run: echo "tag=${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-${GITHUB_SHA::11}" >> "$GITHUB_OUTPUT"
 
+    - name: Preserve outputs on the runner host
+      run: |
+        DEST="/srv/artifacts/${{github.run_id}}/${{steps.images.outputs.tag}}"
+        mkdir -p "$DEST"
+        cp ${{steps.configure.outputs.outdir}}/bootcd.iso \
+           ${{steps.configure.outputs.outdir}}/LiberNT.img \
+           ${{steps.configure.outputs.outdir}}/LiberNT.vhd \
+           ${{steps.configure.outputs.outdir}}/LiberNT.vhdx \
+           applier-out/LiberNTUpdatePending.exe \
+           applier-out/LiberNTUpdatePending.exe.sha256 \
+           "$DEST/"
+        ls -l "$DEST"
+        ls -1dt /srv/artifacts/*/ | tail -n +4 | xargs -r rm -rf
+
     - name: Upload stage-1 applier
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: libernt-update-pending-${{steps.images.outputs.tag}}
         path: applier-out/
 
     - name: Upload bootcd.iso
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: bootcd-iso-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/bootcd.iso
 
     - name: Upload LiberNT.img
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: LiberNT-img-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.img
 
     - name: Upload LiberNT.vhd
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: LiberNT-vhd-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.vhd
 
     - name: Upload LiberNT.vhdx
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: LiberNT-vhdx-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.vhdx
