@@ -1452,7 +1452,7 @@ MountMgrQueryDosVolumePaths(IN PDEVICE_EXTENSION DeviceExtension,
     PMOUNTMGR_TARGET_NAME Target;
     PMOUNTMGR_VOLUME_PATHS Paths, Output;
     RECONCILE_WORK_ITEM_CONTEXT ReconcileContext;
-    PDEVICE_INFORMATION DeviceInformation, ListDeviceInfo, FailedDevice;
+    PDEVICE_INFORMATION DeviceInformation, ListDeviceInfo, FailedDevice, ReconciledDevice;
 
     Stack = IoGetCurrentIrpStackLocation(Irp);
 
@@ -1496,6 +1496,7 @@ MountMgrQueryDosVolumePaths(IN PDEVICE_EXTENSION DeviceExtension,
 
     NeedNotification = FALSE;
     Attempts = 0;
+    ReconciledDevice = NULL;
     for (;;)
     {
         FailedDevice = NULL;
@@ -1513,6 +1514,14 @@ MountMgrQueryDosVolumePaths(IN PDEVICE_EXTENSION DeviceExtension,
         {
             return Status;
         }
+
+        /* The device we just reconciled still fails: the reconcile could not
+         * repair it, and running it again will not either */
+        if (FailedDevice == ReconciledDevice)
+        {
+            return Status;
+        }
+        ReconciledDevice = FailedDevice;
 
         /* If PnP, let's notify in case of success */
         if (!DeviceInformation->ManuallyRegistered)
