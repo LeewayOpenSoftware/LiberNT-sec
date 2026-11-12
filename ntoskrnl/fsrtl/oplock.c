@@ -465,6 +465,15 @@ FsRtlAcknowledgeOplockBreak(IN PINTERNAL_OPLOCK Oplock,
         IofCompleteRequest(Irp, IO_DISK_INCREMENT);
         Oplock->Flags = NO_OPLOCK;
     }
+    /* Nothing was broken: not a valid acknowledge. Leave the oplock as it is */
+    else
+    {
+        Irp->IoStatus.Status = STATUS_INVALID_OPLOCK_PROTOCOL;
+        IoCompleteRequest(Irp, IO_DISK_INCREMENT);
+        ASSERT(Locked);
+        ExReleaseFastMutexUnsafe(Oplock->IntLock);
+        return STATUS_INVALID_OPLOCK_PROTOCOL;
+    }
 
     /* Now, complete any IRP waiting */
     for (NextEntry = Oplock->WaitListHead.Flink;
@@ -491,7 +500,8 @@ FsRtlAcknowledgeOplockBreak(IN PINTERNAL_OPLOCK Oplock,
         ExReleaseFastMutexUnsafe(Oplock->IntLock);
     }
 
-    return STATUS_SUCCESS;
+    /* Switched to Level 2: the acknowledge IRP is queued as the shared oplock IRP */
+    return (Deref ? STATUS_SUCCESS : STATUS_PENDING);
 }
 
 NTSTATUS
@@ -716,10 +726,13 @@ FsRtlRequestExclusiveOplock(IN POPLOCK Oplock,
                 IntOplock->FileObject = Stack->FileObject;
                 IntOplock->Flags = Flags;
 
-                /* Mark the IRP pending and reference our file object */
+                /* Mark the IRP pending and reference our file object. It stays queued
+                 * until the oplock breaks: the caller must return STATUS_PENDING.
+                 */
                 IoMarkIrpPending(Irp);
                 ObReferenceObject(Stack->FileObject);
                 Irp->IoStatus.Information = (ULONG_PTR)IntOplock;
+                Status = STATUS_PENDING;
 
                 /* Now, set ourselves as cancel routine */
                 IoAcquireCancelSpinLock(&Irp->CancelIrql);
@@ -728,8 +741,8 @@ FsRtlRequestExclusiveOplock(IN POPLOCK Oplock,
                 {
                     ExReleaseFastMutexUnsafe(IntOplock->IntLock);
                     Locked = FALSE;
+                    /* Completes it with STATUS_CANCELLED; it is already marked pending */
                     FsRtlCancelExclusiveIrp(NULL, Irp);
-                    Status = STATUS_CANCELLED;
                 }
                 else
                 {
@@ -793,9 +806,10 @@ FsRtlRequestOplockII(IN POPLOCK Oplock,
         /* If already shared, or no oplock that's fine! */
         if (BooleanFlagOn(IntOplock->Flags, (LEVEL_2_OPLOCK | NO_OPLOCK)))
         {
+            /* Granted: the IRP stays queued until the oplock breaks */
             IoMarkIrpPending(Irp);
-            /* Granted! */
             Irp->IoStatus.Status = STATUS_SUCCESS;
+            Status = STATUS_PENDING;
 
             /* Insert in the shared list */
             InsertTailList(&IntOplock->SharedListHead, &Irp->Tail.Overlay.ListEntry);
@@ -815,8 +829,8 @@ FsRtlRequestOplockII(IN POPLOCK Oplock,
             {
                 ExReleaseFastMutexUnsafe(IntOplock->IntLock);
                 Locked = FALSE;
+                /* Completes it with STATUS_CANCELLED; it is already marked pending */
                 FsRtlCancelOplockIIIrp(NULL, Irp);
-                Status = STATUS_CANCELLED;
             }
             else
             {
