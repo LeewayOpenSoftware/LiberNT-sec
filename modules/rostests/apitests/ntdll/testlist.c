@@ -43,6 +43,7 @@ extern void func_memset(void);
 extern void func_MemoryAccounting(void);
 extern void func_NtAcceptConnectPort(void);
 extern void func_NtAccessCheck(void);
+extern void func_NtAccessCheckAndAuditAlarm(void);
 extern void func_NtAccessCheckByType(void);
 extern void func_NtAccessCheckByTypeResultList(void);
 extern void func_NtAdjustGroupsToken(void);
@@ -236,6 +237,7 @@ const struct test winetest_testlist[] =
     { "MemoryAccounting",               func_MemoryAccounting },
     { "NtAcceptConnectPort",            func_NtAcceptConnectPort },
     { "NtAccessCheck",                  func_NtAccessCheck },
+    { "NtAccessCheckAndAuditAlarm",     func_NtAccessCheckAndAuditAlarm },
     { "NtAccessCheckByType",            func_NtAccessCheckByType },
     { "NtAccessCheckByTypeResultList",  func_NtAccessCheckByTypeResultList },
     { "NtAdjustGroupsToken",            func_NtAdjustGroupsToken },

@@ -72,6 +72,7 @@ list(APPEND SOURCE
     MemoryAccounting.c
     NtAcceptConnectPort.c
     NtAccessCheck.c
+    NtAccessCheckAndAuditAlarm.c
     NtAccessCheckByType.c
     NtAccessCheckByTypeResultList.c
     NtAdjustGroupsToken.c
