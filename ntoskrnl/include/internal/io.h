@@ -1672,6 +1672,12 @@ IopDoNameTransmogrify(
     IN PREPARSE_DATA_BUFFER DataBuffer
 );
 
+BOOLEAN
+IopIsValidNameGraftingData(
+    _In_ PREPARSE_DATA_BUFFER ReparseBuffer,
+    _In_ ULONG BufferLength
+);
+
 NTSTATUS
 NTAPI
 IoComputeDesiredAccessFileObject(

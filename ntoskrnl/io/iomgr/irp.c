@@ -457,24 +457,22 @@ IopCompleteRequest(IN PKAPC Apc,
 
     IopCheckUnwoundCompletionTarget(Irp);
 
-    /* Check if we have a file object */
-    if (*SystemArgument2)
+    /* Check if we're reparsing: SystemArgument2 carries the saved reparse
+     * buffer, which a file system may have failed to supply. */
+    if ((Irp->IoStatus.Status == STATUS_REPARSE) &&
+        (Irp->IoStatus.Information == IO_REPARSE_TAG_MOUNT_POINT ||
+         Irp->IoStatus.Information == IO_REPARSE_TAG_SYMLINK))
     {
-        /* Check if we're reparsing */
-        if ((Irp->IoStatus.Status == STATUS_REPARSE) &&
-            (Irp->IoStatus.Information == IO_REPARSE_TAG_MOUNT_POINT ||
-             Irp->IoStatus.Information == IO_REPARSE_TAG_SYMLINK))
-        {
-            PREPARSE_DATA_BUFFER ReparseData;
+        PREPARSE_DATA_BUFFER ReparseData;
 
-            ReparseData = (PREPARSE_DATA_BUFFER)*SystemArgument2;
+        ReparseData = (PREPARSE_DATA_BUFFER)*SystemArgument2;
 
-            ASSERT(ReparseData->ReparseTag == Irp->IoStatus.Information);
-            ASSERT(ReparseData->ReparseDataLength < MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
-            ASSERT(ReparseData->Reserved < MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
-
+        /* Validated (at run time, NULL included) and freed by
+         * IopDoNameTransmogrify. */
+        if (FileObject)
             IopDoNameTransmogrify(Irp, FileObject, ReparseData);
-        }
+        else if (ReparseData)
+            ExFreePool(ReparseData);
     }
 
     /* Handle Buffered case first */
@@ -1732,7 +1730,7 @@ IofCompleteRequest(IN PIRP Irp,
             if (Irp->IoStatus.Information == IO_REPARSE_TAG_MOUNT_POINT ||
                 Irp->IoStatus.Information == IO_REPARSE_TAG_SYMLINK)
             {
-                ASSERT(Irp->Tail.Overlay.AuxiliaryBuffer != NULL);
+                /* A missing buffer is rejected by IopDoNameTransmogrify. */
                 DataBuffer = (PREPARSE_DATA_BUFFER)Irp->Tail.Overlay.AuxiliaryBuffer;
                 Irp->Tail.Overlay.AuxiliaryBuffer = NULL;
             }
@@ -2238,15 +2236,75 @@ IoIsOperationSynchronous(IN PIRP Irp)
 }
 
 /*
- * @unimplemented
+ * Structural check of a mount-point (name grafting) reparse buffer of
+ * BufferLength readable bytes: the declared data fits in the buffer, and both
+ * names are even-sized ranges inside the path buffer, with a non-empty
+ * substitute name. Every field may come from a volume or from an
+ * unprivileged caller, so all sums are done in ULONG.
+ */
+BOOLEAN
+IopIsValidNameGraftingData(_In_ PREPARSE_DATA_BUFFER ReparseBuffer,
+                           _In_ ULONG BufferLength)
+{
+    const ULONG HeaderLength = FIELD_OFFSET(REPARSE_DATA_BUFFER, MountPointReparseBuffer.PathBuffer);
+    ULONG DataEnd, PathLength;
+    ULONG SubstituteOffset, SubstituteLength, PrintOffset, PrintLength;
+
+    if (ReparseBuffer == NULL ||
+        BufferLength < HeaderLength ||
+        BufferLength > MAXIMUM_REPARSE_DATA_BUFFER_SIZE ||
+        ReparseBuffer->ReparseTag != IO_REPARSE_TAG_MOUNT_POINT)
+    {
+        return FALSE;
+    }
+
+    DataEnd = (ULONG)ReparseBuffer->ReparseDataLength + REPARSE_DATA_BUFFER_HEADER_SIZE;
+    if (DataEnd < HeaderLength || DataEnd > BufferLength)
+        return FALSE;
+    PathLength = DataEnd - HeaderLength;
+
+    SubstituteOffset = ReparseBuffer->MountPointReparseBuffer.SubstituteNameOffset;
+    SubstituteLength = ReparseBuffer->MountPointReparseBuffer.SubstituteNameLength;
+    PrintOffset = ReparseBuffer->MountPointReparseBuffer.PrintNameOffset;
+    PrintLength = ReparseBuffer->MountPointReparseBuffer.PrintNameLength;
+    if (SubstituteLength == 0 ||
+        ((SubstituteOffset | SubstituteLength | PrintOffset | PrintLength) & 1) ||
+        SubstituteOffset > PathLength ||
+        SubstituteLength > PathLength - SubstituteOffset ||
+        PrintOffset > PathLength ||
+        PrintLength > PathLength - PrintOffset)
+    {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*
+ * @implemented
+ *
+ * A file system calls this for FSCTL_SET_REPARSE_POINT with a mount-point
+ * tag: the buffer length is then the FSCTL input length. For any other IRP
+ * the buffer is trusted to hold its own declared data.
  */
 BOOLEAN
 NTAPI
 IoIsValidNameGraftingBuffer(IN PIRP Irp,
                             IN PREPARSE_DATA_BUFFER ReparseBuffer)
 {
-    UNIMPLEMENTED;
-    return FALSE;
+    PIO_STACK_LOCATION Stack;
+    ULONG Length;
+
+    if (Irp == NULL || ReparseBuffer == NULL)
+        return FALSE;
+
+    Stack = IoGetCurrentIrpStackLocation(Irp);
+    if (Stack->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL)
+        Length = Stack->Parameters.FileSystemControl.InputBufferLength;
+    else
+        Length = MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
+
+    return IopIsValidNameGraftingData(ReparseBuffer, Length);
 }
 
 /*
