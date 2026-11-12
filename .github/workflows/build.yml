@@ -361,6 +361,42 @@ jobs:
       run: |
         ctest --test-dir build/cmlib-host --output-on-failure -R "cmlib_mark_dirty|cmlib_dirty_arith"
 
+  fsrtl-host-tests:
+    # Host test of the FsRtl oplock state machine: the real ntoskrnl/fsrtl/oplock.c
+    # against an instrumented kernel shim (owner-checked fast mutex, poisoned
+    # completed IRPs and freed pool, tracked IRQL, waits satisfied only by the
+    # holder's acknowledge). FsRtlCheckOplockEx flags, FsRtlOplockBreakH and
+    # FsRtlOplockIsSharedRequest (R2 M1-2), and the break/grant path regressions
+    # fixed with them. Built under ASan and UBSan.
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Source checkout
+      uses: actions/checkout@v6
+      with:
+        sparse-checkout: |
+          ntoskrnl/fsrtl
+          submodules/host-tests/fsrtl
+
+    - name: Install host build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc cmake ninja-build
+
+    - name: Configure
+      run: |
+        cmake -S submodules/host-tests/fsrtl -B build/fsrtl-host -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFSRTL_SANITIZE=ON
+
+    - name: Build
+      run: |
+        cmake --build build/fsrtl-host
+
+    - name: Run the host tests
+      env:
+        ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      run: |
+        ctest --test-dir build/fsrtl-host --output-on-failure -R "fsrtl_oplock_"
+
   build-msvc:
     if: github.ref == 'refs/heads/leeway/main'
     strategy:
