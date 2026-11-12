@@ -1126,6 +1126,11 @@ SepMandatoryIntegrityCheck(
                 continue;
             if (Ace->Header.AceFlags & INHERIT_ONLY_ACE)
                 continue;
+            if (Ace->Header.AceSize < FIELD_OFFSET(SYSTEM_MANDATORY_LABEL_ACE, SidStart) + FIELD_OFFSET(SID, SubAuthority))
+                continue;
+            if (((PISID)&((PSYSTEM_MANDATORY_LABEL_ACE)Ace)->SidStart)->SubAuthorityCount == 0 ||
+                Ace->Header.AceSize < FIELD_OFFSET(SYSTEM_MANDATORY_LABEL_ACE, SidStart) + RtlLengthSid((PSID)&((PSYSTEM_MANDATORY_LABEL_ACE)Ace)->SidStart))
+                continue;
             ObjectRid = *RtlSubAuthoritySid(&((PSYSTEM_MANDATORY_LABEL_ACE)Ace)->SidStart, 0);
             Policy = Ace->AccessMask & SYSTEM_MANDATORY_LABEL_VALID_MASK;
             break;
