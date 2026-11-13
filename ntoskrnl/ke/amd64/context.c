@@ -90,6 +90,13 @@ KeContextToTrapFrame(IN PCONTEXT Context,
         TrapFrame->Rsp = Context->Rsp;
         TrapFrame->EFlags = Context->EFlags;
 
+        /* A user context names user addresses: anything else is the null page, as the other fields are sanitised */
+        if (PreviousMode != KernelMode)
+        {
+            if (TrapFrame->Rip >= (ULONG64)MmHighestUserAddress) TrapFrame->Rip = 0;
+            if (TrapFrame->Rsp >= (ULONG64)MmHighestUserAddress) TrapFrame->Rsp = 0;
+        }
+
         if (PreviousMode == KernelMode && (Context->SegCs & MODE_MASK) == KernelMode)
         {
             /* Set valid selectors */
