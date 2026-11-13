@@ -716,6 +716,7 @@ list(APPEND KMTEST_SOURCE
 
 if(ARCH STREQUAL "amd64")
     list(APPEND KMTEST_SOURCE
+        ntos_ke/amd64/KeContextRange_user.c
         ntos_ke/amd64/KeContextSegments_user.c
         ntos_ke/amd64/KeNonCanonicalReturn_user.c
         ntos_ke/amd64/KeSystemCallInt2E_user.c)
