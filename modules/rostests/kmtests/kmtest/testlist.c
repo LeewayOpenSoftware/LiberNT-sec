@@ -55,6 +55,7 @@ KMT_TESTFUNC Test_KdBreakRequest;
 KMT_TESTFUNC Test_KdDebugService;
 KMT_TESTFUNC Test_KdLiveDump;
 KMT_TESTFUNC Test_KdPullRemoteFile;
+KMT_TESTFUNC Test_KeContextRange;
 KMT_TESTFUNC Test_KeContextSegments;
 KMT_TESTFUNC Test_KeNonCanonicalReturn;
 KMT_TESTFUNC Test_KeSystemCallInt2E;
@@ -200,6 +201,7 @@ const KMT_TEST TestList[] =
     { "WfpUser",                      Test_WfpUser },
     { "WskEcho",                      Test_WskEcho },
 #ifdef _M_AMD64
+    { "KeContextRange",               Test_KeContextRange },
     { "KeContextSegments",            Test_KeContextSegments },
     { "KeNonCanonicalReturn",         Test_KeNonCanonicalReturn },
     { "KeSystemCallInt2E",            Test_KeSystemCallInt2E },

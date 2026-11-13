@@ -90,6 +90,13 @@ KeContextToTrapFrame(IN PCONTEXT Context,
         TrapFrame->Rsp = Context->Rsp;
         TrapFrame->EFlags = Context->EFlags;
 
+        /* A return address outside the user range faults in user mode at the trap exit; the stack pointer of a
+         * user context is kept in the user range, as the other fields are sanitised */
+        if (PreviousMode != KernelMode)
+        {
+            if (TrapFrame->Rsp >= (ULONG64)MmHighestUserAddress) TrapFrame->Rsp = 0;
+        }
+
         if (PreviousMode == KernelMode && (Context->SegCs & MODE_MASK) == KernelMode)
         {
             /* Set valid selectors */
@@ -119,23 +126,11 @@ KeContextToTrapFrame(IN PCONTEXT Context,
     /* Handle segment selectors */
     if (ContextFlags & CONTEXT_SEGMENTS)
     {
-        /* Check if this was a Kernel Trap */
-        if ((Context->SegCs & MODE_MASK) == KernelMode)
-        {
-            /* Set valid selectors */
-            TrapFrame->SegDs = KGDT64_R3_DATA | RPL_MASK;
-            TrapFrame->SegEs = KGDT64_R3_DATA | RPL_MASK;
-            TrapFrame->SegFs = KGDT64_R3_CMTEB | RPL_MASK;
-            TrapFrame->SegGs = KGDT64_R3_DATA | RPL_MASK;
-        }
-        else
-        {
-            /* Copy selectors */
-            TrapFrame->SegDs = Context->SegDs;
-            TrapFrame->SegEs = Context->SegEs;
-            TrapFrame->SegFs = Context->SegFs;
-            TrapFrame->SegGs = Context->SegGs;
-        }
+        /* Windows x64 keeps the ring 3 data and TEB selectors whatever the context holds: the trap exit loads them */
+        TrapFrame->SegDs = KGDT64_R3_DATA | RPL_MASK;
+        TrapFrame->SegEs = KGDT64_R3_DATA | RPL_MASK;
+        TrapFrame->SegFs = KGDT64_R3_CMTEB | RPL_MASK;
+        TrapFrame->SegGs = KGDT64_R3_DATA | RPL_MASK;
     }
 
     /* Handle debug registers */
