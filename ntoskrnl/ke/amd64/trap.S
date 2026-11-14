@@ -155,6 +155,16 @@ FUNC InternalDispatchException
 
     /* Set up EXCEPTION_RECORD */
     lea rcx, [rsp + KEXCEPTION_FRAME_LENGTH]
+
+    /* The record goes whole to the user stack and to a debugger: start from zeroes.
+       rdi was saved above and is restored on the way out. */
+    lea rdi, [rcx + EXCEPTION_RECORD_LENGTH]
+InternalDispatchExceptionZero:
+    sub rdi, 8
+    mov qword ptr [rdi], 0
+    cmp rdi, rcx
+    ja InternalDispatchExceptionZero
+
     mov [rcx + EXCEPTION_RECORD_ExceptionCode], eax
     mov [rcx + EXCEPTION_RECORD_ExceptionFlags], r8d
     xor rax, rax
@@ -166,9 +176,18 @@ FUNC InternalDispatchException
 InternalDispatchExceptionAddress:
     mov [rcx + EXCEPTION_RECORD_ExceptionAddress], rax
     mov [rcx + EXCEPTION_RECORD_NumberParameters], edx
+
+    /* Only the parameters the caller counted: the registers of the others hold whatever was left in them */
+    cmp edx, 1
+    jb InternalDispatchExceptionParametersDone
     mov [rcx + EXCEPTION_RECORD_ExceptionInformation + HEX(00)], r9
+    cmp edx, 2
+    jb InternalDispatchExceptionParametersDone
     mov [rcx + EXCEPTION_RECORD_ExceptionInformation + HEX(08)], r10
+    cmp edx, 3
+    jb InternalDispatchExceptionParametersDone
     mov [rcx + EXCEPTION_RECORD_ExceptionInformation + HEX(10)], r11
+InternalDispatchExceptionParametersDone:
 
     /* Set up KEXCEPTION_FRAME */
     mov rax, [rbp + KTRAP_FRAME_Rbp]
