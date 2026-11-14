@@ -236,6 +236,42 @@ static void Test_ShareObjects_Contract(void)
     hShared = NULL;
     EXPECT_CALL_REFUSED("D3DKMTShareObjects(count>max)",
         pShareObjects(D3DKMT_MAX_OBJECTS_PER_HANDLE + 1, hObjs, NULL, GENERIC_ALL, &hShared));
+
+#ifdef _WIN64
+    {
+        /* None of the three addresses may lie in the system range: the call is
+         * refused before it reads or writes there. Nothing is mapped at this
+         * address, so a system that does use it stops here. */
+        PVOID SystemAddress = (PVOID)(ULONG_PTR)0xFFFF800000000000ULL;
+        /* OBJECT_ATTRIBUTES is only forward-declared in this file: this has
+         * its layout, with no name, no root and no security */
+        struct
+        {
+            ULONG Length;
+            HANDLE RootDirectory;
+            PVOID ObjectName;
+            ULONG Attributes;
+            PVOID SecurityDescriptor;
+            PVOID SecurityQualityOfService;
+        } Attributes;
+
+        memset(&Attributes, 0, sizeof(Attributes));
+        Attributes.Length = sizeof(Attributes);
+
+        hShared = NULL;
+        EXPECT_CALL_REFUSED("D3DKMTShareObjects(system-range out)",
+            pShareObjects(1, hObjs, (PVOID)&Attributes, GENERIC_ALL, (HANDLE *)SystemAddress));
+
+        hShared = NULL;
+        EXPECT_CALL_REFUSED("D3DKMTShareObjects(system-range list)",
+            pShareObjects(1, (D3DKMT_HANDLE *)SystemAddress, (PVOID)&Attributes, GENERIC_ALL, &hShared));
+
+        hShared = NULL;
+        EXPECT_CALL_REFUSED("D3DKMTShareObjects(system-range attributes)",
+            pShareObjects(1, hObjs, SystemAddress, GENERIC_ALL, &hShared));
+        ok(hShared == NULL, "A refused call left %p in the output handle\n", hShared);
+    }
+#endif
 }
 
 /* ------------------------------------------------------------------ */
