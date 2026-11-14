@@ -74,4 +74,40 @@ START_TEST(GetSetWindowInt)
     ok_err(ERROR_INVALID_INDEX);
 #endif
 
+    /* A window with fewer than two extra bytes has no word at any index */
+    {
+        static const WCHAR NoExtraClass[] = L"GetSetWindowIntNoExtra";
+        static const WCHAR OneExtraClass[] = L"GetSetWindowIntOneExtra";
+        const WCHAR *Classes[2] = { NoExtraClass, OneExtraClass };
+        WNDCLASSEXW SmallClass;
+        HWND hwndSmall;
+        int i;
+
+        for (i = 0; i < 2; i++)
+        {
+            ZeroMemory(&SmallClass, sizeof(SmallClass));
+            SmallClass.cbSize = sizeof(SmallClass);
+            SmallClass.lpfnWndProc = DefWindowProcW;
+            SmallClass.hInstance = GetModuleHandleW(NULL);
+            SmallClass.lpszClassName = Classes[i];
+            SmallClass.cbWndExtra = i;
+            ok(RegisterClassExW(&SmallClass) != 0, "RegisterClassExW failed with %lu\n", GetLastError());
+
+            hwndSmall = CreateWindowExW(0, Classes[i], NULL, WS_POPUP, 0, 0, 10, 10,
+                                        NULL, NULL, SmallClass.hInstance, NULL);
+            ok(hwndSmall != NULL, "CreateWindowExW failed with %lu\n", GetLastError());
+            if (hwndSmall != NULL)
+            {
+                SetLastError(0xdeadbeef);
+                ok_hex(SetWindowWord(hwndSmall, 0, 0x1234), 0);
+                ok_err(ERROR_INVALID_INDEX);
+                SetLastError(0xdeadbeef);
+                ok_hex(SetWindowWord(hwndSmall, 0x100000, 0x1234), 0);
+                ok_err(ERROR_INVALID_INDEX);
+                DestroyWindow(hwndSmall);
+            }
+            UnregisterClassW(Classes[i], SmallClass.hInstance);
+        }
+    }
+
 }
