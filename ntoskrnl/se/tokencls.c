@@ -2287,17 +2287,36 @@ NtSetInformationToken(
                 PTOKEN_AUDIT_POLICY_INFORMATION PolicyInformation =
                     (PTOKEN_AUDIT_POLICY_INFORMATION)TokenInformation;
                 SEP_AUDIT_POLICY AuditPolicy;
+                ULONG PolicyCount;
                 ULONG i;
+
+                /* Windows: TCB holders only, decided before anything of the buffer is used */
+                if (!SeSinglePrivilegeCheck(SeTcbPrivilege, PreviousMode))
+                {
+                    Status = STATUS_PRIVILEGE_NOT_HELD;
+                    break;
+                }
+
+                /* The elements must lie inside the given (and probed) length */
+                if (TokenInformationLength < FIELD_OFFSET(TOKEN_AUDIT_POLICY_INFORMATION, Policies))
+                {
+                    Status = STATUS_INFO_LENGTH_MISMATCH;
+                    break;
+                }
 
                 _SEH2_TRY
                 {
-                    ProbeForRead(PolicyInformation,
-                                 FIELD_OFFSET(TOKEN_AUDIT_POLICY_INFORMATION,
-                                              Policies[PolicyInformation->PolicyCount]),
-                                 sizeof(ULONG));
+                    /* Read the count once; the bound and the loop use this copy */
+                    PolicyCount = PolicyInformation->PolicyCount;
+                    if (PolicyCount > (TokenInformationLength - FIELD_OFFSET(TOKEN_AUDIT_POLICY_INFORMATION, Policies)) /
+                                      sizeof(PolicyInformation->Policies[0]))
+                    {
+                        Status = STATUS_INFO_LENGTH_MISMATCH;
+                        _SEH2_YIELD(goto Cleanup);
+                    }
 
                     /* Loop all policies in the structure */
-                    for (i = 0; i < PolicyInformation->PolicyCount; i++)
+                    for (i = 0; i < PolicyCount; i++)
                     {
                         /* Set the corresponding bits in the packed structure */
                         switch (PolicyInformation->Policies[i].Category)
@@ -2346,13 +2365,6 @@ NtSetInformationToken(
                     _SEH2_YIELD(goto Cleanup);
                 }
                 _SEH2_END;
-
-                /* Check for TCB privilege */
-                if (!SeSinglePrivilegeCheck(SeTcbPrivilege, PreviousMode))
-                {
-                    Status = STATUS_PRIVILEGE_NOT_HELD;
-                    break;
-                }
 
                 /* Lock the token */
                 SepAcquireTokenLockExclusive(Token);

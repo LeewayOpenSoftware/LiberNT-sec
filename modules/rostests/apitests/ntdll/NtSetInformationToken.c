@@ -420,6 +420,43 @@ SetTokenPrimaryGroupKeepsDaclTests(
     RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
 }
 
+/* Windows refuses the audit policy to non-TCB callers; a wild count must not be walked before that */
+typedef struct _TEST_TOKEN_AUDIT_POLICY
+{
+    ULONG PolicyCount;
+    struct
+    {
+        ULONG Category;
+        UCHAR Value;
+    } Policies[1];
+} TEST_TOKEN_AUDIT_POLICY;
+
+static
+VOID
+SetTokenAuditPolicyTests(
+    _In_ HANDLE Token)
+{
+    TEST_TOKEN_AUDIT_POLICY Policy;
+    NTSTATUS Status;
+
+    if (HoldsTcbPrivilege(Token))
+    {
+        skip("The token holds SeTcbPrivilege, the refusal cannot be tested\n");
+        return;
+    }
+
+    Policy.PolicyCount = 1;
+    Policy.Policies[0].Category = 0; /* the system category */
+    Policy.Policies[0].Value = 0;
+    Status = NtSetInformationToken(Token, TokenAuditPolicy, &Policy, sizeof(Policy));
+    ok_ntstatus(Status, STATUS_PRIVILEGE_NOT_HELD);
+
+    /* A count far beyond the buffer: still the privilege answer, never a walk */
+    Policy.PolicyCount = 0x10000000;
+    Status = NtSetInformationToken(Token, TokenAuditPolicy, &Policy, sizeof(Policy));
+    ok_ntstatus(Status, STATUS_PRIVILEGE_NOT_HELD);
+}
+
 START_TEST(NtSetInformationToken)
 {
     NTSTATUS Status;
@@ -456,6 +493,7 @@ START_TEST(NtSetInformationToken)
     SetTokenMandatoryPolicyTests(Token);
     SetTokenKernelPointerTests(Token);
     SetTokenPrimaryGroupKeepsDaclTests(Token);
+    SetTokenAuditPolicyTests(Token);
 
     CloseHandle(Token);
 }
