@@ -4534,26 +4534,40 @@ NtSetInformationThread(
 #endif
                     if (Teb)
                     {
-                        /* Check if we're in the expansion range */
-                        if (TlsIndex > TLS_MINIMUM_AVAILABLE - 1)
+                        /* The TEB is the thread's own memory: it can be gone,
+                         * and the address of the expansion slots in it is
+                         * whatever the process put there */
+                        _SEH2_TRY
                         {
-                            if (TlsIndex < (TLS_MINIMUM_AVAILABLE +
-                                            TLS_EXPANSION_SLOTS) - 1)
+                            /* Check if we're in the expansion range */
+                            if (TlsIndex > TLS_MINIMUM_AVAILABLE - 1)
                             {
-                                /* Check if we have expansion slots */
-                                PVOID* ExpansionSlots = Teb->TlsExpansionSlots;
-                                if (ExpansionSlots)
+                                if (TlsIndex < (TLS_MINIMUM_AVAILABLE +
+                                                TLS_EXPANSION_SLOTS) - 1)
                                 {
-                                    /* Clear the index */
-                                    ExpansionSlots[TlsIndex - TLS_MINIMUM_AVAILABLE] = 0;
+                                    /* Check if we have expansion slots */
+                                    PVOID* ExpansionSlots = Teb->TlsExpansionSlots;
+                                    if (ExpansionSlots)
+                                    {
+                                        PVOID* Slot = &ExpansionSlots[TlsIndex - TLS_MINIMUM_AVAILABLE];
+
+                                        /* Clear the index, in user memory only */
+                                        ProbeForWrite(Slot, sizeof(PVOID), sizeof(PVOID));
+                                        *Slot = NULL;
+                                    }
                                 }
                             }
+                            else
+                            {
+                                /* Clear the index */
+                                Teb->TlsSlots[TlsIndex] = NULL;
+                            }
                         }
-                        else
+                        _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                         {
-                            /* Clear the index */
-                            Teb->TlsSlots[TlsIndex] = NULL;
+                            /* This thread keeps its slot: go on with the next */
                         }
+                        _SEH2_END;
                     }
 
                     /* Release rundown */
