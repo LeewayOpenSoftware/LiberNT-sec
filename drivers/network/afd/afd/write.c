@@ -840,9 +840,12 @@ AfdPacketSocketWriteData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         return UnlockAndMaybeComplete(FCB, STATUS_NO_MEMORY, Irp, 0);
 
     /* Capture the remote address before it is read in kernel mode: both the
-     * pointer and its length come from the caller's request. */
+     * pointer and its length come from the caller's request. The length is
+     * capped so the capture cannot exhaust nonpaged pool, and the content is
+     * validated below before any field of the address is used. */
     if( !SendReq->TdiConnection.RemoteAddress ||
-        SendReq->TdiConnection.RemoteAddressLength <= 0 ) {
+        SendReq->TdiConnection.RemoteAddressLength <= 0 ||
+        SendReq->TdiConnection.RemoteAddressLength > 0x10000 ) {
         UnlockRequest( Irp, IrpSp );
         return UnlockAndMaybeComplete( FCB, STATUS_INVALID_PARAMETER, Irp, 0 );
     }
@@ -871,6 +874,13 @@ AfdPacketSocketWriteData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         ExFreePoolWithTag( CapturedAddress, TAG_AFD_TRANSPORT_ADDRESS );
         UnlockRequest( Irp, IrpSp );
         return UnlockAndMaybeComplete( FCB, Status, Irp, 0 );
+    }
+
+    if( !AfdTransportAddressFits( (PTRANSPORT_ADDRESS)CapturedAddress,
+                                  SendReq->TdiConnection.RemoteAddressLength ) ) {
+        ExFreePoolWithTag( CapturedAddress, TAG_AFD_TRANSPORT_ADDRESS );
+        UnlockRequest( Irp, IrpSp );
+        return UnlockAndMaybeComplete( FCB, STATUS_INVALID_PARAMETER, Irp, 0 );
     }
 
     SendReq->TdiConnection.RemoteAddress = CapturedAddress;
