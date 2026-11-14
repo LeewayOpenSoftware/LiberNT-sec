@@ -27,6 +27,17 @@
 #define BROKEN_TO_CLOSE_PENDING     0x800
 #define BROKEN_ANY                  (BROKEN_TO_LEVEL_2 | BROKEN_TO_NONE  | BROKEN_TO_NONE_FROM_LEVEL_2 | BROKEN_TO_CLOSE_PENDING)
 
+/* FsRtlCheckOplockEx flags this implementation knows. This is a legacy (pre-NT 6.1)
+ * oplock machine: Level 1, Batch, Filter and Level 2 only. It stores no oplock key,
+ * never grants an atomic oplock (FsRtlOplockFsctrl refuses IRP_MJ_CREATE) and has no
+ * lease (R/RH/RW/RWH) state, so directory oplocks cannot be granted either. The flags
+ * are mapped onto that; see the comments in FsRtlCheckOplockEx.
+ */
+#define FSRTLP_KNOWN_OPLOCK_FLAGS   (OPLOCK_FLAG_COMPLETE_IF_OPLOCKED | OPLOCK_FLAG_OPLOCK_KEY_CHECK_ONLY | \
+                                     OPLOCK_FLAG_BACK_OUT_ATOMIC_OPLOCK | OPLOCK_FLAG_IGNORE_OPLOCK_KEYS | \
+                                     OPLOCK_FLAG_PARENT_OBJECT | OPLOCK_FLAG_CLOSING_DELETE_ON_CLOSE | \
+                                     OPLOCK_FLAG_REMOVING_FILE_OR_LINK)
+
 typedef struct _INTERNAL_OPLOCK
 {
     /* Level I IRP */
@@ -921,16 +932,33 @@ FsRtlOplockCleanup(IN PINTERNAL_OPLOCK Oplock,
     ExReleaseFastMutexUnsafe(Oplock->IntLock);
 }
 
-NTSTATUS
-NTAPI
-FsRtlOplockBreakToNone(IN POPLOCK OplockPtr,
-                       IN PIO_STACK_LOCATION Stack,
-                       IN PIRP Irp,
-                       IN PVOID Context,
-                       IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
-                       IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
+/* The break is started either way; the IRP that caused it is neither blocked nor
+ * queued when the caller asked for that, through the Ex flag or the create option.
+ */
+static
+BOOLEAN
+FsRtlpBreakMustNotWait(IN PIO_STACK_LOCATION Stack,
+                       IN ULONG Flags)
 {
-    PINTERNAL_OPLOCK Oplock = (PINTERNAL_OPLOCK)OplockPtr;
+    if (BooleanFlagOn(Flags, OPLOCK_FLAG_COMPLETE_IF_OPLOCKED))
+    {
+        return TRUE;
+    }
+
+    return (Stack->MajorFunction == IRP_MJ_CREATE &&
+            BooleanFlagOn(Stack->Parameters.Create.Options, FILE_COMPLETE_IF_OPLOCKED));
+}
+
+static
+NTSTATUS
+FsRtlpOplockBreakToNone(IN PINTERNAL_OPLOCK Oplock,
+                        IN PIO_STACK_LOCATION Stack,
+                        IN PIRP Irp,
+                        IN ULONG Flags,
+                        IN PVOID Context,
+                        IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
+                        IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
+{
     PLIST_ENTRY NextEntry, FollowingEntry;
     PWAIT_CONTEXT WaitCtx;
     PIRP ListIrp;
@@ -1044,7 +1072,7 @@ FsRtlOplockBreakToNone(IN POPLOCK OplockPtr,
     }
 
     /* Otherwise, wait on the IRP */
-    if (Stack->MajorFunction != IRP_MJ_CREATE || !BooleanFlagOn(Stack->Parameters.Create.Options, FILE_COMPLETE_IF_OPLOCKED))
+    if (!FsRtlpBreakMustNotWait(Stack, Flags))
     {
         return FsRtlWaitOnIrp(Oplock, Irp, Context, CompletionRoutine, PostIrpRoutine, &WaitEvent);
     }
@@ -1058,9 +1086,22 @@ FsRtlOplockBreakToNone(IN POPLOCK OplockPtr,
 
 NTSTATUS
 NTAPI
+FsRtlOplockBreakToNone(IN POPLOCK OplockPtr,
+                       IN PIO_STACK_LOCATION Stack,
+                       IN PIRP Irp,
+                       IN PVOID Context,
+                       IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
+                       IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
+{
+    return FsRtlpOplockBreakToNone((PINTERNAL_OPLOCK)OplockPtr, Stack, Irp, 0, Context, CompletionRoutine, PostIrpRoutine);
+}
+
+NTSTATUS
+NTAPI
 FsRtlOplockBreakToII(IN PINTERNAL_OPLOCK Oplock,
                      IN PIO_STACK_LOCATION Stack,
                      IN PIRP Irp,
+                     IN ULONG Flags,
                      IN PVOID Context,
                      IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
                      IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
@@ -1150,7 +1191,7 @@ FsRtlOplockBreakToII(IN PINTERNAL_OPLOCK Oplock,
     }
 
     /* Wait if required */
-    if (Stack->MajorFunction != IRP_MJ_CREATE || !BooleanFlagOn(Stack->Parameters.Create.Options, FILE_COMPLETE_IF_OPLOCKED))
+    if (!FsRtlpBreakMustNotWait(Stack, Flags))
     {
         return FsRtlWaitOnIrp(Oplock, Irp, Context, CompletionRoutine, PostIrpRoutine, &WaitEvent);
     }
@@ -1159,6 +1200,32 @@ FsRtlOplockBreakToII(IN PINTERNAL_OPLOCK Oplock,
         ExReleaseFastMutexUnsafe(Oplock->IntLock);
         return STATUS_OPLOCK_BREAK_IN_PROGRESS;
     }
+}
+
+static
+NTSTATUS
+FsRtlpBreakOplock(IN PINTERNAL_OPLOCK IntOplock,
+                  IN PIO_STACK_LOCATION Stack,
+                  IN PIRP Irp,
+                  IN ULONG Flags,
+                  IN BOOLEAN ToNone,
+                  IN PVOID Context,
+                  IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
+                  IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
+{
+    /* An open that requires an oplock must not break (or wait on) someone else's */
+    if (Stack->MajorFunction == IRP_MJ_CREATE &&
+        BooleanFlagOn(Stack->Parameters.Create.Options, FILE_OPEN_REQUIRING_OPLOCK))
+    {
+        return STATUS_CANNOT_BREAK_OPLOCK;
+    }
+
+    if (ToNone)
+    {
+        return FsRtlpOplockBreakToNone(IntOplock, Stack, Irp, Flags, Context, CompletionRoutine, PostIrpRoutine);
+    }
+
+    return FsRtlOplockBreakToII(IntOplock, Stack, Irp, Flags, Context, CompletionRoutine, PostIrpRoutine);
 }
 
 /* PUBLIC FUNCTIONS **********************************************************/
@@ -1197,21 +1264,69 @@ FsRtlCheckOplock(IN POPLOCK Oplock,
                  IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
                  IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
 {
+    return FsRtlCheckOplockEx(Oplock, Irp, 0, Context, CompletionRoutine, PostIrpRoutine);
+}
+
+/*++
+ * @name FsRtlCheckOplockEx
+ * @implemented
+ *
+ * FsRtlCheckOplock with OPLOCK_FLAG_* modifiers, mapped onto the legacy state
+ * machine of this file (see FSRTLP_KNOWN_OPLOCK_FLAGS):
+ *
+ * OPLOCK_FLAG_OPLOCK_KEY_CHECK_ONLY: no oplock key is ever stored, so no key can
+ *     mismatch: success, nothing broken, nothing waited on.
+ * OPLOCK_FLAG_BACK_OUT_ATOMIC_OPLOCK: no atomic oplock is ever granted: success.
+ * OPLOCK_FLAG_PARENT_OBJECT: the oplock is the parent directory's. Break it to
+ *     none without blocking the child's operation, and never run the IRP's own
+ *     major-function handling (cleanup, create...) against the parent.
+ * OPLOCK_FLAG_COMPLETE_IF_OPLOCKED: start the break but neither block nor queue
+ *     the IRP; STATUS_OPLOCK_BREAK_IN_PROGRESS when a break was needed.
+ * OPLOCK_FLAG_IGNORE_OPLOCK_KEYS, OPLOCK_FLAG_CLOSING_DELETE_ON_CLOSE,
+ * OPLOCK_FLAG_REMOVING_FILE_OR_LINK: key and lease hints, nothing to do here.
+ *
+ * @return STATUS_SUCCESS, STATUS_PENDING (IRP posted to CompletionRoutine),
+ *         STATUS_OPLOCK_BREAK_IN_PROGRESS, STATUS_CANCELLED, or
+ *         STATUS_CANNOT_BREAK_OPLOCK for a FILE_OPEN_REQUIRING_OPLOCK create
+ *         that would have to break another handle's oplock.
+ *
+ *--*/
+NTSTATUS
+NTAPI
+FsRtlCheckOplockEx(IN POPLOCK Oplock,
+                   IN PIRP Irp,
+                   IN ULONG Flags,
+                   IN PVOID Context OPTIONAL,
+                   IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
+                   IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
+{
     PINTERNAL_OPLOCK IntOplock;
     PIO_STACK_LOCATION Stack;
     ACCESS_MASK DesiredAccess;
     FILE_INFORMATION_CLASS FileInfo;
     ULONG CreateDisposition;
+    NTSTATUS Status;
 
 #define BreakToIIIfRequired                                                               \
     if (IntOplock->Flags != LEVEL_2_OPLOCK || IntOplock->FileObject != Stack->FileObject) \
-        return FsRtlOplockBreakToII(IntOplock, Stack, Irp, Context, CompletionRoutine, PostIrpRoutine)
+        return FsRtlpBreakOplock(IntOplock, Stack, Irp, Flags, FALSE, Context, CompletionRoutine, PostIrpRoutine)
 
 #define BreakToNoneIfRequired                                                             \
     if (IntOplock->Flags == LEVEL_2_OPLOCK || IntOplock->FileObject != Stack->FileObject) \
-        return FsRtlOplockBreakToNone((POPLOCK)IntOplock, Stack, Irp, Context, CompletionRoutine, PostIrpRoutine)
+        return FsRtlpBreakOplock(IntOplock, Stack, Irp, Flags, TRUE, Context, CompletionRoutine, PostIrpRoutine)
 
-    DPRINT("FsRtlCheckOplock(%p, %p, %p, %p, %p)\n", Oplock, Irp, Context, CompletionRoutine, PostIrpRoutine);
+    DPRINT("FsRtlCheckOplockEx(%p, %p, %lx, %p, %p, %p)\n", Oplock, Irp, Flags, Context, CompletionRoutine, PostIrpRoutine);
+
+    if (Flags & ~FSRTLP_KNOWN_OPLOCK_FLAGS)
+    {
+        DPRINT1("FsRtlCheckOplockEx: ignoring unknown flags %lx\n", Flags & ~FSRTLP_KNOWN_OPLOCK_FLAGS);
+    }
+
+    /* No key to compare and no atomic oplock to back out: never a break */
+    if (BooleanFlagOn(Flags, (OPLOCK_FLAG_OPLOCK_KEY_CHECK_ONLY | OPLOCK_FLAG_BACK_OUT_ATOMIC_OPLOCK)))
+    {
+        return STATUS_SUCCESS;
+    }
 
     IntOplock = *Oplock;
 
@@ -1234,6 +1349,13 @@ FsRtlCheckOplock(IN POPLOCK Oplock,
     }
 
     Stack = IoGetCurrentIrpStackLocation(Irp);
+
+    /* Parent directory oplock: break it, but never block the child's operation */
+    if (BooleanFlagOn(Flags, OPLOCK_FLAG_PARENT_OBJECT))
+    {
+        Status = FsRtlpOplockBreakToNone(IntOplock, Stack, Irp, Flags | OPLOCK_FLAG_COMPLETE_IF_OPLOCKED, NULL, NULL, NULL);
+        return (Status == STATUS_OPLOCK_BREAK_IN_PROGRESS) ? STATUS_SUCCESS : Status;
+    }
 
     /* If cleanup, cleanup the associated oplock & return */
     if (Stack->MajorFunction == IRP_MJ_CLEANUP)
@@ -1367,6 +1489,100 @@ FsRtlCheckOplock(IN POPLOCK Oplock,
 #undef BreakToNoneIfRequired
 
     return STATUS_SUCCESS;
+}
+
+/*++
+ * @name FsRtlOplockBreakH
+ * @implemented
+ *
+ * Breaks handle-caching oplocks, so that their holder closes a cached handle that
+ * causes a sharing violation (fastfat calls it from create). In this legacy
+ * machine only Batch and Filter oplocks cache a handle; they are broken to none.
+ * Level 1 and Level 2 oplocks cache no handle and are left alone.
+ *
+ * @return STATUS_SUCCESS when nothing had to be broken or the break completed,
+ *         STATUS_PENDING when the IRP was posted to CompletionRoutine, or the
+ *         statuses of FsRtlCheckOplockEx for COMPLETE_IF_OPLOCKED, cancel and
+ *         FILE_OPEN_REQUIRING_OPLOCK.
+ *
+ *--*/
+NTSTATUS
+NTAPI
+FsRtlOplockBreakH(IN POPLOCK Oplock,
+                  IN PIRP Irp,
+                  IN ULONG Flags,
+                  IN PVOID Context OPTIONAL,
+                  IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
+                  IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
+{
+    PINTERNAL_OPLOCK IntOplock;
+    BOOLEAN HandleCaching;
+
+    DPRINT("FsRtlOplockBreakH(%p, %p, %lx, %p, %p, %p)\n", Oplock, Irp, Flags, Context, CompletionRoutine, PostIrpRoutine);
+
+    IntOplock = *Oplock;
+    if (IntOplock == NULL || BooleanFlagOn(Irp->Flags, IRP_PAGING_IO))
+    {
+        return STATUS_SUCCESS;
+    }
+
+    /* Batch and Filter are the handle-caching oplocks; the break re-checks the
+     * state under the lock, so a change in between only makes it more conservative.
+     */
+    ExAcquireFastMutexUnsafe(IntOplock->IntLock);
+    HandleCaching = BooleanFlagOn(IntOplock->Flags, (BATCH_OPLOCK | FILTER_OPLOCK));
+    ExReleaseFastMutexUnsafe(IntOplock->IntLock);
+
+    if (!HandleCaching)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    return FsRtlpBreakOplock(IntOplock, IoGetCurrentIrpStackLocation(Irp), Irp, Flags, TRUE,
+                             Context, CompletionRoutine, PostIrpRoutine);
+}
+
+/*++
+ * @name FsRtlOplockIsSharedRequest
+ * @implemented
+ *
+ * TRUE when the IRP asks for a shared oplock: FSCTL_REQUEST_OPLOCK_LEVEL_2, or an
+ * FSCTL_REQUEST_OPLOCK request whose level does not include write caching.
+ *
+ *--*/
+BOOLEAN
+NTAPI
+FsRtlOplockIsSharedRequest(IN PIRP Irp)
+{
+    PIO_STACK_LOCATION Stack;
+    PREQUEST_OPLOCK_INPUT_BUFFER Input;
+
+    Stack = IoGetCurrentIrpStackLocation(Irp);
+    if (Stack->MajorFunction != IRP_MJ_FILE_SYSTEM_CONTROL)
+    {
+        return FALSE;
+    }
+
+    switch (Stack->Parameters.FileSystemControl.FsControlCode)
+    {
+        case FSCTL_REQUEST_OPLOCK_LEVEL_2:
+            return TRUE;
+
+        case FSCTL_REQUEST_OPLOCK:
+            /* METHOD_BUFFERED: the input is in the system buffer */
+            Input = Irp->AssociatedIrp.SystemBuffer;
+            if (Input == NULL ||
+                Stack->Parameters.FileSystemControl.InputBufferLength < sizeof(REQUEST_OPLOCK_INPUT_BUFFER))
+            {
+                return FALSE;
+            }
+
+            return (BooleanFlagOn(Input->Flags, REQUEST_OPLOCK_INPUT_FLAG_REQUEST) &&
+                    !BooleanFlagOn(Input->RequestedOplockLevel, OPLOCK_LEVEL_CACHE_WRITE));
+
+        default:
+            return FALSE;
+    }
 }
 
 /*++
