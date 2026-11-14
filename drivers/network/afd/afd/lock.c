@@ -107,26 +107,35 @@ AfdTransferRequestSize(ULONG Code, BOOLEAN Is32Bit)
 }
 
 
-/* TRUE when a transport address read from a request buffer of Available
- * bytes stays inside that buffer. */
+/* TRUE when a transport address of Available bytes is one the helpers can
+ * consume: one or two entries, each entry's length matching its address
+ * type, and the entries ending exactly at the end of the buffer. */
 BOOLEAN
 AfdTransportAddressFits(PTRANSPORT_ADDRESS Address, ULONG Available)
 {
-    ULONG i, Offset;
+    ULONG i, Offset, TypeSize;
 
-    if (Available < FIELD_OFFSET(TRANSPORT_ADDRESS, Address))
+    if (Available < FIELD_OFFSET(TRANSPORT_ADDRESS, Address) + FIELD_OFFSET(TA_ADDRESS, Address))
+        return FALSE;
+
+    if (Address->TAAddressCount < 1 || Address->TAAddressCount > 2)
         return FALSE;
 
     Offset = FIELD_OFFSET(TRANSPORT_ADDRESS, Address);
     for (i = 0; i < (ULONG)Address->TAAddressCount; i++)
     {
-        if (Available - Offset < sizeof(TA_ADDRESS))
+        PTA_ADDRESS Entry = (PTA_ADDRESS)((PUCHAR)Address + Offset);
+
+        if (Available - Offset < FIELD_OFFSET(TA_ADDRESS, Address))
             return FALSE;
-        if (Address->Address[i].AddressLength > Available - Offset - sizeof(TA_ADDRESS))
+        TypeSize = TdiAddressSizeFromType(Entry->AddressType);
+        if (!TypeSize || Entry->AddressLength != TypeSize)
             return FALSE;
-        Offset += sizeof(TA_ADDRESS) + Address->Address[i].AddressLength;
+        if (Available - Offset - FIELD_OFFSET(TA_ADDRESS, Address) < Entry->AddressLength)
+            return FALSE;
+        Offset += FIELD_OFFSET(TA_ADDRESS, Address) + Entry->AddressLength;
     }
-    return TRUE;
+    return Offset == Available;
 }
 
 BOOLEAN
@@ -711,7 +720,7 @@ PAFD_HANDLE LockHandles( PAFD_HANDLE HandleArray, UINT HandleCount, PDEVICE_OBJE
         if( NT_SUCCESS(Status) ) {
                 Status = ObReferenceObjectByHandle
                     ( (PVOID)HandleArray[i].Handle,
-                      MAXIMUM_ALLOWED,
+                      0,
                       *IoFileObjectType,
                        RequestorMode,
                        (PVOID*)&FileObjects[i].Handle,
