@@ -1772,7 +1772,7 @@ KeTerminateThread(IN KPRIORITY Increment)
 #endif
 
     /* Check the thread has an associated queue */
-    Queue = Thread->Queue;
+    Queue = KiPinThreadQueue(Thread);
     if (Queue)
     {
         /* The rundown of the queue ends the association from another
@@ -1786,6 +1786,7 @@ KeTerminateThread(IN KPRIORITY Increment)
             KiActivateWaiterQueue(Queue);
         }
         KiReleaseDispatcherObject(&Queue->Header);
+        KiUnpinThreadQueue();
     }
 
     /* Signal the thread */

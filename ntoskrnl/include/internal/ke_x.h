@@ -1435,7 +1435,7 @@ FORCEINLINE
 VOID
 KxActivateWaiterQueue(IN PKTHREAD Thread)
 {
-    PKQUEUE Queue = Thread->Queue;
+    PKQUEUE Queue = KiPinThreadQueue(Thread);
 
     if (Queue)
     {
@@ -1444,6 +1444,7 @@ KxActivateWaiterQueue(IN PKTHREAD Thread)
         if (Thread->Queue == Queue)
             KiActivateWaiterQueue(Queue);
         KiReleaseDispatcherObject(&Queue->Header);
+        KiUnpinThreadQueue();
     }
 }
 
