@@ -2286,7 +2286,7 @@ NtSetInformationToken(
             {
                 PTOKEN_AUDIT_POLICY_INFORMATION PolicyInformation =
                     (PTOKEN_AUDIT_POLICY_INFORMATION)TokenInformation;
-                SEP_AUDIT_POLICY AuditPolicy;
+                SEP_AUDIT_POLICY Values, Named;
                 ULONG PolicyCount;
                 ULONG i;
 
@@ -2303,6 +2303,10 @@ NtSetInformationToken(
                     Status = STATUS_INFO_LENGTH_MISMATCH;
                     break;
                 }
+
+                /* Values holds what the caller names, Named marks which categories those are */
+                Values.Overlay = 0;
+                Named.Overlay = 0;
 
                 _SEH2_TRY
                 {
@@ -2322,39 +2326,48 @@ NtSetInformationToken(
                         switch (PolicyInformation->Policies[i].Category)
                         {
                             case AuditCategorySystem:
-                                AuditPolicy.PolicyElements.System = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.System = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.System = 0xF;
                                 break;
 
                             case AuditCategoryLogon:
-                                AuditPolicy.PolicyElements.Logon = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.Logon = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.Logon = 0xF;
                                 break;
 
                             case AuditCategoryObjectAccess:
-                                AuditPolicy.PolicyElements.ObjectAccess = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.ObjectAccess = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.ObjectAccess = 0xF;
                                 break;
 
                             case AuditCategoryPrivilegeUse:
-                                AuditPolicy.PolicyElements.PrivilegeUse = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.PrivilegeUse = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.PrivilegeUse = 0xF;
                                 break;
 
                             case AuditCategoryDetailedTracking:
-                                AuditPolicy.PolicyElements.DetailedTracking = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.DetailedTracking = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.DetailedTracking = 0xF;
                                 break;
 
                             case AuditCategoryPolicyChange:
-                                AuditPolicy.PolicyElements.PolicyChange = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.PolicyChange = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.PolicyChange = 0xF;
                                 break;
 
                             case AuditCategoryAccountManagement:
-                                AuditPolicy.PolicyElements.AccountManagement = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.AccountManagement = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.AccountManagement = 0xF;
                                 break;
 
                             case AuditCategoryDirectoryServiceAccess:
-                                AuditPolicy.PolicyElements.DirectoryServiceAccess = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.DirectoryServiceAccess = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.DirectoryServiceAccess = 0xF;
                                 break;
 
                             case AuditCategoryAccountLogon:
-                                AuditPolicy.PolicyElements.AccountLogon = PolicyInformation->Policies[i].Value;
+                                Values.PolicyElements.AccountLogon = PolicyInformation->Policies[i].Value;
+                                Named.PolicyElements.AccountLogon = 0xF;
                                 break;
                         }
                     }
@@ -2369,8 +2382,9 @@ NtSetInformationToken(
                 /* Lock the token */
                 SepAcquireTokenLockExclusive(Token);
 
-                /* Set the new audit policy */
-                Token->AuditPolicy = AuditPolicy;
+                /* Named categories take their new value, the others keep the token's */
+                Token->AuditPolicy.Overlay = (Token->AuditPolicy.Overlay & ~Named.Overlay) |
+                                             (Values.Overlay & Named.Overlay);
                 ExAllocateLocallyUniqueId(&Token->ModifiedId);
 
                 /* Unlock the token */

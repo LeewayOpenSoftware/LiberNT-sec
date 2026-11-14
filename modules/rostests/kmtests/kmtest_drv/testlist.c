@@ -459,6 +459,7 @@ KMT_TESTFUNC Test_SeLogonSession;
 KMT_TESTFUNC Test_SeSddl;
 KMT_TESTFUNC Test_SeSddlListOrder;
 KMT_TESTFUNC Test_SeQueryInfoToken;
+KMT_TESTFUNC Test_SeTokenAuditPolicy;
 KMT_TESTFUNC Test_SeTokenFiltering;
 KMT_TESTFUNC Test_SePrimaryTokenRelease;
 KMT_TESTFUNC Test_SeAccessState;
@@ -1035,6 +1036,7 @@ const KMT_TEST TestList[] =
     { "SeSddl",                             Test_SeSddl },
     { "SeSddlListOrder",                    Test_SeSddlListOrder },
     { "SeQueryInfoToken",                   Test_SeQueryInfoToken },
+    { "SeTokenAuditPolicy",                 Test_SeTokenAuditPolicy },
     { "SeTokenFiltering",                   Test_SeTokenFiltering },
     { "SePrimaryTokenRelease",              Test_SePrimaryTokenRelease },
     { "SeAccessState",                      Test_SeAccessState },
