@@ -3457,6 +3457,16 @@ NtGdiDdDDIShareObjects(_In_ UINT cObjects,
     RtlZeroMemory(&ObjectAttributes, sizeof(ObjectAttributes));
     _SEH2_TRY
     {
+        /* The three addresses are the caller's. An exception handler alone does
+         * not stop an access to a kernel address, so each one is checked to be
+         * a user address first. cObjects was bounded above. */
+        if (ExGetPreviousMode() != KernelMode)
+        {
+            ProbeForRead(hObjects, cObjects * sizeof(*hObjects), 1);
+            ProbeForRead(pObjectAttributes, sizeof(OBJECT_ATTRIBUTES), 1);
+            ProbeForWrite(phSharedNtHandle, sizeof(*phSharedNtHandle), 1);
+        }
+
         for (Index = 0; Index < cObjects; ++Index)
             Packet.ObjectHandles[Index] = hObjects[Index];
         ObjectAttributes = *(POBJECT_ATTRIBUTES)pObjectAttributes;
