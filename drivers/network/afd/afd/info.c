@@ -227,6 +227,14 @@ AfdSetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
                     if (InfoReq->Information.Ulong > 0 && InfoReq->Information.Ulong < 0xFFFF &&
                         InfoReq->Information.Ulong != FCB->Send.Size)
                     {
+                        if (FCB->SendIrp.InFlightRequest)
+                        {
+                            /* The in-flight buffered send holds an MDL over
+                             * the current window; it must not be freed yet. */
+                            Status = STATUS_DEVICE_BUSY;
+                            break;
+                        }
+
                         NewBuffer = ExAllocatePoolWithTag(PagedPool,
                                                           InfoReq->Information.Ulong * 2,
                                                           TAG_AFD_DATA_BUFFER);
