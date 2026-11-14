@@ -51,6 +51,7 @@ list(APPEND SOURCE
     d3dkmt_syncshare.c
     d3dkmt_stubparity.c
     d3dkmt_badptr.c
+    d3dkmt_embedded_kptr.c
     d3dkmt_ctxflags.c
     d3dkmt_umdcallbacks.c
     d3dkmt_sharing.c
