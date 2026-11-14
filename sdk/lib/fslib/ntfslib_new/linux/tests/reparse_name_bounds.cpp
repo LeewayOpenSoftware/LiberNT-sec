@@ -80,6 +80,15 @@ Parses(const UCHAR* Buffer, ULONG Length)
     return NT_SUCCESS(NtfsParseNameSurrogateReparsePoint(Buffer, Length, &View));
 }
 
+/* The open-time check: bounds only, characters not judged. */
+static bool
+InBounds(const UCHAR* Buffer, ULONG Length)
+{
+    NtfsReparseNameView View;
+
+    return NT_SUCCESS(NtfsCheckNameSurrogateReparseBounds(Buffer, Length, &View));
+}
+
 int
 main()
 {
@@ -93,6 +102,7 @@ main()
 
         Length = Build(Buffer, Symlink, 0, 18, 18, 10);
         Check(Parses(Buffer, Length), Kind);
+        Check(InBounds(Buffer, Length), Kind);
 
         struct
         {
@@ -117,6 +127,9 @@ main()
                            Case.PrintOffset, Case.PrintLength);
             std::snprintf(Message, sizeof(Message), "%s: %s accepted by the parser", Kind, Case.What);
             Check(!Parses(Buffer, Length), Message);
+            std::snprintf(Message, sizeof(Message), "%s: %s accepted by the open-time bounds check", Kind,
+                          Case.What);
+            Check(!InBounds(Buffer, Length), Message);
             std::snprintf(Message, sizeof(Message), "%s: %s accepted by SetReparsePoint", Kind, Case.What);
             Check(TrySet(Buffer, Length) == STATUS_IO_REPARSE_DATA_INVALID, Message);
         }
@@ -131,6 +144,15 @@ main()
     Length = Build(Buffer, false, 0, 18, 18, 10);
     Put16(Buffer, 16 + 4, 0);
     Check(TrySet(Buffer, Length) == STATUS_IO_REPARSE_DATA_INVALID, "NUL inside the substitute name accepted");
+    /* ...at set time only: a link already on the volume stays usable when its bounds are right. */
+    Check(InBounds(Buffer, Length), "NUL inside the substitute name refused by the open-time check");
+
+    /* An unpaired surrogate: refused at set, kept at open. */
+    Length = Build(Buffer, false, 0, 18, 18, 10);
+    Put16(Buffer, 16 + 4, 0xD800);
+    Check(TrySet(Buffer, Length) == STATUS_IO_REPARSE_DATA_INVALID, "unpaired surrogate accepted by SetReparsePoint");
+    Check(!Parses(Buffer, Length), "unpaired surrogate accepted by the parser");
+    Check(InBounds(Buffer, Length), "unpaired surrogate refused by the open-time check");
 
     if (Failures)
         return 1;
