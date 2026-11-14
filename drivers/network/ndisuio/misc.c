@@ -36,33 +36,6 @@ NduDoRequest(PNDISUIO_ADAPTER_CONTEXT AdapterContext,
     return Status;
 }
 
-PNDISUIO_ADAPTER_CONTEXT
-FindAdapterContextByName(PNDIS_STRING DeviceName)
-{
-    KIRQL OldIrql;
-    PLIST_ENTRY CurrentEntry;
-    PNDISUIO_ADAPTER_CONTEXT AdapterContext;
-
-    KeAcquireSpinLock(&GlobalAdapterListLock, &OldIrql);
-    CurrentEntry = GlobalAdapterList.Flink;
-    while (CurrentEntry != &GlobalAdapterList)
-    {
-        AdapterContext = CONTAINING_RECORD(CurrentEntry, NDISUIO_ADAPTER_CONTEXT, ListEntry);
-
-        /* Check if the device name matches */
-        if (RtlEqualUnicodeString(&AdapterContext->DeviceName, DeviceName, TRUE))
-        {
-            KeReleaseSpinLock(&GlobalAdapterListLock, OldIrql);
-            return AdapterContext;
-        }
-
-        CurrentEntry = CurrentEntry->Flink;
-    }
-    KeReleaseSpinLock(&GlobalAdapterListLock, OldIrql);
-
-    return NULL;
-}
-
 /* Returns the adapter that the file object is opened on and keeps it alive
  * until NduEndIo. Returns NULL if the file object has no adapter, which is
  * also the case after the adapter was unbound. */
@@ -108,34 +81,4 @@ ReferenceAdapterContext(PNDISUIO_ADAPTER_CONTEXT AdapterContext)
 {
     /* Increment the open count */
     AdapterContext->OpenCount++;
-}
-
-VOID
-DereferenceAdapterContextWithOpenEntry(PNDISUIO_ADAPTER_CONTEXT AdapterContext,
-                                       PNDISUIO_OPEN_ENTRY OpenEntry)
-{
-    KIRQL OldIrql;
-
-    /* Lock the adapter context */
-    KeAcquireSpinLock(&AdapterContext->Spinlock, &OldIrql);
-
-    /* Decrement the open count */
-    AdapterContext->OpenCount--;
-
-    /* Cleanup the open entry if we were given one */
-    if (OpenEntry != NULL)
-    {
-        /* Remove the open entry */
-        RemoveEntryList(&OpenEntry->ListEntry);
-
-        /* Invalidate the FO */
-        OpenEntry->FileObject->FsContext = NULL;
-        OpenEntry->FileObject->FsContext2 = NULL;
-
-        /* Free the open entry */
-        ExFreePool(OpenEntry);
-    }
-
-    /* Release the adapter context lock */
-    KeReleaseSpinLock(&AdapterContext->Spinlock, OldIrql);
 }

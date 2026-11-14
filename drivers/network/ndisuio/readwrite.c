@@ -198,8 +198,8 @@ NduDispatchWrite(PDEVICE_OBJECT DeviceObject,
 
     ASSERT(DeviceObject == GlobalDeviceObject);
 
-    /* The file object must be opened on an adapter. The adapter stays until
-     * NduEndIo. */
+    /* The file object must be opened on an adapter; both kinds of open may
+     * write. The adapter stays until NduEndIo. */
     AdapterContext = NduBeginIo(IrpSp->FileObject, NULL);
     if (AdapterContext == NULL)
     {

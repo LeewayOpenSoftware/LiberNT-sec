@@ -114,9 +114,6 @@ NduDoRequest(PNDISUIO_ADAPTER_CONTEXT AdapterContext,
              PNDISUIO_REQUEST Request);
 
 PNDISUIO_ADAPTER_CONTEXT
-FindAdapterContextByName(PNDIS_STRING DeviceName);
-
-PNDISUIO_ADAPTER_CONTEXT
 NduBeginIo(PFILE_OBJECT FileObject,
            PBOOLEAN WriteOnly);
 
@@ -125,10 +122,6 @@ NduEndIo(PNDISUIO_ADAPTER_CONTEXT AdapterContext);
 
 VOID
 ReferenceAdapterContext(PNDISUIO_ADAPTER_CONTEXT AdapterContext);
-
-VOID
-DereferenceAdapterContextWithOpenEntry(PNDISUIO_ADAPTER_CONTEXT AdapterContext,
-                                       PNDISUIO_OPEN_ENTRY OpenEntry);
 
 /* protocol.c */
 PROTOCOL_OPEN_ADAPTER_COMPLETE_EX NduOpenAdapterComplete;

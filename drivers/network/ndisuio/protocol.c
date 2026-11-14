@@ -403,7 +403,7 @@ BindAdapterByName(NDIS_HANDLE BindContext,
     if (!AdapterContext->NblPoolHandle)
     {
         DPRINT1("Failed to allocate NBL pool\n");
-        RtlFreeUnicodeString(&AdapterContext->DeviceName);
+        ExFreePool(AdapterContext->DeviceName.Buffer);
         ExFreePool(AdapterContext);
         return NDIS_STATUS_RESOURCES;
     }
@@ -440,7 +440,7 @@ BindAdapterByName(NDIS_HANDLE BindContext,
     {
         DPRINT1("Failed to open adapter for bind with status 0x%x\n", Status);
         NdisFreeNetBufferListPool(AdapterContext->NblPoolHandle);
-        RtlFreeUnicodeString(&AdapterContext->DeviceName);
+        ExFreePool(AdapterContext->DeviceName.Buffer);
         ExFreePool(AdapterContext);
         return Status;
     }

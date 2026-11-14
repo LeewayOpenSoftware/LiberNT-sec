@@ -285,6 +285,34 @@ QueryAdapterOid(PNDISUIO_ADAPTER_CONTEXT AdapterContext, PIRP Irp, PIO_STACK_LOC
     return Status;
 }
 
+/* Compares two adapter names without regard to the case of the letters A to Z.
+ * It runs with the adapter list lock held, where the string routines of the
+ * system, which use the case tables, must not be called. */
+static
+BOOLEAN
+NduEqualAdapterName(PCUNICODE_STRING Name1, PCUNICODE_STRING Name2)
+{
+    USHORT i;
+    WCHAR Char1, Char2;
+
+    if (Name1->Length != Name2->Length)
+        return FALSE;
+
+    for (i = 0; i < Name1->Length / sizeof(WCHAR); i++)
+    {
+        Char1 = Name1->Buffer[i];
+        Char2 = Name2->Buffer[i];
+        if (Char1 >= L'a' && Char1 <= L'z')
+            Char1 -= L'a' - L'A';
+        if (Char2 >= L'a' && Char2 <= L'z')
+            Char2 -= L'a' - L'A';
+        if (Char1 != Char2)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
 static
 NTSTATUS
 OpenDeviceReadWrite(PIRP Irp, PIO_STACK_LOCATION IrpSp)
@@ -320,7 +348,7 @@ OpenDeviceReadWrite(PIRP Irp, PIO_STACK_LOCATION IrpSp)
             while (CurrentEntry != &GlobalAdapterList)
             {
                 AdapterContext = CONTAINING_RECORD(CurrentEntry, NDISUIO_ADAPTER_CONTEXT, ListEntry);
-                if (RtlEqualUnicodeString(&AdapterContext->DeviceName, &DeviceName, TRUE))
+                if (NduEqualAdapterName(&AdapterContext->DeviceName, &DeviceName))
                     break;
 
                 AdapterContext = NULL;
