@@ -186,8 +186,12 @@ NsiCsqPeekNextIrp(
     {
         PIRP Candidate = CONTAINING_RECORD(Entry, IRP, Tail.Overlay.ListEntry);
 
+        /* PeekContext is a provider-owner key: a PFILE_OBJECT (handle cleanup) or a
+         * PDEVICE_OBJECT (driver unload, R3). A file-object pointer and a device-object
+         * pointer never alias, so matching either serves both callers without a tag. */
         if (PeekContext == NULL ||
-            IoGetCurrentIrpStackLocation(Candidate)->FileObject == (PFILE_OBJECT)PeekContext)
+            IoGetCurrentIrpStackLocation(Candidate)->FileObject == (PFILE_OBJECT)PeekContext ||
+            IoGetCurrentIrpStackLocation(Candidate)->DeviceObject == (PDEVICE_OBJECT)PeekContext)
         {
             return Candidate;
         }
@@ -370,10 +374,14 @@ NsiRequestChangeNotificationKm(
     return STATUS_PENDING;
 }
 
-VOID
-NTAPI
-NsiCancelChangeNotificationsKm(
-    _In_ PFILE_OBJECT FileObject)
+/* Cancel every queued change-notification IRP whose owner matches Owner: a
+ * PFILE_OBJECT (handle cleanup) or a PDEVICE_OBJECT (driver unload). Removal is
+ * cancel-safe via IoCsqRemoveNextIrp; the IRPs are completed only after both the
+ * provider and the queue locks are dropped, so a caller completion routine cannot
+ * re-enter NSI under NsiProviderLock (NH1). */
+static VOID
+NsiCancelChangeNotificationsByOwner(
+    _In_opt_ PVOID Owner)
 {
     LIST_ENTRY Cancelled;
     PLIST_ENTRY Entry;
@@ -388,7 +396,7 @@ NsiCancelChangeNotificationsKm(
     {
         PNSI_PROVIDER Provider = CONTAINING_RECORD(Entry, NSI_PROVIDER, ListEntry);
 
-        while ((Irp = IoCsqRemoveNextIrp(&Provider->Csq, FileObject)) != NULL)
+        while ((Irp = IoCsqRemoveNextIrp(&Provider->Csq, Owner)) != NULL)
             InsertTailList(&Cancelled, &Irp->Tail.Overlay.ListEntry);
     }
     KeReleaseSpinLock(&NsiProviderLock, OldIrql);
@@ -401,6 +409,25 @@ NsiCancelChangeNotificationsKm(
         Irp->IoStatus.Information = 0;
         IoCompleteRequest(Irp, IO_NO_INCREMENT);
     }
+}
+
+VOID
+NTAPI
+NsiCancelChangeNotificationsKm(
+    _In_ PFILE_OBJECT FileObject)
+{
+    NsiCancelChangeNotificationsByOwner(FileObject);
+}
+
+/* R3: let nsiproxy drain its own queued notification IRPs by device object on unload,
+ * before IoDeleteDevice, without a per-IRP completion routine (a top-level pended IRP
+ * has no stack location for one). The store owns and completes these IRPs. */
+VOID
+NTAPI
+NsiCancelChangeNotificationsByDeviceKm(
+    _In_ PDEVICE_OBJECT DeviceObject)
+{
+    NsiCancelChangeNotificationsByOwner(DeviceObject);
 }
 
 NTSTATUS

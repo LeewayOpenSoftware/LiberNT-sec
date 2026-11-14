@@ -286,6 +286,16 @@ NsiProxyUnload(
     IoDeleteSymbolicLink(&NsiProxyLinkName);
     if (NsiProxyDevice != NULL)
     {
+        /* Drain this driver's change-notification IRPs still queued in the netio store
+         * before the device goes away. On a service stop or forced unload a process can
+         * still hold armed waits that IRP_MJ_CLEANUP has not reached; without this they
+         * sit in netio's queues and are completed later against a deleted device. We
+         * attach no completion routine to these IRPs (a top-level pended IRP has no stack
+         * location for one, and netio owns and completes them), so cancelling them by
+         * owner here removes and completes them with no nsiproxy code on the completion
+         * path; a cancel already in flight is finished by netio alone. The IRPs are gone
+         * from netio's queues before IoDeleteDevice. */
+        NsiCancelChangeNotificationsByDeviceKm(NsiProxyDevice);
         IoDeleteDevice(NsiProxyDevice);
         NsiProxyDevice = NULL;
     }
