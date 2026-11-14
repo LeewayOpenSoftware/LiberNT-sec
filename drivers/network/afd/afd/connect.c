@@ -838,6 +838,13 @@ AfdStreamSocketSuperConnect(
     if (!ConnectReq)
         return UnlockAndMaybeComplete(FCB, STATUS_NO_MEMORY, Irp, 0);
 
+    if (IrpSp->Parameters.DeviceIoControl.InputBufferLength <
+        FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress) ||
+        !AfdTransportAddressFits(&ConnectReq->RemoteAddress,
+                                 IrpSp->Parameters.DeviceIoControl.InputBufferLength -
+                                 FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress)))
+        return UnlockAndMaybeComplete(FCB, STATUS_INVALID_PARAMETER, Irp, 0);
+
     AFD_DbgPrint(MID_TRACE,("Connect request:\n"));
 #if DBG
     OskitDumpBuffer((PCHAR)ConnectReq,
@@ -861,7 +868,21 @@ AfdStreamSocketSuperConnect(
          if (!FCB->OnConnectSendBuffer)
              return UnlockAndMaybeComplete(FCB, STATUS_NO_MEMORY, Irp, 0);
 
-         RtlCopyMemory(FCB->OnConnectSendBuffer, Irp->UserBuffer, BufferSize);
+         _SEH2_TRY {
+             if (LockMode != KernelMode)
+                 ProbeForRead(Irp->UserBuffer, BufferSize, sizeof(UCHAR));
+             RtlCopyMemory(FCB->OnConnectSendBuffer, Irp->UserBuffer, BufferSize);
+         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+             Status = _SEH2_GetExceptionCode();
+         } _SEH2_END;
+
+         if (!NT_SUCCESS(Status))
+         {
+             ExFreePoolWithTag(FCB->OnConnectSendBuffer, TAG_AFD_SUPER_CONNECT_BUFFER);
+             FCB->OnConnectSendBuffer = NULL;
+             FCB->OnConnectSendBufferSize = 0;
+             return UnlockAndMaybeComplete(FCB, Status, Irp, 0);
+         }
     }
 
     if (FCB->Flags & AFD_ENDPOINT_CONNECTIONLESS)
