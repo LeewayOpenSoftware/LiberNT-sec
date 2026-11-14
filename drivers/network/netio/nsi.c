@@ -19,7 +19,6 @@ typedef struct _NSI_PROVIDER
     NSI_PROVIDER_DISPATCH Dispatch;
     PVOID Context;
     volatile LONG References;
-    volatile LONG Sequence;
     BOOLEAN Deregistering;
     KEVENT Released;
     IO_CSQ Csq;
@@ -324,16 +323,14 @@ NsiNotifyChange(
     _In_reads_bytes_opt_(KeySize) const VOID *Key,
     _In_ ULONG KeySize)
 {
-    LONG Sequence;
-
     UNREFERENCED_PARAMETER(Type);
     UNREFERENCED_PARAMETER(Key);
     UNREFERENCED_PARAMETER(KeySize);
 
     if (!NsiReferenceRegisteredProvider(Provider))
         return;
-    Sequence = InterlockedIncrement(&Provider->Sequence);
-    NsiDrainPendingIrps(Provider, NULL, STATUS_SUCCESS, (ULONG_PTR)(ULONG)Sequence);
+    /* The request has no output: the completion itself is the news */
+    NsiDrainPendingIrps(Provider, NULL, STATUS_SUCCESS, 0);
     NsiDereferenceProvider(Provider);
 }
 
