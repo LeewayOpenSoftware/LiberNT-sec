@@ -44,9 +44,13 @@ NduDispatchClose(PDEVICE_OBJECT DeviceObject,
     PFILE_OBJECT FileObject = IrpSp->FileObject;
     PNDISUIO_ADAPTER_CONTEXT AdapterContext;
     PNDISUIO_OPEN_ENTRY OpenEntry = NULL;
+    LIST_ENTRY StalePackets;
+    PLIST_ENTRY CurrentEntry;
     KIRQL OldIrql;
 
     ASSERT(DeviceObject == GlobalDeviceObject);
+
+    InitializeListHead(&StalePackets);
 
     DPRINT("Closing file object 0x%x\n", FileObject);
 
@@ -62,6 +66,17 @@ NduDispatchClose(PDEVICE_OBJECT DeviceObject,
         KeAcquireSpinLockAtDpcLevel(&AdapterContext->Spinlock);
         RemoveEntryList(&OpenEntry->ListEntry);
         AdapterContext->OpenCount--;
+
+        /* The packets that waited for this handle are of no use to the next */
+        if (AdapterContext->OpenCount == 0)
+        {
+            while (!IsListEmpty(&AdapterContext->PacketList))
+            {
+                CurrentEntry = RemoveHeadList(&AdapterContext->PacketList);
+                InsertTailList(&StalePackets, CurrentEntry);
+            }
+            AdapterContext->PacketCount = 0;
+        }
         KeReleaseSpinLockFromDpcLevel(&AdapterContext->Spinlock);
 
         FileObject->FsContext = NULL;
@@ -71,6 +86,12 @@ NduDispatchClose(PDEVICE_OBJECT DeviceObject,
 
     if (OpenEntry != NULL)
         ExFreePool(OpenEntry);
+
+    while (!IsListEmpty(&StalePackets))
+    {
+        CurrentEntry = RemoveHeadList(&StalePackets);
+        ExFreePool(CONTAINING_RECORD(CurrentEntry, NDISUIO_PACKET_ENTRY, ListEntry));
+    }
 
     /* Completed */
     Irp->IoStatus.Status = STATUS_SUCCESS;

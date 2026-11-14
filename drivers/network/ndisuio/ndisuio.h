@@ -38,8 +38,9 @@ typedef struct _NDISUIO_ADAPTER_CONTEXT
     /* NDIS pools */
     NDIS_HANDLE NblPoolHandle;
 
-    /* Receive packet list */
+    /* Receive packet list. PacketCount is protected by Spinlock. */
     LIST_ENTRY PacketList;
+    ULONG PacketCount;
     KEVENT PacketReadEvent;
 
     BOOLEAN Paused;
@@ -86,6 +87,9 @@ typedef struct _NDISUIO_REQUEST
     KEVENT Event;
     NDIS_STATUS Status;
 } NDISUIO_REQUEST, *PNDISUIO_REQUEST;
+
+/* Received packets that may wait for a read. More are dropped. */
+#define NDISUIO_MAX_QUEUED_PACKETS 256
 
 /* NDIS version info */
 #define NDIS_MAJOR_VERSION 6

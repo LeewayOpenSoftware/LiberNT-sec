@@ -179,6 +179,7 @@ NduReceive(NDIS_HANDLE ProtocolBindingContext,
     ULONG PacketSize;
     PVOID PacketData;
     BOOLEAN Queued = FALSE;
+    KIRQL OldIrql;
 
     for (Nbl = NetBufferLists; Nbl != NULL; Nbl = NET_BUFFER_LIST_NEXT_NBL(Nbl))
     {
@@ -190,8 +191,13 @@ NduReceive(NDIS_HANDLE ProtocolBindingContext,
 
             DPRINT("Received a %d byte packet\n", PacketSize);
 
-            if (AdapterContext->OpenCount == 0 || PacketSize == 0)
+            /* Nobody reads, or the reader is too slow: the packet is dropped
+             * so that the network cannot fill the memory through this queue */
+            if (AdapterContext->OpenCount == 0 || PacketSize == 0 ||
+                AdapterContext->PacketCount >= NDISUIO_MAX_QUEUED_PACKETS)
+            {
                 continue;
+            }
 
             PacketEntry = ExAllocatePool(NonPagedPool, sizeof(NDISUIO_PACKET_ENTRY) + PacketSize - 1);
             if (!PacketEntry)
@@ -208,9 +214,10 @@ NduReceive(NDIS_HANDLE ProtocolBindingContext,
             if (PacketData != PacketEntry->PacketData)
                 RtlCopyMemory(PacketEntry->PacketData, PacketData, PacketSize);
 
-            ExInterlockedInsertTailList(&AdapterContext->PacketList,
-                                        &PacketEntry->ListEntry,
-                                        &AdapterContext->Spinlock);
+            KeAcquireSpinLock(&AdapterContext->Spinlock, &OldIrql);
+            InsertTailList(&AdapterContext->PacketList, &PacketEntry->ListEntry);
+            AdapterContext->PacketCount++;
+            KeReleaseSpinLock(&AdapterContext->Spinlock, OldIrql);
             Queued = TRUE;
         }
     }

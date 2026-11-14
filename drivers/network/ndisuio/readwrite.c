@@ -134,6 +134,10 @@ NduDispatchRead(PDEVICE_OBJECT DeviceObject,
             ListEntry = RemoveHeadList(&AdapterContext->PacketList);
             PacketEntry = CONTAINING_RECORD(ListEntry, NDISUIO_PACKET_ENTRY, ListEntry);
 
+            /* The empty entry of a cancelled read is not counted */
+            if (PacketEntry->PacketLength != 0)
+                AdapterContext->PacketCount--;
+
             /* Release the adapter lock */
             KeReleaseSpinLock(&AdapterContext->Spinlock, OldIrql);
 
