@@ -278,10 +278,211 @@ Test_ThreadAffinityMask(void)
     ok_hex(Status, STATUS_SUCCESS);
 }
 
+/* ThreadZeroTlsCell clears one TLS index in every thread of the process. The
+ * expansion slots are found through an address kept in the TEB, which is the
+ * process's own memory. */
+static
+void
+Test_ThreadZeroTlsCell(void)
+{
+    PTEB Teb = NtCurrentTeb();
+    PVOID *OriginalSlots = Teb->TlsExpansionSlots;
+    PVOID *Slots;
+    NTSTATUS Status;
+    ULONG TlsIndex, Index;
+    DWORD Allocated;
+
+    /* A cell in the TEB itself */
+    Allocated = TlsAlloc();
+    ok(Allocated != TLS_OUT_OF_INDEXES, "TlsAlloc failed with %lu\n", GetLastError());
+    if (Allocated != TLS_OUT_OF_INDEXES && Allocated < TLS_MINIMUM_AVAILABLE)
+    {
+        ok(TlsSetValue(Allocated, (PVOID)(ULONG_PTR)0x1234), "TlsSetValue failed with %lu\n", GetLastError());
+        TlsIndex = Allocated;
+        Status = NtSetInformationThread(NtCurrentThread(), ThreadZeroTlsCell, &TlsIndex, sizeof(TlsIndex));
+        ok_hex(Status, STATUS_SUCCESS);
+        ok(TlsGetValue(Allocated) == NULL, "The cell still holds %p\n", TlsGetValue(Allocated));
+    }
+    if (Allocated != TLS_OUT_OF_INDEXES)
+        TlsFree(Allocated);
+
+    /* A cell in expansion slots of our own: only that cell is cleared */
+    Slots = HeapAlloc(GetProcessHeap(), 0, TLS_EXPANSION_SLOTS * sizeof(PVOID));
+    ok(Slots != NULL, "No memory for the expansion slots\n");
+    if (Slots == NULL)
+        return;
+
+    for (Index = 0; Index < TLS_EXPANSION_SLOTS; Index++)
+        Slots[Index] = (PVOID)(ULONG_PTR)(Index + 1);
+
+    Teb->TlsExpansionSlots = Slots;
+    TlsIndex = TLS_MINIMUM_AVAILABLE + 5;
+    Status = NtSetInformationThread(NtCurrentThread(), ThreadZeroTlsCell, &TlsIndex, sizeof(TlsIndex));
+    Teb->TlsExpansionSlots = OriginalSlots;
+    ok_hex(Status, STATUS_SUCCESS);
+    for (Index = 0; Index < TLS_EXPANSION_SLOTS; Index++)
+    {
+        PVOID Expected = (Index == 5) ? NULL : (PVOID)(ULONG_PTR)(Index + 1);
+
+        ok(Slots[Index] == Expected, "Slot %lu holds %p\n", Index, Slots[Index]);
+    }
+    HeapFree(GetProcessHeap(), 0, Slots);
+
+#ifdef _WIN64
+    /* An address in the system range is not ours to clear: the call neither
+     * writes there nor brings the system down. Nothing is mapped at the
+     * address, so a system that does write there stops here. */
+    Teb->TlsExpansionSlots = (PVOID *)(ULONG_PTR)0xFFFF800000000000ULL;
+    TlsIndex = TLS_MINIMUM_AVAILABLE + 5;
+    Status = NtSetInformationThread(NtCurrentThread(), ThreadZeroTlsCell, &TlsIndex, sizeof(TlsIndex));
+    Teb->TlsExpansionSlots = OriginalSlots;
+    ok(Status == STATUS_SUCCESS || Status == STATUS_ACCESS_VIOLATION,
+       "A system address for the expansion slots gave 0x%lx\n", Status);
+#endif
+
+    /* An address where nothing is mapped, in the user range */
+    Teb->TlsExpansionSlots = (PVOID *)(ULONG_PTR)0x10000;
+    TlsIndex = TLS_MINIMUM_AVAILABLE + 5;
+    Status = NtSetInformationThread(NtCurrentThread(), ThreadZeroTlsCell, &TlsIndex, sizeof(TlsIndex));
+    Teb->TlsExpansionSlots = OriginalSlots;
+    ok(Status == STATUS_SUCCESS || Status == STATUS_ACCESS_VIOLATION,
+       "An unmapped address for the expansion slots gave 0x%lx\n", Status);
+}
+
+static
+DWORD
+WINAPI
+IdleThread(PVOID Parameter)
+{
+    UNREFERENCED_PARAMETER(Parameter);
+    return 0;
+}
+
+/* The ideal processor is also copied to the TEB of the thread, which the
+ * process can have made read-only: the call still works. */
+static
+void
+Test_ThreadIdealProcessorReadOnlyTeb(void)
+{
+    THREAD_BASIC_INFORMATION Basic;
+    HANDLE Thread;
+    NTSTATUS Status;
+    ULONG IdealProcessor = 0;
+    DWORD OldProtect, Ignored;
+
+    Thread = CreateThread(NULL, 0, IdleThread, NULL, CREATE_SUSPENDED, NULL);
+    ok(Thread != NULL, "CreateThread failed with %lu\n", GetLastError());
+    if (Thread == NULL)
+        return;
+
+    Status = NtQueryInformationThread(Thread, ThreadBasicInformation, &Basic, sizeof(Basic), NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status) && Basic.TebBaseAddress != NULL &&
+        VirtualProtect(Basic.TebBaseAddress, 1, PAGE_READONLY, &OldProtect))
+    {
+        /* On success the status is the previous ideal processor */
+        Status = NtSetInformationThread(Thread, ThreadIdealProcessor, &IdealProcessor, sizeof(IdealProcessor));
+        ok(NT_SUCCESS(Status), "ThreadIdealProcessor with a read-only TEB gave 0x%lx\n", Status);
+
+        ok(VirtualProtect(Basic.TebBaseAddress, 1, OldProtect, &Ignored),
+           "The TEB could not be made writable again: %lu\n", GetLastError());
+    }
+    else
+    {
+        skip("The TEB of the new thread could not be made read-only\n");
+    }
+
+    ResumeThread(Thread);
+    ok(WaitForSingleObject(Thread, 10000) == WAIT_OBJECT_0, "The thread did not end\n");
+    CloseHandle(Thread);
+}
+
+static volatile LONG TicketStop;
+
+static
+DWORD
+WINAPI
+TicketQueryThread(PVOID Parameter)
+{
+    HANDLE Target = Parameter;
+    RTL_WORK_ON_BEHALF_TICKET_EX Ticket;
+
+    while (!TicketStop)
+        NtQueryInformationThread(Target, ThreadWorkOnBehalfTicket, &Ticket, sizeof(Ticket), NULL);
+
+    return 0;
+}
+
+/* A thread can be given the ticket of another thread and that ticket can be
+ * replaced at any time, while other threads ask for it. The thread a ticket
+ * names is kept only by the ticket once it has ended and its handle is
+ * closed, so replacing the ticket frees it. Only the survival of the system
+ * is checked: statuses differ between systems. */
+static
+void
+Test_ThreadWorkOnBehalfTicketRace(void)
+{
+    ALPC_WORK_ON_BEHALF_TICKET Ticket;
+    THREAD_BASIC_INFORMATION Basic;
+    KERNEL_USER_TIMES Times;
+    HANDLE Target, Query, Named;
+    NTSTATUS Status;
+    ULONG Round;
+
+    Target = CreateThread(NULL, 0, IdleThread, NULL, CREATE_SUSPENDED, NULL);
+    ok(Target != NULL, "CreateThread failed with %lu\n", GetLastError());
+    if (Target == NULL)
+        return;
+
+    TicketStop = 0;
+    Query = CreateThread(NULL, 0, TicketQueryThread, Target, 0, NULL);
+    ok(Query != NULL, "CreateThread failed with %lu\n", GetLastError());
+
+    for (Round = 0; Query != NULL && Round < 2000; Round++)
+    {
+        Named = CreateThread(NULL, 0, IdleThread, NULL, 0, NULL);
+        if (Named == NULL)
+            break;
+
+        Status = NtQueryInformationThread(Named, ThreadBasicInformation, &Basic, sizeof(Basic), NULL);
+        if (NT_SUCCESS(Status))
+            Status = NtQueryInformationThread(Named, ThreadTimes, &Times, sizeof(Times), NULL);
+        if (NT_SUCCESS(Status))
+        {
+            Ticket.ThreadId = HandleToUlong(Basic.ClientId.UniqueThread);
+            Ticket.ThreadCreationTimeLow = Times.CreateTime.LowPart;
+            NtSetInformationThread(Target, ThreadWorkOnBehalfTicket, &Ticket, sizeof(Ticket));
+        }
+
+        /* From here the ticket alone keeps the thread it names */
+        WaitForSingleObject(Named, 10000);
+        CloseHandle(Named);
+
+        /* And this lets go of it, while the other thread asks for the ticket */
+        RtlZeroMemory(&Ticket, sizeof(Ticket));
+        NtSetInformationThread(Target, ThreadWorkOnBehalfTicket, &Ticket, sizeof(Ticket));
+    }
+
+    TicketStop = 1;
+    if (Query != NULL)
+    {
+        ok(WaitForSingleObject(Query, 10000) == WAIT_OBJECT_0, "The asking thread did not end\n");
+        CloseHandle(Query);
+    }
+
+    ResumeThread(Target);
+    ok(WaitForSingleObject(Target, 10000) == WAIT_OBJECT_0, "The thread did not end\n");
+    CloseHandle(Target);
+    ok(Round > 0, "No round was run\n");
+}
+
 START_TEST(NtSetInformationThread)
 {
     Test_ThreadPriorityClass();
     Test_ThreadSetAlignmentProbe();
     Test_ThreadNameInformation();
     Test_ThreadAffinityMask();
+    Test_ThreadZeroTlsCell();
+    Test_ThreadIdealProcessorReadOnlyTeb();
+    Test_ThreadWorkOnBehalfTicketRace();
 }
