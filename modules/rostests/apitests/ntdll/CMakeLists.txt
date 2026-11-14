@@ -64,6 +64,7 @@ list(APPEND SOURCE
     arm64_chpe.c
     wow64_startup.c
     wow64_native_process.c
+    KsecDdDeviceControl.c
     LdrEnumResources.c
     LdrFindResource_U.c
     LdrForwarderPath.c
