@@ -94,6 +94,43 @@ Test_Escape(D3DKMT_HANDLE hAdapter)
     ok_failed(CallGuarded(pfn, &Data), "Escape with a kernel private data pointer\n");
 }
 
+/* A service that hands the caller's pointer straight to the bridge: the
+ * keyed mutex private data is read from a kernel address only if unfixed */
+static void
+Test_KeyedMutex2(void)
+{
+    PFN_D3DKMT_CALL pfn = (PFN_D3DKMT_CALL)LoadD3DKMTProc("D3DKMTCreateKeyedMutex2");
+    D3DKMT_CREATEKEYEDMUTEX2 Data;
+
+    if (!pfn)
+    {
+        skip("D3DKMTCreateKeyedMutex2 not exported
+");
+        return;
+    }
+    memset(&Data, 0, sizeof(Data));
+    Data.pPrivateRuntimeData = KERNEL_READABLE_ADDRESS;
+    Data.PrivateRuntimeDataSize = 16;
+    ok_failed(CallGuarded(pfn, &Data), "CreateKeyedMutex2 with kernel private data
+");
+}
+
+/* The structure pointer itself is a kernel address on a direct service */
+static void
+Test_DirectStructurePointer(void)
+{
+    PFN_D3DKMT_CALL pfn = (PFN_D3DKMT_CALL)LoadD3DKMTProc("D3DKMTGetOverlayState");
+
+    if (!pfn)
+    {
+        skip("D3DKMTGetOverlayState not exported
+");
+        return;
+    }
+    ok_failed(CallGuarded(pfn, KERNEL_UNMAPPED_ADDRESS), "GetOverlayState with a kernel structure pointer
+");
+}
+
 START_TEST(embedded_kptr)
 {
     D3DKMT_HANDLE hAdapter, hDevice;
@@ -105,6 +142,8 @@ START_TEST(embedded_kptr)
         return;
     }
 
+    Test_KeyedMutex2();
+    Test_DirectStructurePointer();
     Test_QueryAdapterInfo(hAdapter);
     Test_Escape(hAdapter);
 
