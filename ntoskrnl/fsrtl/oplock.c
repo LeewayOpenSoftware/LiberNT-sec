@@ -440,8 +440,9 @@ FsRtlAcknowledgeOplockBreak(IN PINTERNAL_OPLOCK Oplock,
         if (Irp->Cancel)
         {
             ExReleaseFastMutexUnsafe(Oplock->IntLock);
-            Locked = FALSE;
             FsRtlCancelOplockIIIrp(NULL, Irp);
+            /* The rest of the acknowledge walks the wait list: under the lock */
+            ExAcquireFastMutexUnsafe(Oplock->IntLock);
         }
         /* Otherwise, just set our cancel routine */
         else
@@ -963,6 +964,16 @@ FsRtlpBreakMustNotWait(IN PIO_STACK_LOCATION Stack,
             BooleanFlagOn(Stack->Parameters.Create.Options, FILE_COMPLETE_IF_OPLOCKED));
 }
 
+/* An open that requires an oplock must not break (or wait on) someone else's. The break functions ask
+ * this only once they know that a break or a wait is really needed. */
+static
+BOOLEAN
+FsRtlpOpenRequiresOplock(IN PIO_STACK_LOCATION Stack)
+{
+    return (Stack->MajorFunction == IRP_MJ_CREATE &&
+            BooleanFlagOn(Stack->Parameters.Create.Options, FILE_OPEN_REQUIRING_OPLOCK));
+}
+
 static
 NTSTATUS
 FsRtlpOplockBreakToNone(IN PINTERNAL_OPLOCK Oplock,
@@ -987,6 +998,13 @@ FsRtlpOplockBreakToNone(IN PINTERNAL_OPLOCK Oplock,
     {
         ExReleaseFastMutexUnsafe(Oplock->IntLock);
         return STATUS_SUCCESS;
+    }
+
+    /* Someone else's oplock would be broken or waited on */
+    if (FsRtlpOpenRequiresOplock(Stack) && Oplock->FileObject != Stack->FileObject)
+    {
+        ExReleaseFastMutexUnsafe(Oplock->IntLock);
+        return STATUS_CANNOT_BREAK_OPLOCK;
     }
 
     /* Not broken yet, but set... Let's do it!
@@ -1135,6 +1153,13 @@ FsRtlOplockBreakToII(IN PINTERNAL_OPLOCK Oplock,
         return STATUS_SUCCESS;
     }
 
+    /* Someone else's exclusive oplock would be broken or waited on */
+    if (FsRtlpOpenRequiresOplock(Stack))
+    {
+        ExReleaseFastMutexUnsafe(Oplock->IntLock);
+        return STATUS_CANNOT_BREAK_OPLOCK;
+    }
+
     /* If already broken or not set yet */
     if (BooleanFlagOn(Oplock->Flags, (BROKEN_ANY | PENDING_LOCK)))
     {
@@ -1227,13 +1252,6 @@ FsRtlpBreakOplock(IN PINTERNAL_OPLOCK IntOplock,
                   IN POPLOCK_WAIT_COMPLETE_ROUTINE CompletionRoutine OPTIONAL,
                   IN POPLOCK_FS_PREPOST_IRP PostIrpRoutine OPTIONAL)
 {
-    /* An open that requires an oplock must not break (or wait on) someone else's */
-    if (Stack->MajorFunction == IRP_MJ_CREATE &&
-        BooleanFlagOn(Stack->Parameters.Create.Options, FILE_OPEN_REQUIRING_OPLOCK))
-    {
-        return STATUS_CANNOT_BREAK_OPLOCK;
-    }
-
     if (ToNone)
     {
         return FsRtlpOplockBreakToNone(IntOplock, Stack, Irp, Flags, Context, CompletionRoutine, PostIrpRoutine);

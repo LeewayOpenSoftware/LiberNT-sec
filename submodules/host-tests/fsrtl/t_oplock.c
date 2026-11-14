@@ -228,6 +228,22 @@ static void open_requiring_oplock_cannot_break(void)
     Teardown(&Oplock);
 }
 
+/* A Level 2 oplock is not broken by an open that keeps it shared: such an open
+   must not be refused for requiring an oplock (review S4) */
+static void open_requiring_oplock_on_level2_succeeds(void)
+{
+    OPLOCK Oplock = NULL;
+    FILE_OBJECT Holder = {0, 1}, Opener = {0, 1};
+    HIRP Shared, Create;
+
+    CHECK(Grant(&Oplock, &Shared, &Holder, FSCTL_REQUEST_OPLOCK_LEVEL_2) == STATUS_PENDING);
+    InitCreate(&Create, &Opener, FILE_WRITE_DATA, FILE_OPEN, FILE_OPEN_REQUIRING_OPLOCK);
+    CHECK(FsRtlCheckOplockEx(&Oplock, &Create.Irp, 0, NULL, NULL, NULL) == STATUS_SUCCESS);
+    CHECK(HostWaitCount == 0);
+    CHECK(Shared.Irp.CompletionCount == 0);
+    Teardown(&Oplock);
+}
+
 /* Regression guard: the classic entry point keeps its create classification */
 static void classic_read_only_create_does_not_break(void)
 {
@@ -501,6 +517,7 @@ static const struct
     { "parent_object_breaks_level2", parent_object_breaks_level2 },
     { "complete_if_oplocked_does_not_wait", complete_if_oplocked_does_not_wait },
     { "open_requiring_oplock_cannot_break", open_requiring_oplock_cannot_break },
+    { "open_requiring_oplock_on_level2_succeeds", open_requiring_oplock_on_level2_succeeds },
     { "classic_read_only_create_does_not_break", classic_read_only_create_does_not_break },
     { "break_h_batch_posts_and_resumes_on_ack", break_h_batch_posts_and_resumes_on_ack },
     { "break_h_filter_waits_for_ack", break_h_filter_waits_for_ack },

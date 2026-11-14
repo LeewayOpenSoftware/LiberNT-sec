@@ -38,6 +38,7 @@ set(FSRTL_OPLOCK_CASES
     parent_object_breaks_level2
     complete_if_oplocked_does_not_wait
     open_requiring_oplock_cannot_break
+    open_requiring_oplock_on_level2_succeeds
     classic_read_only_create_does_not_break
     break_h_batch_posts_and_resumes_on_ack
     break_h_filter_waits_for_ack
