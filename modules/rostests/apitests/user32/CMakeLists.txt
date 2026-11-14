@@ -107,6 +107,7 @@ list(APPEND SOURCE
     ScrollDC.c
     ScrollWindowEx.c
     UnhookWinEvent.c
+    SendMessageSameThread.c
     SendMessageTimeout.c
     ServiceAccountDesktop.c
     SendMessageTimeoutHung.c

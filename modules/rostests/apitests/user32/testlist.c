@@ -108,6 +108,7 @@ extern void func_ScrollBarWndExtra(void);
 extern void func_ScrollDC(void);
 extern void func_ScrollWindowEx(void);
 extern void func_UnhookWinEvent(void);
+extern void func_SendMessageSameThread(void);
 extern void func_SendMessageTimeout(void);
 extern void func_SendMessageTimeoutHung(void);
 extern void func_ServiceAccountDesktop(void);
@@ -252,6 +253,7 @@ const struct test winetest_testlist[] =
     { "ScrollDC", func_ScrollDC },
     { "ScrollWindowEx", func_ScrollWindowEx },
     { "UnhookWinEvent", func_UnhookWinEvent },
+    { "SendMessageSameThread", func_SendMessageSameThread },
     { "SendMessageTimeout", func_SendMessageTimeout },
     { "SendMessageTimeoutHung", func_SendMessageTimeoutHung },
     { "ServiceAccountDesktop", func_ServiceAccountDesktop },
