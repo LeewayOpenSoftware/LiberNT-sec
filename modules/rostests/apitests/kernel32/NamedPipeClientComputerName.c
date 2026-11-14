@@ -97,6 +97,61 @@ TestLocalClient(VOID)
 
 static
 VOID
+TestQueryClientProcess(VOID)
+{
+    TEST_PIPE_CLIENT_PROCESS_BUFFER_EX Query;
+    IO_STATUS_BLOCK Iosb;
+    HANDLE Server, Client;
+    NTSTATUS Status;
+    BOOL Connected;
+    PUCHAR Tail;
+    ULONG i;
+
+    Server = CreateNamedPipeW(PIPE_NAME, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                              1, 512, 512, 0, NULL);
+    ok(Server != INVALID_HANDLE_VALUE, "CreateNamedPipeW failed with %lu\n", GetLastError());
+    if (Server == INVALID_HANDLE_VALUE)
+        return;
+
+    Client = CreateFileW(PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    ok(Client != INVALID_HANDLE_VALUE, "CreateFileW failed with %lu\n", GetLastError());
+    if (Client == INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(Server);
+        return;
+    }
+
+    Connected = ConnectNamedPipe(Server, NULL);
+    ok(Connected || GetLastError() == ERROR_PIPE_CONNECTED, "ConnectNamedPipe failed with %lu\n", GetLastError());
+
+    RtlFillMemory(&Query, sizeof(Query), 0xAA);
+    Status = NtFsControlFile(Server, NULL, NULL, NULL, &Iosb, FSCTL_PIPE_QUERY_CLIENT_PROCESS,
+                             NULL, 0, &Query, sizeof(Query));
+    ok(Status == STATUS_SUCCESS, "FSCTL_PIPE_QUERY_CLIENT_PROCESS returned 0x%lx\n", Status);
+    if (Status == STATUS_SUCCESS)
+    {
+        ok(Iosb.Information == sizeof(Query), "Information is %Iu\n", Iosb.Information);
+
+        /* A local client has no computer name and no session: the first slot stays zero */
+        ok(Query.ClientSession == NULL, "ClientSession is %p\n", Query.ClientSession);
+
+        /* The client process slot carries the client process id, not a kernel pointer */
+        ok(Query.ClientProcess == (PVOID)(ULONG_PTR)GetCurrentProcessId(),
+           "ClientProcess is %p, expected the client pid %lu\n", Query.ClientProcess, GetCurrentProcessId());
+
+        ok(Query.ClientComputerNameLength == 0, "ClientComputerNameLength is %u\n", Query.ClientComputerNameLength);
+        Tail = (PUCHAR)&Query.ClientComputerBuffer[0];
+        for (i = 0; i < sizeof(Query.ClientComputerBuffer); i++)
+            ok(Tail[i] == 0, "Byte %lu of the name buffer is 0x%x\n", i, Tail[i]);
+    }
+
+    CloseHandle(Client);
+    DisconnectNamedPipe(Server);
+    CloseHandle(Server);
+}
+
+static
+VOID
 TestInvalidHandles(VOID)
 {
     WCHAR Path[MAX_PATH], File[MAX_PATH];
@@ -142,5 +197,6 @@ START_TEST(NamedPipeClientComputerName)
     }
 
     TestLocalClient();
+    TestQueryClientProcess();
     TestInvalidHandles();
 }
