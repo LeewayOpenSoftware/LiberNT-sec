@@ -31,7 +31,7 @@ START_TEST(NtUserSetClassLong)
 
     /* A negative extra window size is refused and the class keeps its size */
     SetLastError(ERROR_SUCCESS);
-    TEST(NtUserSetClassLong(hWnd, GCL_CBWNDEXTRA, (ULONG_PTR)(LONG)-1, FALSE) == 0);
+    TEST(NtUserSetClassLong(hWnd, GCL_CBWNDEXTRA, (ULONG)-1, FALSE) == 0);
     TEST(GetLastError() == ERROR_INVALID_PARAMETER);
     TEST(GetClassLongW(hWnd, GCL_CBWNDEXTRA) == 8);
 
