@@ -7,6 +7,7 @@
  */
 
 #include "sysaudio.h"
+#include <pseh/pseh2.h>
 
 #define NDEBUG
 #include <debug.h>
@@ -360,6 +361,12 @@ SysAudioHandleProperty(
     UNICODE_STRING GuidString;
     PKSP_PIN Pin;
     LPWSTR DeviceName;
+    union {
+        KSPROPERTY Property;
+        KSP_PIN Pin;
+        SYSAUDIO_INSTANCE_INFO InstanceInfo;
+    } CapturedInput;
+    SIZE_T CaptureLength;
 
     IoStack = IoGetCurrentIrpStackLocation(Irp);
 
@@ -369,8 +376,35 @@ SysAudioHandleProperty(
         return SetIrpIoStatus(Irp, STATUS_BUFFER_TOO_SMALL, sizeof(KSPROPERTY));
     }
 
-    Property = (PKSPROPERTY)IoStack->Parameters.DeviceIoControl.Type3InputBuffer;
     DeviceExtension = (PSYSAUDIODEVEXT)DeviceObject->DeviceExtension;
+
+    /* R1/R2: METHOD_NEITHER request - Type3InputBuffer is a raw caller address. Capture the
+     * input once into a kernel copy, probed against the requestor mode, then read only the copy. */
+    CaptureLength = IoStack->Parameters.DeviceIoControl.InputBufferLength;
+    if (CaptureLength > sizeof(CapturedInput))
+        CaptureLength = sizeof(CapturedInput);
+
+    RtlZeroMemory(&CapturedInput, sizeof(CapturedInput));
+    Status = STATUS_SUCCESS;
+    _SEH2_TRY
+    {
+        if (Irp->RequestorMode != KernelMode)
+            ProbeForRead(IoStack->Parameters.DeviceIoControl.Type3InputBuffer,
+                         CaptureLength, sizeof(UCHAR));
+        RtlCopyMemory(&CapturedInput,
+                      IoStack->Parameters.DeviceIoControl.Type3InputBuffer,
+                      CaptureLength);
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Status = _SEH2_GetExceptionCode();
+    }
+    _SEH2_END;
+
+    if (!NT_SUCCESS(Status))
+        return SetIrpIoStatus(Irp, Status, 0);
+
+    Property = &CapturedInput.Property;
 
     if (IsEqualGUIDAligned(&Property->Set, &KSPROPSETID_Pin))
     {
@@ -383,9 +417,10 @@ SysAudioHandleProperty(
             /* too small buffer */
             return SetIrpIoStatus(Irp, STATUS_BUFFER_TOO_SMALL, sizeof(KSP_PIN));
         }
-        Pin = (PKSP_PIN)IoStack->Parameters.DeviceIoControl.Type3InputBuffer;
+        Pin = &CapturedInput.Pin;
         Entry = GetListEntry(&DeviceExtension->KsAudioDeviceList, Pin->Reserved);
-        ASSERT(Entry != NULL);
+        if (Entry == NULL)
+            return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
 
         /* forward request to the filter implementing the property */
         Status = KsSynchronousIoControlDevice(Entry->FileObject, KernelMode, IOCTL_KS_PROPERTY,
@@ -415,7 +450,8 @@ SysAudioHandleProperty(
             }
 
             Entry = GetListEntry(&DeviceExtension->KsAudioDeviceList, *Index);
-            ASSERT(Entry != NULL);
+            if (Entry == NULL)
+                return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
 
             BytesReturned = Entry->DeviceName.Length + sizeof(WCHAR);
             if (IoStack->Parameters.DeviceIoControl.OutputBufferLength < BytesReturned)
@@ -424,12 +460,22 @@ SysAudioHandleProperty(
                 return SetIrpIoStatus(Irp, STATUS_BUFFER_TOO_SMALL, BytesReturned);
             }
 
-            /* copy device name */
+            /* R2: write the device name to the caller raw output buffer under SEH */
             DeviceName = (LPWSTR)Irp->UserBuffer;
-
-            RtlMoveMemory(DeviceName, Entry->DeviceName.Buffer, Entry->DeviceName.Length);
-            DeviceName[Entry->DeviceName.Length / sizeof(WCHAR)] = L'\0';
-            return SetIrpIoStatus(Irp, STATUS_SUCCESS, BytesReturned);
+            Status = STATUS_SUCCESS;
+            _SEH2_TRY
+            {
+                if (Irp->RequestorMode != KernelMode)
+                    ProbeForWrite(DeviceName, BytesReturned, sizeof(UCHAR));
+                RtlMoveMemory(DeviceName, Entry->DeviceName.Buffer, Entry->DeviceName.Length);
+                DeviceName[Entry->DeviceName.Length / sizeof(WCHAR)] = L'\0';
+            }
+            _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+            {
+                Status = _SEH2_GetExceptionCode();
+            }
+            _SEH2_END;
+            return SetIrpIoStatus(Irp, Status, NT_SUCCESS(Status) ? BytesReturned : 0);
         }
 
         if (Property->Id == KSPROPERTY_SYSAUDIO_COMPONENT_ID)
@@ -454,7 +500,8 @@ SysAudioHandleProperty(
                 return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
             }
             Entry = GetListEntry(&DeviceExtension->KsAudioDeviceList, *Index);
-            ASSERT(Entry != NULL);
+            if (Entry == NULL)
+                return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
 
             PropertyRequest.Set = KSPROPSETID_General;
             PropertyRequest.Id = KSPROPERTY_GENERAL_COMPONENTID;
@@ -467,8 +514,19 @@ SysAudioHandleProperty(
                 DPRINT("KsSynchronousIoControlDevice failed with %x for KSPROPERTY_GENERAL_COMPONENTID\n", Status);
                 return SetIrpIoStatus(Irp, Status, 0);
             }
-            RtlMoveMemory(Irp->UserBuffer, &ComponentId, sizeof(KSCOMPONENTID));
-            return SetIrpIoStatus(Irp, STATUS_SUCCESS, sizeof(KSCOMPONENTID));
+            Status = STATUS_SUCCESS;
+            _SEH2_TRY
+            {
+                if (Irp->RequestorMode != KernelMode)
+                    ProbeForWrite(Irp->UserBuffer, sizeof(KSCOMPONENTID), sizeof(UCHAR));
+                RtlMoveMemory(Irp->UserBuffer, &ComponentId, sizeof(KSCOMPONENTID));
+            }
+            _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+            {
+                Status = _SEH2_GetExceptionCode();
+            }
+            _SEH2_END;
+            return SetIrpIoStatus(Irp, Status, NT_SUCCESS(Status) ? sizeof(KSCOMPONENTID) : 0);
         }
         else if (Property->Id == KSPROPERTY_SYSAUDIO_DEVICE_COUNT)
         {
@@ -478,8 +536,19 @@ SysAudioHandleProperty(
                 return SetIrpIoStatus(Irp, STATUS_BUFFER_TOO_SMALL, sizeof(ULONG));
             }
 
-            *((PULONG)Irp->UserBuffer) = DeviceExtension->NumberOfKsAudioDevices;
-            return SetIrpIoStatus(Irp, STATUS_SUCCESS, sizeof(ULONG));
+            Status = STATUS_SUCCESS;
+            _SEH2_TRY
+            {
+                if (Irp->RequestorMode != KernelMode)
+                    ProbeForWrite(Irp->UserBuffer, sizeof(ULONG), sizeof(ULONG));
+                *((PULONG)Irp->UserBuffer) = DeviceExtension->NumberOfKsAudioDevices;
+            }
+            _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+            {
+                Status = _SEH2_GetExceptionCode();
+            }
+            _SEH2_END;
+            return SetIrpIoStatus(Irp, Status, NT_SUCCESS(Status) ? sizeof(ULONG) : 0);
         }
         else if (Property->Id == KSPROPERTY_SYSAUDIO_DEVICE_INSTANCE)
         {
@@ -491,8 +560,22 @@ SysAudioHandleProperty(
 
             if (Property->Flags & KSPROPERTY_TYPE_SET)
             {
-                Index = (PULONG)Irp->UserBuffer;
-                return SysAudioOpenVirtualDevice(Irp, *Index, DeviceExtension);
+                ULONG DeviceIndex = 0;
+                Status = STATUS_SUCCESS;
+                _SEH2_TRY
+                {
+                    if (Irp->RequestorMode != KernelMode)
+                        ProbeForRead(Irp->UserBuffer, sizeof(ULONG), sizeof(ULONG));
+                    DeviceIndex = *(PULONG)Irp->UserBuffer;
+                }
+                _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    Status = _SEH2_GetExceptionCode();
+                }
+                _SEH2_END;
+                if (!NT_SUCCESS(Status))
+                    return SetIrpIoStatus(Irp, Status, 0);
+                return SysAudioOpenVirtualDevice(Irp, DeviceIndex, DeviceExtension);
             }
         }
         else if (Property->Id == KSPROPERTY_SYSAUDIO_INSTANCE_INFO)
