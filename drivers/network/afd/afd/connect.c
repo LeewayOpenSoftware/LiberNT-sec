@@ -36,11 +36,7 @@ AfdGetConnectOptions(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (FCB->FilledConnectOptions < BufferSize) BufferSize = FCB->FilledConnectOptions;
 
-    RtlCopyMemory(Irp->UserBuffer,
-                  FCB->ConnectOptions,
-                  BufferSize);
-
-    return UnlockAndMaybeComplete(FCB, STATUS_SUCCESS, Irp, BufferSize);
+    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->ConnectOptions, BufferSize), Irp, BufferSize);
 }
 
 NTSTATUS
@@ -148,11 +144,7 @@ AfdGetConnectData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (FCB->FilledConnectData < BufferSize) BufferSize = FCB->FilledConnectData;
 
-    RtlCopyMemory(Irp->UserBuffer,
-                  FCB->ConnectData,
-                  BufferSize);
-
-    return UnlockAndMaybeComplete(FCB, STATUS_SUCCESS, Irp, BufferSize);
+    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->ConnectData, BufferSize), Irp, BufferSize);
 }
 
 NTSTATUS
@@ -870,14 +862,7 @@ AfdStreamSocketSuperConnect(
          if (!FCB->OnConnectSendBuffer)
              return UnlockAndMaybeComplete(FCB, STATUS_NO_MEMORY, Irp, 0);
 
-         _SEH2_TRY {
-             if (LockMode != KernelMode)
-                 ProbeForRead(Irp->UserBuffer, BufferSize, sizeof(UCHAR));
-             RtlCopyMemory(FCB->OnConnectSendBuffer, Irp->UserBuffer, BufferSize);
-         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-             CopyStatus = _SEH2_GetExceptionCode();
-         } _SEH2_END;
-
+         CopyStatus = AfdCopyFromCaller(Irp, FCB->OnConnectSendBuffer, BufferSize);
          if (!NT_SUCCESS(CopyStatus))
          {
              ExFreePoolWithTag(FCB->OnConnectSendBuffer, TAG_AFD_SUPER_CONNECT_BUFFER);
