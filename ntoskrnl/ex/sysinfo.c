@@ -1287,6 +1287,7 @@ QSI_DEF(SystemPathInformation)
 
 /* Class 5 - Process Information / 57 - SystemExtendedProcessInformation  */
 static
+#define TAG_EXP_PROCESS_INFO 'PIxE'
 NTSTATUS
 ExpQuerySystemProcessInformation(
     _Out_writes_bytes_(Size) PVOID Buffer,
@@ -1313,6 +1314,13 @@ ExpQuerySystemProcessInformation(
     _SEH2_VOLATILE PUNICODE_STRING ProcessImageName = NULL;
     PWCHAR szSrc;
     BOOLEAN Overflow = FALSE;
+    /* The record of one process is built here under its lock and copied to the caller only
+       after the lock is released: the caller's buffer is never touched with a lock held, and
+       nothing is ever read back from it (another thread can rewrite it at any time). */
+    PUCHAR _SEH2_VOLATILE Record = NULL;
+    BOOLEAN _SEH2_VOLATILE Locked = FALSE;
+    UNICODE_STRING RecordName;
+    ULONG RecordSize;
 
     _SEH2_TRY
     {
@@ -1343,6 +1351,7 @@ ExpQuerySystemProcessInformation(
             /* Lock the Process */
             KeEnterCriticalRegion();
             ExAcquirePushLockShared(&Process->ProcessLock);
+            Locked = TRUE;
 
             if ((Process->ProcessExiting) &&
                 (Process->Pcb.Header.SignalState) &&
@@ -1353,6 +1362,7 @@ ExpQuerySystemProcessInformation(
                 ImageNameMaximumLength = 0;
 
                 /* Unlock the Process */
+                Locked = FALSE;
                 ExReleasePushLockShared(&Process->ProcessLock);
                 KeLeaveCriticalRegion();
                 goto Skip;
@@ -1411,38 +1421,50 @@ ExpQuerySystemProcessInformation(
             }
 
             /* Fill system information */
+            RecordSize = CurrentSize + ImageNameMaximumLength;
             if (!Overflow)
             {
-                SpiCurrent->NextEntryOffset = CurrentSize + ImageNameMaximumLength; // relative offset to the beginning of the next structure
+                Record = ExAllocatePoolZero(PagedPool, RecordSize, TAG_EXP_PROCESS_INFO);
+                if (!Record)
+                {
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    _SEH2_LEAVE;
+                }
+
+                /* SpiCurrent is the kernel record from here on; the caller gets it at Current */
+                SpiCurrent = (PSYSTEM_PROCESS_INFORMATION)Record;
+                SpiCurrent->NextEntryOffset = RecordSize; // relative offset to the beginning of the next structure
                 SpiCurrent->NumberOfThreads = ThreadsCount;
                 SpiCurrent->CreateTime = Process->CreateTime;
-                SpiCurrent->ImageName.Length = ImageNameLength;
-                SpiCurrent->ImageName.MaximumLength = ImageNameMaximumLength;
-                SpiCurrent->ImageName.Buffer = (void*)(Current + CurrentSize);
 
-                /* Copy name to the end of the struct */
-                if(Process != PsIdleProcess)
+                /* Build the name in the record; the caller sees it right after its own struct */
+                RecordName.Buffer = (PWCH)(Record + CurrentSize);
+                RecordName.Length = ImageNameLength;
+                RecordName.MaximumLength = ImageNameMaximumLength;
+                if (Process != PsIdleProcess)
                 {
                     if (szSrc)
                     {
-                        RtlCopyMemory(SpiCurrent->ImageName.Buffer, szSrc, SpiCurrent->ImageName.Length);
+                        RtlCopyMemory(RecordName.Buffer, szSrc, ImageNameLength);
                     }
                     else
                     {
                         RtlInitAnsiString(&ImageName, (PCSZ)Process->ImageFileName);
-                        Status = RtlAnsiStringToUnicodeString(&SpiCurrent->ImageName, &ImageName, FALSE);
+                        Status = RtlAnsiStringToUnicodeString(&RecordName, &ImageName, FALSE);
                         if (!NT_SUCCESS(Status))
                         {
-                            SpiCurrent->ImageName.Length = 0;
+                            RecordName.Length = 0;
                         }
                     }
+                    SpiCurrent->ImageName.Length = RecordName.Length;
+                    SpiCurrent->ImageName.MaximumLength = ImageNameMaximumLength;
+                    SpiCurrent->ImageName.Buffer = (PWCH)(Current + CurrentSize);
                 }
                 else
                 {
                     RtlInitUnicodeString(&SpiCurrent->ImageName, NULL);
                 }
 
-                SpiLast = SpiCurrent;
                 SpiCurrent->BasePriority = Process->Pcb.BasePriority;
                 SpiCurrent->SessionId = MmGetSessionId(Process);
                 SpiCurrent->UniqueProcessId = Process->UniqueProcessId;
@@ -1516,8 +1538,18 @@ ExpQuerySystemProcessInformation(
             }
 
             /* Unlock the Process */
+            Locked = FALSE;
             ExReleasePushLockShared(&Process->ProcessLock);
             KeLeaveCriticalRegion();
+
+            /* Now the caller's buffer, with no lock held */
+            if (Record)
+            {
+                RtlCopyMemory(Current, Record, RecordSize);
+                SpiLast = (PSYSTEM_PROCESS_INFORMATION)Current;
+                ExFreePoolWithTag(Record, TAG_EXP_PROCESS_INFO);
+                Record = NULL;
+            }
 
             /* Handle idle process entry */
 Skip:
@@ -1541,17 +1573,26 @@ Skip:
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
-        if(Process != NULL)
-            ObDereferenceObject(Process);
-        if (ProcessImageName)
-        {
-            /* Release the memory allocated by SeLocateProcessImageName */
-            ExFreePoolWithTag(ProcessImageName, TAG_SEPA);
-        }
-
         Status = _SEH2_GetExceptionCode();
     }
     _SEH2_END
+
+    /* Common cleanup, for a fault on the caller's buffer and for _SEH2_LEAVE alike */
+    if (Locked)
+    {
+        ExReleasePushLockShared(&Process->ProcessLock);
+        KeLeaveCriticalRegion();
+    }
+    if (Record) ExFreePoolWithTag(Record, TAG_EXP_PROCESS_INFO);
+    if (ProcessImageName)
+    {
+        /* Release the memory allocated by SeLocateProcessImageName */
+        ExFreePoolWithTag(ProcessImageName, TAG_SEPA);
+    }
+    /* On failure the walk still holds its reference on the current process, except on the
+       idle process, which the walk starts from without referencing it */
+    if (!NT_SUCCESS(Status) && Process != NULL && Process != PsIdleProcess)
+        ObDereferenceObject(Process);
 
     if (Overflow)
         Status = STATUS_INFO_LENGTH_MISMATCH;
@@ -1690,24 +1731,65 @@ QSI_DEF(SystemCallTimeInformation)
 }
 
 /* Class 11 - Module Information */
+#define TAG_EXP_MODULE_INFO 'MIxE'
 QSI_DEF(SystemModuleInformation)
 {
     NTSTATUS Status;
+    PRTL_PROCESS_MODULES Modules = NULL;
+    ULONG Needed = 0, Capacity = 0, Tries;
 
-    /* Acquire system module list lock */
-    KeEnterCriticalRegion();
-    ExAcquireResourceExclusiveLite(&PsLoadedModuleResource, TRUE);
+    /*
+     * The list is walked under the module list resource into a kernel buffer, and the result
+     * is copied to the caller only after the resource is released: a fault on the caller's
+     * buffer must never leave the resource held (no driver could load or be listed again).
+     * The kernel buffer is sized from the list, never from the caller's length.
+     */
+    for (Tries = 0; ; Tries++)
+    {
+        KeEnterCriticalRegion();
+        ExAcquireResourceExclusiveLite(&PsLoadedModuleResource, TRUE);
+        Status = ExpQueryModuleInformation(&PsLoadedModuleList,
+                                           &MmLoadedUserImageList,
+                                           Modules,
+                                           Capacity,
+                                           &Needed);
+        ExReleaseResourceLite(&PsLoadedModuleResource);
+        KeLeaveCriticalRegion();
 
-    /* Call the generic handler with the system module list */
-    Status = ExpQueryModuleInformation(&PsLoadedModuleList,
-                                       &MmLoadedUserImageList,
-                                       (PRTL_PROCESS_MODULES)Buffer,
-                                       Size,
-                                       ReqSize);
+        /* Done when the caller's length is reached or everything fit; retry if the list grew.
+           A caller buffer smaller than the header gets nothing written, as before. */
+        if (Capacity >= min(Size, Needed) ||
+            min(Size, Needed) < FIELD_OFFSET(RTL_PROCESS_MODULES, Modules) ||
+            Tries >= 4)
+        {
+            break;
+        }
 
-    /* Release list lock and return status */
-    ExReleaseResourceLite(&PsLoadedModuleResource);
-    KeLeaveCriticalRegion();
+        if (Modules) ExFreePoolWithTag(Modules, TAG_EXP_MODULE_INFO);
+        Capacity = min(Size, Needed);
+        /* Zeroed: a partial result leaves a tail that goes to the caller too */
+        Modules = ExAllocatePoolZero(PagedPool, Capacity, TAG_EXP_MODULE_INFO);
+        if (!Modules)
+        {
+            *ReqSize = Needed;
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+    }
+
+    *ReqSize = Needed;
+    if (Size < Needed && NT_SUCCESS(Status)) Status = STATUS_INFO_LENGTH_MISMATCH;
+
+    /* Copy out with no lock held; the dispatcher's handler turns a fault into a status */
+    _SEH2_TRY
+    {
+        if (Modules && Capacity) RtlCopyMemory(Buffer, Modules, Capacity);
+    }
+    _SEH2_FINALLY
+    {
+        if (Modules) ExFreePoolWithTag(Modules, TAG_EXP_MODULE_INFO);
+    }
+    _SEH2_END;
+
     return Status;
 }
 
@@ -1878,6 +1960,7 @@ QSI_DEF(SystemPageFileInformation)
     SYSTEM_PAGEFILE_INFORMATION *Spfi = (SYSTEM_PAGEFILE_INFORMATION *) Buffer;
     ULONG64 TotalPages, PagesInUse, PeakPages;
     UNICODE_STRING FileName;
+    PWSTR NameDest;
 
     *ReqSize = 0;
     if (!MmQueryPagingFileUsage(&TotalPages, &PagesInUse, &PeakPages, &FileName))
@@ -1891,11 +1974,14 @@ QSI_DEF(SystemPageFileInformation)
     Spfi->TotalSize = (ULONG)TotalPages;
     Spfi->TotalInUse = (ULONG)PagesInUse;
     Spfi->PeakUsage = (ULONG)PeakPages;
-    Spfi->PageFileName.Buffer = (PWSTR)(Spfi + 1);
+    /* The name goes right after the record. The destination comes from the kernel's own
+       pointer, never from the record in the caller's buffer, which another thread can rewrite. */
+    NameDest = (PWSTR)(Spfi + 1);
+    Spfi->PageFileName.Buffer = NameDest;
     Spfi->PageFileName.Length = FileName.Length;
     Spfi->PageFileName.MaximumLength = FileName.Length + sizeof(WCHAR);
-    RtlCopyMemory(Spfi->PageFileName.Buffer, FileName.Buffer, FileName.Length);
-    Spfi->PageFileName.Buffer[FileName.Length / sizeof(WCHAR)] = UNICODE_NULL;
+    RtlCopyMemory(NameDest, FileName.Buffer, FileName.Length);
+    NameDest[FileName.Length / sizeof(WCHAR)] = UNICODE_NULL;
     return STATUS_SUCCESS;
 }
 
@@ -2559,13 +2645,23 @@ QSI_DEF(SystemDynamicTimeZoneInformation)
 
 SSI_DEF(SystemCurrentTimeZoneInformation)
 {
+    RTL_TIME_ZONE_INFORMATION TimeZone;
+
     /* Check user buffer's size */
     if (Size < sizeof(RTL_TIME_ZONE_INFORMATION))
     {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
 
-    return ExpSetTimeZoneInformation((PRTL_TIME_ZONE_INFORMATION)Buffer);
+    /* Changing the time zone, which re-sets the system time, takes SeTimeZonePrivilege */
+    if (!SeSinglePrivilegeCheck(SeTimeZonePrivilege, ExGetPreviousMode()))
+    {
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
+
+    /* Read the caller's values once (the dispatcher's handler covers a fault here) */
+    RtlCopyMemory(&TimeZone, Buffer, sizeof(TimeZone));
+    return ExpSetTimeZoneInformation(&TimeZone);
 }
 
 static
