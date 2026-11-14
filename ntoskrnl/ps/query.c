@@ -3881,6 +3881,51 @@ NtSetInformationProcess(
     return Status;
 }
 
+/* Copies the ideal processor of a thread to its TEB. The TEB is memory of the
+ * thread's process: it is written in that process, and it may be gone or
+ * read-only, in which case the copy is skipped. */
+static
+VOID
+PspSaveIdealProcessorInTeb(
+    _In_ PETHREAD Thread)
+{
+    PEPROCESS Process = Thread->ThreadsProcess;
+    KAPC_STATE ApcState;
+    BOOLEAN Attached = FALSE;
+    PTEB Teb;
+
+    PAGED_CODE();
+
+    /* The TEB stays the thread's until the thread is run down */
+    if (!ExAcquireRundownProtection(&Thread->RundownProtect))
+        return;
+
+    Teb = Thread->Tcb.Teb;
+    if (Teb != NULL)
+    {
+        if (Process != PsGetCurrentProcess())
+        {
+            KeStackAttachProcess(&Process->Pcb, &ApcState);
+            Attached = TRUE;
+        }
+
+        _SEH2_TRY
+        {
+            Teb->IdealProcessor = Thread->Tcb.IdealProcessor;
+        }
+        _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+        {
+            /* The scheduler has the value; only the copy is lost */
+        }
+        _SEH2_END;
+
+        if (Attached)
+            KeUnstackDetachProcess(&ApcState);
+    }
+
+    ExReleaseRundownProtection(&Thread->RundownProtect);
+}
+
 /*
  * @implemented
  */
@@ -4343,16 +4388,8 @@ NtSetInformationThread(
             Status = KeSetIdealProcessorThread(&Thread->Tcb,
                                                (CCHAR)IdealProcessor);
 
-            /* Get the TEB and protect the thread */
-            Teb = Thread->Tcb.Teb;
-            if (Teb && ExAcquireRundownProtection(&Thread->RundownProtect))
-            {
-                /* Save the ideal processor */
-                Teb->IdealProcessor = Thread->Tcb.IdealProcessor;
-
-                /* Release rundown protection */
-                ExReleaseRundownProtection(&Thread->RundownProtect);
-            }
+            /* Save the ideal processor in the TEB */
+            PspSaveIdealProcessorInTeb(Thread);
 
             /* Dereference the thread */
             ObDereferenceObject(Thread);
@@ -4958,16 +4995,8 @@ NtSetInformationThread(
             PreviousIdealProcessor = KeSetIdealProcessorThread(&Thread->Tcb,
                                                                ProcessorNumber.Number);
 
-            /* Get the TEB and protect the thread */
-            Teb = Thread->Tcb.Teb;
-            if (Teb && ExAcquireRundownProtection(&Thread->RundownProtect))
-            {
-                /* Save the ideal processor */
-                Teb->IdealProcessor = Thread->Tcb.IdealProcessor;
-
-                /* Release rundown protection */
-                ExReleaseRundownProtection(&Thread->RundownProtect);
-            }
+            /* Save the ideal processor in the TEB */
+            PspSaveIdealProcessorInTeb(Thread);
 
             /* On success Windows returns the previous ideal processor
              * through the same buffer */
