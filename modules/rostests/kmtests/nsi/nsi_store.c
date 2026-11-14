@@ -293,6 +293,119 @@ RequestChange(
     return Irp;
 }
 
+/* As RequestChange, but also stamps the IRP's current-stack DeviceObject so the
+ * by-device drain (R3) can be exercised. */
+static PIRP
+RequestChangeEx(
+    _In_ const NPI_MODULEID *Module,
+    _In_ ULONG Table,
+    _Out_ PKEVENT Event,
+    _In_opt_ PFILE_OBJECT FileObject,
+    _In_opt_ PDEVICE_OBJECT DeviceObject,
+    _Out_ NTSTATUS *Status)
+{
+    PIRP Irp = IoAllocateIrp(1, FALSE);
+
+    KeInitializeEvent(Event, NotificationEvent, FALSE);
+    if (Irp == NULL)
+    {
+        *Status = STATUS_INSUFFICIENT_RESOURCES;
+        return NULL;
+    }
+    IoSetCompletionRoutine(Irp, NotifyComplete, Event, TRUE, TRUE, TRUE);
+    IoSetNextIrpStackLocation(Irp);
+    IoGetCurrentIrpStackLocation(Irp)->FileObject = FileObject;
+    IoGetCurrentIrpStackLocation(Irp)->DeviceObject = DeviceObject;
+    *Status = NsiRequestChangeNotificationKm(Module, Table, Irp);
+    return Irp;
+}
+
+/* R2: deregistering a provider must not free it while a CSQ cancel routine can still
+ * be running on one of its IRPs. Queue a waiter, cancel it (the cancel routine
+ * dereferences the provider), then deregister. With the zombie-list fix the provider
+ * is parked, never freed, so a late dereference always hits live memory. We assert the
+ * sequence completes cleanly with the waiter cancelled; the race is closed structurally
+ * (never free), which a timing test cannot force deterministically. */
+static VOID
+TestDeregisterCancelRace(VOID)
+{
+    KEVENT Event;
+    PIRP Irp;
+    FILE_OBJECT File;
+    PNSI_PROVIDER Scratch = NULL;
+    NTSTATUS Status;
+
+    RtlZeroMemory(&File, sizeof(File));
+    Status = NsiRegisterProvider(&TestModule, NSISTORE_SCRATCH_TABLE, &TestDispatch, &TestModule, &Scratch);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    Irp = RequestChangeEx(&TestModule, NSISTORE_SCRATCH_TABLE, &Event, &File, NULL, &Status);
+    ok_eq_hex(Status, STATUS_PENDING);
+    if (Irp == NULL)
+    {
+        NsiDeregisterProvider(Scratch);
+        return;
+    }
+
+    ok(IoCancelIrp(Irp), "IoCancelIrp found no cancel routine\n");
+    ok(WaitCompletion(&Event), "cancelled waiter not completed\n");
+    ok_eq_hex(Irp->IoStatus.Status, STATUS_CANCELLED);
+    IoFreeIrp(Irp);
+
+    /* Drains (nothing left) and parks the provider instead of freeing it. */
+    NsiDeregisterProvider(Scratch);
+    ok(TRUE, "deregister after cancel completed without fault\n");
+}
+
+/* R3: nsiproxy drains its queued notification IRPs by device object on unload. Verify
+ * NsiCancelChangeNotificationsByDeviceKm cancels exactly the IRPs owned by one device
+ * and leaves another device's IRP queued. No driver-side completion routine is used;
+ * the test owns the IRPs and inspects them through its own completion routine. */
+static VOID
+TestCancelByDevice(VOID)
+{
+    KEVENT EventA, EventB;
+    PIRP IrpA, IrpB;
+    DEVICE_OBJECT DevA, DevB;
+    FILE_OBJECT FileA, FileB;
+    NTSTATUS Status;
+
+    RtlZeroMemory(&DevA, sizeof(DevA));
+    RtlZeroMemory(&DevB, sizeof(DevB));
+    RtlZeroMemory(&FileA, sizeof(FileA));
+    RtlZeroMemory(&FileB, sizeof(FileB));
+
+    IrpA = RequestChangeEx(&TestModule, NSISTORE_TABLE, &EventA, &FileA, &DevA, &Status);
+    ok_eq_hex(Status, STATUS_PENDING);
+    IrpB = RequestChangeEx(&TestModule, NSISTORE_TABLE, &EventB, &FileB, &DevB, &Status);
+    ok_eq_hex(Status, STATUS_PENDING);
+    if (IrpA == NULL || IrpB == NULL)
+    {
+        NsiCancelChangeNotificationsByDeviceKm(&DevA);
+        NsiCancelChangeNotificationsByDeviceKm(&DevB);
+        if (IrpA != NULL)
+            IoFreeIrp(IrpA);
+        if (IrpB != NULL)
+            IoFreeIrp(IrpB);
+        return;
+    }
+
+    /* Cancel only device A's waiter; device B's must stay queued. */
+    NsiCancelChangeNotificationsByDeviceKm(&DevA);
+    ok(WaitCompletion(&EventA), "device-A waiter not completed by by-device cancel\n");
+    ok_eq_hex(IrpA->IoStatus.Status, STATUS_CANCELLED);
+    ok(KeReadStateEvent(&EventB) == 0, "device-B waiter wrongly completed\n");
+
+    /* Drain the rest. */
+    NsiCancelChangeNotificationsByDeviceKm(&DevB);
+    ok(WaitCompletion(&EventB), "device-B waiter not completed by by-device cancel\n");
+    ok_eq_hex(IrpB->IoStatus.Status, STATUS_CANCELLED);
+    IoFreeIrp(IrpA);
+    IoFreeIrp(IrpB);
+}
+
 static BOOLEAN
 WaitCompletion(
     _In_ PKEVENT Event)
@@ -585,6 +698,8 @@ TestMessageHandler(
     TestEnumeration();
     TestRows();
     TestNotifications();
+    TestDeregisterCancelRace();
+    TestCancelByDevice();
     TestNotifyRaces();
     return STATUS_SUCCESS;
 }
