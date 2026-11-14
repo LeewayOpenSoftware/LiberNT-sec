@@ -1440,9 +1440,9 @@ SeValidSecurityDescriptor(
 
     /* Reference it */
     Sid = (PISID)((ULONG_PTR)SecurityDescriptor + SecurityDescriptor->Owner);
-    if (Sid->Revision != SID_REVISION)
+    if (Sid->Revision != SID_REVISION || Sid->SubAuthorityCount > SID_MAX_SUB_AUTHORITIES)
     {
-        DPRINT1("Invalid Owner SID revision\n");
+        DPRINT1("Invalid Owner SID revision or sub-authority count\n");
         return FALSE;
     }
 
@@ -1474,9 +1474,9 @@ SeValidSecurityDescriptor(
 
         /* Reference it */
         Sid = (PSID)((ULONG_PTR)SecurityDescriptor + SecurityDescriptor->Group);
-        if (Sid->Revision != SID_REVISION)
+        if (Sid->Revision != SID_REVISION || Sid->SubAuthorityCount > SID_MAX_SUB_AUTHORITIES)
         {
-            DPRINT1("Invalid Group SID revision\n");
+            DPRINT1("Invalid Group SID revision or sub-authority count\n");
             return FALSE;
         }
 
