@@ -2007,6 +2007,7 @@ NtGdiCreateDIBitmapInternal(
 {
     NTSTATUS Status = STATUS_SUCCESS;
     PBYTE safeBits = NULL;
+    PBITMAPINFO safeInfo = NULL;
     HBITMAP hbmResult = NULL;
 
     if (pjInit == NULL)
@@ -2026,9 +2027,34 @@ NtGdiCreateDIBitmapInternal(
         }
     }
 
+    if (pbmi)
+    {
+        /* Zero length means the pointer is never validated; the header is
+         * read below and by the palette code, so capture the full structure. */
+        if (cjMaxInitInfo == 0)
+        {
+            ExFreePoolWithTag(safeBits, TAG_DIB);
+            return NULL;
+        }
+        cjMaxInitInfo = min(cjMaxInitInfo, sizeof(BITMAPV5HEADER) + 256 * sizeof(RGBQUAD));
+        safeInfo = ExAllocatePoolWithTag(PagedPool, sizeof(BITMAPV5HEADER) + 256 * sizeof(RGBQUAD), TAG_DIB);
+        if (!safeInfo)
+        {
+            DPRINT1("Failed to allocate the bitmap info\n");
+            ExFreePoolWithTag(safeBits, TAG_DIB);
+            EngSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return NULL;
+        }
+        RtlZeroMemory(safeInfo, sizeof(BITMAPV5HEADER) + 256 * sizeof(RGBQUAD));
+    }
+
     _SEH2_TRY
     {
-        if(pbmi) ProbeForRead(pbmi, cjMaxInitInfo, 1);
+        if(pbmi)
+        {
+            ProbeForRead(pbmi, cjMaxInitInfo, 1);
+            RtlCopyMemory(safeInfo, pbmi, cjMaxInitInfo);
+        }
         if(pjInit && (fInit & CBM_INIT))
         {
             ProbeForRead(pjInit, cjMaxBits, 1);
@@ -2053,7 +2079,7 @@ NtGdiCreateDIBitmapInternal(
                                            cy,
                                            fInit,
                                            safeBits,
-                                           pbmi,
+                                           safeInfo,
                                            iUsage,
                                            fl,
                                            cjMaxBits,
@@ -2061,6 +2087,7 @@ NtGdiCreateDIBitmapInternal(
 
 cleanup:
     if (safeBits) ExFreePoolWithTag(safeBits, TAG_DIB);
+    if (safeInfo) ExFreePoolWithTag(safeInfo, TAG_DIB);
     return hbmResult;
 }
 
