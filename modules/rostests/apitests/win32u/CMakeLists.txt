@@ -67,6 +67,7 @@ list(APPEND SOURCE
     ntuser/NtUserScrollDC.c
     ntuser/NtUserSelectPalette.c
     ntuser/NtUserSetTimer.c
+    ntuser/NtUserSetClassLong.c
     ntuser/NtUserSwitchDesktop.c
     ntuser/NtUserSystemParametersInfo.c
     ntuser/NtUserToUnicodeEx.c
