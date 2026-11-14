@@ -1400,6 +1400,57 @@ CdServerIoctl(
     }
 }
 
+#ifndef PROCESS_DUP_HANDLE
+#define PROCESS_DUP_HANDLE 0x0040
+#endif
+
+/* Decides whether the current process may attach to the console of Target.
+ * The refusal is the status a process without a console gives, so the answer
+ * does not tell which processes have one. */
+static
+NTSTATUS
+CdCheckAttachAccess(
+    _In_ PEPROCESS Target,
+    _In_ BOOLEAN Parent,
+    _In_ KPROCESSOR_MODE RequestorMode)
+{
+    HANDLE ProcessHandle;
+    NTSTATUS Status;
+
+    if (RequestorMode == KernelMode || Target == PsGetCurrentProcess())
+        return STATUS_SUCCESS;
+
+    if (Parent)
+    {
+        /* The parent is named by its process id, which can have passed to a
+         * younger process since: only a process older than this one made it */
+        if (PsGetProcessCreateTimeQuadPart(Target) <
+            PsGetProcessCreateTimeQuadPart(PsGetCurrentProcess()))
+        {
+            return STATUS_SUCCESS;
+        }
+
+        return STATUS_ACCESS_DENIED;
+    }
+
+    /* The security of the target process decides, for the caller's own token.
+     * The right asked for is a write-class one: a right to query would also be
+     * given to a process of lower integrity, which could then write to the
+     * console of a process above it. */
+    Status = ObOpenObjectByPointer(Target,
+                                   OBJ_KERNEL_HANDLE,
+                                   NULL,
+                                   PROCESS_DUP_HANDLE,
+                                   *PsProcessType,
+                                   UserMode,
+                                   &ProcessHandle);
+    if (!NT_SUCCESS(Status))
+        return STATUS_ACCESS_DENIED;
+
+    ZwClose(ProcessHandle);
+    return STATUS_SUCCESS;
+}
+
 static
 NTSTATUS
 CdConnectionIoctl(
@@ -1419,15 +1470,29 @@ CdConnectionIoctl(
         case IOCTL_CONDRV_BIND_PID:
         {
             ULONG Pid;
+            BOOLEAN Parent = FALSE;
 
             if (InLength != sizeof(ULONG))
                 return STATUS_INVALID_PARAMETER;
             Pid = *(PULONG)Irp->AssociatedIrp.SystemBuffer;
             if (Pid == CD_ATTACH_PARENT_PROCESS)
+            {
                 Pid = HandleToULong(PsGetProcessInheritedFromUniqueProcessId(PsGetCurrentProcess()));
+                Parent = TRUE;
+            }
             Status = PsLookupProcessByProcessId(ULongToHandle(Pid), &Process);
             if (!NT_SUCCESS(Status))
                 return STATUS_INVALID_PARAMETER;
+
+            /* A console carries what its processes read and write. A process
+             * may attach to the console of the process that created it, or of
+             * a process that it is allowed to open. */
+            Status = CdCheckAttachAccess(Process, Parent, Irp->RequestorMode);
+            if (!NT_SUCCESS(Status))
+            {
+                ObDereferenceObject(Process);
+                return Status;
+            }
 
             OldIrql = ExAcquireSpinLockExclusive(&CdLock);
             if (CdFindProcess(PsGetCurrentProcess()))
