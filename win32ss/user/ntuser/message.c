@@ -3701,6 +3701,35 @@ IntIsServerProcWindow(PWND Window, int fnid)
            Window->pcls->atomClassName == gpsi->atomSysClass[iCls];
 }
 
+/* Is this the setting change that announces new environment variables? The
+   name is the caller's string: it is copied before it is compared. */
+static BOOL
+IntIsEnvironmentBroadcast(UINT Msg, WPARAM wParam, LPARAM lParam)
+{
+    static const WCHAR EnvironmentName[] = L"Environment";
+    WCHAR Name[RTL_NUMBER_OF(EnvironmentName)];
+    BOOL Captured = TRUE;
+
+    if (Msg != WM_SETTINGCHANGE || wParam || !lParam)
+        return FALSE;
+
+    _SEH2_TRY
+    {
+        /* A string that is not readable up to here is shorter than the name */
+        ProbeForRead((PVOID)lParam, sizeof(Name), 1);
+        RtlCopyMemory(Name, (PVOID)lParam, sizeof(Name));
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Captured = FALSE;
+    }
+    _SEH2_END;
+
+    return Captured &&
+           Name[RTL_NUMBER_OF(Name) - 1] == UNICODE_NULL &&
+           _wcsicmp(Name, EnvironmentName) == 0;
+}
+
 static SIZE_T
 IntDpiMessageDataSize(UINT Msg, WPARAM wParam)
 {
@@ -4066,7 +4095,7 @@ NtUserMessageCall( HWND hWnd,
                         }
                         ExFreePoolWithTag(List, USERTAG_WINDOWLIST);
                      }
-                     if (lParam && !wParam && _wcsicmp((WCHAR*)lParam, L"Environment") == 0)
+                     if (IntIsEnvironmentBroadcast(Msg, wParam, lParam))
                      {
                          /* Handle Broadcast of WM_SETTINGCHAGE for Environment */
                          co_IntSendMessage(HWND_BROADCAST, WM_SETTINGCHANGE,

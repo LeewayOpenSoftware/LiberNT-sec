@@ -21,6 +21,7 @@ TestKernelProcedures(HWND hWnd)
     const LPARAM KernelAddress = (LPARAM)~(ULONG_PTR)0xFFFF;
     static WCHAR NameW[] = L"Wide";
     static CHAR NameA[] = "Ansi";
+    BROADCASTPARM Parm;
     WCHAR TextW[16];
     CHAR TextA[16];
     LRESULT Ret;
@@ -85,6 +86,13 @@ TestKernelProcedures(HWND hWnd)
     ok(Ret == 0, "Ret = %Id\n", Ret);
     Ret = NtUserMessageCall(hWnd, WM_WINDOWPOSCHANGING, 0, KernelAddress, 0, FNID_DESKTOP, FALSE);
     ok(Ret == 0, "Ret = %Id\n", Ret);
+    ok(IsWindow(hWnd), "The window is gone\n");
+
+    /* A broadcast whose lParam is an address in kernel space. The message is
+       harmless; an unfixed kernel reads a string at that address. */
+    ZeroMemory(&Parm, sizeof(Parm));
+    Parm.recipients = BSM_ALLCOMPONENTS;
+    NtUserMessageCall(NULL, WM_NULL, 0, KernelAddress, (ULONG_PTR)&Parm, FNID_BROADCASTSYSTEMMESSAGE, FALSE);
     ok(IsWindow(hWnd), "The window is gone\n");
 
     /* The default procedure does not run for a window of another process */
