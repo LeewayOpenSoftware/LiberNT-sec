@@ -1642,6 +1642,10 @@ NTSTATUS DispTdiQueryInformationEx(
                 goto fetch_cleanup;
             }
 
+            /* Completion copies up to the reported count back to the caller;
+             * a handler that reports more than it wrote must not leak pool */
+            RtlZeroMemory(QueryContext->KernelOutputBuffer, OutputBufferLength);
+
             Status = DispTdiCopyQueryRequest(QueryContext, InputBuffer, RequestLength, ContextOffset);
             if (!NT_SUCCESS(Status))
                 goto fetch_cleanup;
