@@ -11,11 +11,13 @@
 extern void func_fragment_reassembly(void);
 extern void func_raw_receive(void);
 extern void func_raw_send(void);
+extern void func_set_information(void);
 
 const struct test winetest_testlist[] =
 {
     { "fragment_reassembly", func_fragment_reassembly },
     { "raw_receive", func_raw_receive },
     { "raw_send", func_raw_send },
+    { "set_information", func_set_information },
     { 0, 0 }
 };

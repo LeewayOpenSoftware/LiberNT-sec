@@ -1,4 +1,4 @@
-add_executable(tcpip_apitest fragment_reassembly.c raw_receive.c raw_send.c testlist.c)
+add_executable(tcpip_apitest fragment_reassembly.c raw_receive.c raw_send.c set_information.c testlist.c)
 target_link_libraries(tcpip_apitest wine)
 set_module_type(tcpip_apitest win32cui)
 add_importlibs(tcpip_apitest ws2_32 msvcrt kernel32 ntdll)
