@@ -65,6 +65,7 @@ list(APPEND SOURCE
     ntuser/NtUserScrollDC.c
     ntuser/NtUserSelectPalette.c
     ntuser/NtUserSetTimer.c
+    ntuser/NtUserSetWindowsHookEx.c
     ntuser/NtUserSystemParametersInfo.c
     ntuser/NtUserToUnicodeEx.c
     ntuser/NtUserUpdatePerUserSystemParameters.c

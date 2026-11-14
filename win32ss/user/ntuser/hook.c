@@ -1749,6 +1749,17 @@ NtUserSetWindowsHookEx( HINSTANCE Mod,
           goto Cleanup; // Return NULL
        }
 
+       /* The name is copied for Length bytes into the fixed buffer of the
+          hook callback arguments, which has to keep its terminator */
+       if (ModuleName.Length > ModuleName.MaximumLength ||
+           (ModuleName.Length & 1) ||
+           ModuleName.Length > RTL_FIELD_SIZE(HOOKPROC_CALLBACK_ARGUMENTS, ModuleName) - sizeof(WCHAR))
+       {
+          IntRemoveHook(Hook);
+          EngSetLastError(ERROR_INVALID_PARAMETER);
+          goto Cleanup; // Return NULL
+       }
+
        Hook->ModuleName.Buffer = ExAllocatePoolWithTag( PagedPool,
                                                         ModuleName.MaximumLength,
                                                         TAG_HOOK);
