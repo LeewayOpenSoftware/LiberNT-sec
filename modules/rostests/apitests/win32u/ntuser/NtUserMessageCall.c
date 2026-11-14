@@ -15,6 +15,8 @@
 START_TEST(NtUserMessageCall)
 {
     HINSTANCE hinst = GetModuleHandle(NULL);
+    static BYTE Data[16];
+    COPYDATASTRUCT Cds;
     ULONG_PTR Result;
     LRESULT Ret;
     HWND hWnd;
@@ -53,6 +55,29 @@ START_TEST(NtUserMessageCall)
     Ret = NtUserMessageCall(hWnd, WM_MAXIMUM + 1, 0, 0, (ULONG_PTR)&Result, FNID_SENDMESSAGE, FALSE);
     ok(Ret == 0, "Ret = %Id\n", Ret);
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "GetLastError() = %lu\n", GetLastError());
+
+    /* A data length that makes the size of the whole message wrap. An unfixed
+       kernel writes past a pool block here. */
+    Cds.dwData = 0;
+    Cds.cbData = 0xFFFFFFF0;
+    Cds.lpData = Data;
+    Result = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    NtUserMessageCall(hWnd, WM_COPYDATA, 0, (LPARAM)&Cds, (ULONG_PTR)&Result, FNID_SENDMESSAGE, FALSE);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "GetLastError() = %lu\n", GetLastError());
+
+    Cds.cbData = 0xFFFFFFF8;
+    SetLastError(0xdeadbeef);
+    NtUserMessageCall(hWnd, WM_COPYDATA, 0, (LPARAM)&Cds, (ULONG_PTR)&Result, FNID_SENDMESSAGE, FALSE);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "GetLastError() = %lu\n", GetLastError());
+
+    /* An ordinary one still goes through */
+    Cds.cbData = sizeof(Data);
+    Result = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    NtUserMessageCall(hWnd, WM_COPYDATA, 0, (LPARAM)&Cds, (ULONG_PTR)&Result, FNID_SENDMESSAGE, FALSE);
+    ok(Result == 0, "Result = %Iu\n", Result);
+    ok(GetLastError() == 0xdeadbeef, "GetLastError() = %lu\n", GetLastError());
 
     /* Posting */
     SetLastError(0xdeadbeef);

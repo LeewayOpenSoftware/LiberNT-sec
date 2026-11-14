@@ -374,8 +374,15 @@ co_IntCallWindowProc(WNDPROC Proc,
             else if (Source->lpData)
             {
                Captured->lpData = (PVOID)(ULONG_PTR)sizeof(COPYDATASTRUCT);
-               if (Source->cbData)
+               if ((ULONG)lParamBufferSize < sizeof(COPYDATASTRUCT) ||
+                   Source->cbData > (ULONG)lParamBufferSize - sizeof(COPYDATASTRUCT))
+               {
+                  Status = STATUS_INVALID_PARAMETER;
+               }
+               else if (Source->cbData)
+               {
                   RtlMoveMemory(Captured + 1, Source->lpData, Source->cbData);
+               }
             }
          }
          else

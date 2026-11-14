@@ -128,6 +128,11 @@ static inline int is_pointer_message( UINT message, WPARAM wparam )
 }
 #undef SET
 
+/* Upper bound for the variable part of a message structure whose length comes
+   from the structure itself. It keeps every size sum far from wrapping and
+   inside the INT that carries the buffer size to the callback. */
+#define MSG_MAX_VARIABLE_BYTES 0x3FFFFFFF
+
 #define MMS_SIZE_WPARAM      -1
 #define MMS_SIZE_WPARAMWCHAR -2
 #define MMS_SIZE_LPARAMSZ    -3
@@ -291,7 +296,10 @@ MsgMemorySize(PMSGMEMORY MsgMemoryEntry, WPARAM wParam, LPARAM lParam)
             case WM_COPYDATA:
                 {
                 COPYDATASTRUCT *cds = (COPYDATASTRUCT *)lParam;
-                Size = sizeof(COPYDATASTRUCT) + (cds->lpData ? cds->cbData : 0);
+                ULONG_PTR DataBytes = cds->lpData ? cds->cbData : 0;
+
+                if (DataBytes <= MSG_MAX_VARIABLE_BYTES)
+                    Size = (UINT)(sizeof(COPYDATASTRUCT) + DataBytes);
                 }
                 break;
 
@@ -300,7 +308,13 @@ MsgMemorySize(PMSGMEMORY MsgMemoryEntry, WPARAM wParam, LPARAM lParam)
                     if ( lParam && (wParam & 0x8000) )
                     {
                         DEV_BROADCAST_HDR *header = (DEV_BROADCAST_HDR *)lParam;
-                        Size = header->dbch_size;
+                        ULONG HeaderBytes = header->dbch_size;
+
+                        if (HeaderBytes >= sizeof(DEV_BROADCAST_HDR) &&
+                            HeaderBytes <= MSG_MAX_VARIABLE_BYTES)
+                        {
+                            Size = HeaderBytes;
+                        }
                     }
                 }
                 break;
@@ -309,7 +323,10 @@ MsgMemorySize(PMSGMEMORY MsgMemoryEntry, WPARAM wParam, LPARAM lParam)
                 if (wParam == PBT_POWERSETTINGCHANGE)
                 {
                     POWERBROADCAST_SETTING *Setting = (POWERBROADCAST_SETTING *)lParam;
-                    Size = FIELD_OFFSET(POWERBROADCAST_SETTING, Data) + Setting->DataLength;
+                    ULONG DataBytes = Setting->DataLength;
+
+                    if (DataBytes <= MSG_MAX_VARIABLE_BYTES)
+                        Size = FIELD_OFFSET(POWERBROADCAST_SETTING, Data) + DataBytes;
                 }
                 break;
 
@@ -701,6 +718,40 @@ CopyMsgToKernelMem(MSG *KernelModeMsg, MSG *UserModeMsg, PMSGMEMORY MsgMemoryEnt
             return STATUS_SUCCESS;
         }
 
+        if (UserModeMsg->message == WM_COPYDATA)
+        {
+            COPYDATASTRUCT Cds;
+            COPYDATASTRUCT *CapturedData;
+            ULONG DataBytes;
+
+            Status = MmCopyFromCaller(&Cds, (PVOID)UserModeMsg->lParam, sizeof(Cds));
+            if (!NT_SUCCESS(Status))
+                return Status;
+            DataBytes = Cds.lpData ? Cds.cbData : 0;
+            if (DataBytes > MSG_MAX_VARIABLE_BYTES)
+                return STATUS_INVALID_PARAMETER;
+
+            Size = (UINT)(sizeof(Cds) + DataBytes);
+            CapturedData = ExAllocatePoolWithTag(PagedPool, Size, TAG_MSG);
+            if (!CapturedData)
+                return STATUS_NO_MEMORY;
+            if (Cds.lpData)
+            {
+                Status = MmCopyFromCaller(CapturedData + 1, Cds.lpData, DataBytes);
+                if (!NT_SUCCESS(Status))
+                {
+                    ExFreePoolWithTag(CapturedData, TAG_MSG);
+                    return Status;
+                }
+                Cds.lpData = CapturedData + 1;
+            }
+            *CapturedData = Cds;
+            KernelModeMsg->lParam = (LPARAM)CapturedData;
+            Capture->Size = Size;
+            Capture->Flags = MsgMemoryEntry->Flags;
+            return STATUS_SUCCESS;
+        }
+
         if (UserModeMsg->message == WM_MDICREATE)
         {
             Status = IntCaptureMdiCreate((PVOID)UserModeMsg->lParam, &KernelMem, &Size);
@@ -716,6 +767,14 @@ CopyMsgToKernelMem(MSG *KernelModeMsg, MSG *UserModeMsg, PMSGMEMORY MsgMemoryEnt
 
     /* Determine required size */
     Size = MsgMemorySize(MsgMemoryEntry, UserModeMsg->wParam, UserModeMsg->lParam);
+
+    if (0 == Size && UserModeMsg->lParam &&
+        (UserModeMsg->message == WM_DEVICECHANGE || UserModeMsg->message == WM_POWERBROADCAST) &&
+        is_pointer_message(UserModeMsg->message, UserModeMsg->wParam))
+    {
+        /* The length the structure gives for itself is unreadable or out of range */
+        return STATUS_INVALID_PARAMETER;
+    }
 
     if (0 != Size)
     {
@@ -734,30 +793,6 @@ CopyMsgToKernelMem(MSG *KernelModeMsg, MSG *UserModeMsg, PMSGMEMORY MsgMemoryEnt
         if (0 != (MsgMemoryEntry->Flags & MMS_FLAG_READ))
         {
             TRACE("Copy Message %u from usermode buffer\n", KernelModeMsg->message);
-            if (KernelModeMsg->message == WM_COPYDATA)
-            {
-                COPYDATASTRUCT *CapturedData = KernelMem;
-
-                Status = MmCopyFromCaller(CapturedData,
-                                          (PVOID)UserModeMsg->lParam,
-                                          sizeof(*CapturedData));
-                if (NT_SUCCESS(Status) &&
-                    sizeof(*CapturedData) + (CapturedData->lpData ? CapturedData->cbData : 0) != Size)
-                {
-                    Status = STATUS_INVALID_PARAMETER;
-                }
-                if (NT_SUCCESS(Status) && CapturedData->lpData)
-                {
-                    Status = MmCopyFromCaller(CapturedData + 1,
-                                              CapturedData->lpData,
-                                              CapturedData->cbData);
-                    CapturedData->lpData = CapturedData + 1;
-                }
-                if (!NT_SUCCESS(Status))
-                    goto CopyFailed;
-                return Status;
-            }
-
             /* Don't do extra testing for 1 word messages. For examples see
              * https://wiki.winehq.org/List_Of_Windows_Messages and
              * we are just handling WM_WININICHANGE here. */
@@ -769,7 +804,7 @@ CopyMsgToKernelMem(MSG *KernelModeMsg, MSG *UserModeMsg, PMSGMEMORY MsgMemoryEnt
                 Status = STATUS_SUCCESS;
                 _SEH2_TRY
                 {
-                    ProbeForRead((PVOID)UserModeMsg->lParam, sizeof(WCHAR), 1);
+                    ProbeForRead((PVOID)UserModeMsg->lParam, min(sizeof(lParamMsg), Size), 1);
                     RtlCopyMemory(lParamMsg, (WCHAR*)UserModeMsg->lParam, min(sizeof(lParamMsg), Size));
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
