@@ -759,7 +759,6 @@ IopGetDeviceProperty(PPLUGPLAY_CONTROL_PROPERTY_DATA PropertyData)
     NTSTATUS Status;
 
     DPRINT("IopGetDeviceProperty() called\n");
-    DPRINT("Device name: %wZ\n", &PropertyData->DeviceInstance);
 
     Status = IopCaptureUnicodeString(&DeviceInstance, &PropertyData->DeviceInstance);
     if (!NT_SUCCESS(Status))
@@ -999,7 +998,6 @@ IopGetRelatedDevice(PPLUGPLAY_CONTROL_RELATED_DEVICE_DATA RelatedDeviceData)
     ULONG MaximumLength = 0;
 
     DPRINT("IopGetRelatedDevice() called\n");
-    DPRINT("Device name: %wZ\n", &RelatedDeviceData->TargetDeviceInstance);
 
     Status = IopCaptureUnicodeString(&TargetDeviceInstance, &RelatedDeviceData->TargetDeviceInstance);
     if (!NT_SUCCESS(Status))
@@ -1335,7 +1333,6 @@ IopGetDeviceRelations(PPLUGPLAY_CONTROL_DEVICE_RELATIONS_DATA RelationsData)
     NTSTATUS Status = STATUS_SUCCESS;
 
     DPRINT1("IopGetDeviceRelations() called\n");
-    DPRINT1("Device name: %wZ\n", &RelationsData->DeviceInstance);
     DPRINT("Relations: %lu\n", RelationsData->Relations);
     DPRINT("BufferSize: %lu\n", RelationsData->BufferSize);
     DPRINT("Buffer: %p\n", RelationsData->Buffer);
@@ -1360,6 +1357,9 @@ IopGetDeviceRelations(PPLUGPLAY_CONTROL_DEVICE_RELATIONS_DATA RelationsData)
         DPRINT1("IopCaptureUnicodeString() failed (Status 0x%08lx)\n", Status);
         return Status;
     }
+
+    /* SHOULD-5.1: log the captured copy, never the caller's unprobed string */
+    DPRINT1("Device name: %wZ\n", &DeviceInstance);
 
     /* Get the device object */
     DeviceObject = IopGetDeviceObjectFromDeviceInstance(&DeviceInstance);
@@ -1483,7 +1483,6 @@ IopGetDeviceDepth(PPLUGPLAY_CONTROL_DEPTH_DATA DepthData)
     NTSTATUS Status = STATUS_SUCCESS;
 
     DPRINT("IopGetDeviceDepth() called\n");
-    DPRINT("Device name: %wZ\n", &DepthData->DeviceInstance);
 
     Status = IopCaptureUnicodeString(&DeviceInstance, &DepthData->DeviceInstance);
     if (!NT_SUCCESS(Status))
@@ -1720,7 +1719,6 @@ PiControlDeviceClassAssociation(
     NTSTATUS Status;
 
     DPRINT("PiControlDeviceClassAssociation()\n");
-    DPRINT("DeviceInstance: %wZ\n", &ControlData->DeviceInstance);
 
     if (ControlData->Register)
     {
