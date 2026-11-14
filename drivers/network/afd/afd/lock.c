@@ -107,13 +107,14 @@ AfdTransferRequestSize(ULONG Code, BOOLEAN Is32Bit)
 }
 
 
-/* TRUE when a transport address of Available bytes is one the helpers can
- * consume: one or two entries, each entry's length matching its address
- * type, and the entries ending exactly at the end of the buffer. */
+/* TRUE when the transport address entries of Available bytes all fit inside
+ * the buffer: one or two entries, each header and address inside the buffer.
+ * Callers such as msafd pad the request past the address, so trailing bytes
+ * are not an error. */
 BOOLEAN
 AfdTransportAddressFits(PTRANSPORT_ADDRESS Address, ULONG Available)
 {
-    ULONG i, Offset, TypeSize;
+    ULONG i, Offset;
 
     if (Available < FIELD_OFFSET(TRANSPORT_ADDRESS, Address) + FIELD_OFFSET(TA_ADDRESS, Address))
         return FALSE;
@@ -128,14 +129,11 @@ AfdTransportAddressFits(PTRANSPORT_ADDRESS Address, ULONG Available)
 
         if (Available - Offset < FIELD_OFFSET(TA_ADDRESS, Address))
             return FALSE;
-        TypeSize = TdiAddressSizeFromType(Entry->AddressType);
-        if (!TypeSize || Entry->AddressLength != TypeSize)
-            return FALSE;
         if (Available - Offset - FIELD_OFFSET(TA_ADDRESS, Address) < Entry->AddressLength)
             return FALSE;
         Offset += FIELD_OFFSET(TA_ADDRESS, Address) + Entry->AddressLength;
     }
-    return Offset == Available;
+    return TRUE;
 }
 
 BOOLEAN
