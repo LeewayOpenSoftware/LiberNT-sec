@@ -119,6 +119,10 @@ KsecDeviceControl(
     {
         case IOCTL_KSEC_REGISTER_LSA_PROCESS:
 
+            /* Nothing is written for this request, so nothing is returned:
+             * the buffer holds whatever the system buffer held before */
+            if (OutputLength != NULL)
+                *OutputLength = 0;
             Status = STATUS_SUCCESS;
             break;
 
