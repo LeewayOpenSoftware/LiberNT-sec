@@ -346,6 +346,9 @@ IopDoNameTransmogrify(IN PIRP Irp,
         DataBuffer->ReparseTag != Irp->IoStatus.Information ||
         DataBuffer->ReparseDataLength > MAXIMUM_REPARSE_DATA_BUFFER_SIZE - REPARSE_DATA_BUFFER_HEADER_SIZE)
     {
+        /* The buffer is ours to free on every way out, as below */
+        if (DataBuffer != NULL)
+            ExFreePool(DataBuffer);
         Irp->IoStatus.Status = STATUS_IO_REPARSE_DATA_INVALID;
         return;
     }
