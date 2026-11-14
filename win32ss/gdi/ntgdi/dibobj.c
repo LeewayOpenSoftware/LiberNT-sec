@@ -1351,7 +1351,12 @@ GreGetDIBitsInternal(
             ScanLines = 0;
         else
         {
-            RtlCopyMemory(Bits, pDIBits, DIB_GetDIBImageBytes (width, ScanLines, bpp));
+            /* Never copy more than the caller's buffer holds */
+            ULONGLONG cjImage = (ULONGLONG)WIDTH_BYTES_ALIGN32(width, bpp) * (ULONGLONG)ScanLines;
+            if (cjImage > MaxBits)
+                ScanLines = 0;
+            else
+                RtlCopyMemory(Bits, pDIBits, (SIZE_T)cjImage);
         }
         /* Update if line count has changed */
         if (newLines != -1)
