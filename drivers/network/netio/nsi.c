@@ -29,6 +29,8 @@ typedef struct _NSI_PROVIDER
 
 static LIST_ENTRY NsiProviderList;
 static KSPIN_LOCK NsiProviderLock;
+/* Deregistered providers are parked here and never freed (R2): see NsiDeregisterProvider. */
+static LIST_ENTRY NsiZombieList;
 static BOOLEAN NsiReady;
 
 static IO_CSQ_INSERT_IRP NsiCsqInsertIrp;
@@ -42,6 +44,7 @@ VOID
 NsiInitialize(VOID)
 {
     InitializeListHead(&NsiProviderList);
+    InitializeListHead(&NsiZombieList);
     KeInitializeSpinLock(&NsiProviderLock);
     NsiReady = TRUE;
 }
@@ -313,7 +316,20 @@ NsiDeregisterProvider(
     NsiDereferenceProvider(Provider);
     KeWaitForSingleObject(&Provider->Released, Executive, KernelMode, FALSE, NULL);
     NsiDrainPendingIrps(Provider, NULL, STATUS_CANCELLED, 0);
-    ExFreePoolWithTag(Provider, TAG_NSI);
+
+    /* Do not free the provider. The CSQ library contract is that the queue object
+     * outlives every IRP ever queued on it: IopCsqCancelRoutine reads the embedded Csq
+     * from Irp->Tail.Overlay.DriverContext[3] and calls our lock and completion
+     * callbacks (via CONTAINING_RECORD on &Provider->Csq) AFTER releasing the cancel
+     * spin lock, holding no reference on us. A user cancel that raced the drain above is
+     * skipped by IoCsqRemoveNextIrp (the IRP is already claimed) and that cancel routine
+     * can still be running here, so freeing now is a use-after-free of the provider and
+     * an indirect call through a freed function pointer. Park the provider on a
+     * never-freed zombie list instead, so a late dereference always hits live memory.
+     * The leak is bounded: providers register their tables once per boot. */
+    KeAcquireSpinLock(&NsiProviderLock, &OldIrql);
+    InsertTailList(&NsiZombieList, &Provider->ListEntry);
+    KeReleaseSpinLock(&NsiProviderLock, OldIrql);
 }
 
 VOID
