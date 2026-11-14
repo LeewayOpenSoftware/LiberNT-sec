@@ -141,11 +141,14 @@ START_TEST(NtUserMessageCall)
     SetLastError(0xdeadbeef);
     NtUserMessageCall(hWnd, WM_COPYDATA, 0, (LPARAM)&Cds, (ULONG_PTR)&Result, FNID_SENDMESSAGE, FALSE);
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "GetLastError() = %lu\n", GetLastError());
+    ok((LRESULT)Result == -1, "Result = %Id, the message was delivered\n", (LRESULT)Result);
 
     Cds.cbData = 0xFFFFFFF8;
+    Result = 0xdeadbeef;
     SetLastError(0xdeadbeef);
     NtUserMessageCall(hWnd, WM_COPYDATA, 0, (LPARAM)&Cds, (ULONG_PTR)&Result, FNID_SENDMESSAGE, FALSE);
     ok(GetLastError() == ERROR_INVALID_PARAMETER, "GetLastError() = %lu\n", GetLastError());
+    ok((LRESULT)Result == -1, "Result = %Id, the message was delivered\n", (LRESULT)Result);
 
     /* An ordinary one still goes through */
     Cds.cbData = sizeof(Data);

@@ -3596,7 +3596,10 @@ IntCaptureProcMessage(PWND Window, DWORD fnid, UINT Msg, WPARAM *wParam, LPARAM 
 
         /* Without a window or a count nothing is written */
         if (!Window || !*wParam)
+        {
+            *lParam = 0;
             return STATUS_SUCCESS;
+        }
 
         /* The procedure writes the window text and a terminator, never more
            than the count it is given */
