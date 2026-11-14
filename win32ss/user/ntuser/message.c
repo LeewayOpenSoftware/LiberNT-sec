@@ -2964,6 +2964,13 @@ NtUserPostMessage(HWND hWnd,
 {
     BOOL ret;
 
+    /* The numbers above WM_MAXIMUM are the messages win32k sends to itself */
+    if (Msg & ~WM_MAXIMUM)
+    {
+        EngSetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
     UserEnterExclusive();
 
     if (hWnd == HWND_BROADCAST || hWnd == HWND_TOPMOST)
@@ -3002,6 +3009,12 @@ NtUserPostThreadMessage(DWORD idThread,
     PETHREAD peThread;
     PTHREADINFO pThread;
     NTSTATUS Status;
+
+    if (Msg & ~WM_MAXIMUM)
+    {
+        EngSetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
 
     UserEnterExclusive();
 
@@ -3594,6 +3607,14 @@ NtUserMessageCall( HWND hWnd,
     BOOL Ret = FALSE;
     PWND Window = NULL;
     USER_REFERENCE_ENTRY Ref;
+
+    /* The numbers above WM_MAXIMUM are the messages win32k sends to itself.
+       They carry kernel pointers and act on any window: never from user mode. */
+    if (Msg & ~WM_MAXIMUM)
+    {
+        EngSetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
 
     UserEnterExclusive();
 
