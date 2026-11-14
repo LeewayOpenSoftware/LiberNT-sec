@@ -860,6 +860,8 @@ AfdStreamSocketSuperConnect(
 
     if (Irp->UserBuffer)
     {
+         NTSTATUS CopyStatus = STATUS_SUCCESS;
+
          FCB->OnConnectSendBufferSize = BufferSize;
          FCB->OnConnectSendBuffer = ExAllocatePoolWithTag(PagedPool,
                                                         BufferSize,
@@ -873,15 +875,15 @@ AfdStreamSocketSuperConnect(
                  ProbeForRead(Irp->UserBuffer, BufferSize, sizeof(UCHAR));
              RtlCopyMemory(FCB->OnConnectSendBuffer, Irp->UserBuffer, BufferSize);
          } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-             Status = _SEH2_GetExceptionCode();
+             CopyStatus = _SEH2_GetExceptionCode();
          } _SEH2_END;
 
-         if (!NT_SUCCESS(Status))
+         if (!NT_SUCCESS(CopyStatus))
          {
              ExFreePoolWithTag(FCB->OnConnectSendBuffer, TAG_AFD_SUPER_CONNECT_BUFFER);
              FCB->OnConnectSendBuffer = NULL;
              FCB->OnConnectSendBufferSize = 0;
-             return UnlockAndMaybeComplete(FCB, Status, Irp, 0);
+             return UnlockAndMaybeComplete(FCB, CopyStatus, Irp, 0);
          }
     }
 
