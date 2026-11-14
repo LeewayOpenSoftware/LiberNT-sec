@@ -1207,6 +1207,27 @@ NTSTATUS TiSecurityStartup(
         return Status;
     }
 
+    /* A control channel on the UDP or raw IP device reaches the same
+     * setters, so they get the same descriptor; sockets are opened on
+     * them by AFD from kernel mode, which the descriptor does not touch */
+    Status = TiSetupTcpDeviceSD(UDPDeviceObject,
+                                FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+                                FILE_GENERIC_READ | FILE_GENERIC_EXECUTE);
+    if (!NT_SUCCESS(Status))
+    {
+        TI_DbgPrint(MIN_TRACE, ("Failed to set security data for UDP device object\n"));
+        return Status;
+    }
+
+    Status = TiSetupTcpDeviceSD(RawIPDeviceObject,
+                                FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+                                FILE_GENERIC_READ | FILE_GENERIC_EXECUTE);
+    if (!NT_SUCCESS(Status))
+    {
+        TI_DbgPrint(MIN_TRACE, ("Failed to set security data for raw IP device object\n"));
+        return Status;
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -1358,8 +1379,10 @@ DriverEntry(
     KeInitializeTimer(&NeighborTimer);
 
     /* Create IP device object */
+    /* Secure open: an open with a trailing name (as raw IP uses for the
+     * protocol number) is checked against the device's descriptor too */
     Status = IoCreateDevice(DriverObject, 0, &strIpDeviceName,
-        FILE_DEVICE_NETWORK, 0, FALSE, &IPDeviceObject);
+        FILE_DEVICE_NETWORK, FILE_DEVICE_SECURE_OPEN, FALSE, &IPDeviceObject);
     if (!NT_SUCCESS(Status)) {
         TI_DbgPrint(MIN_TRACE, ("Failed to create IP device object. Status (0x%X).\n", Status));
         TiUnload(DriverObject);
@@ -1369,7 +1392,7 @@ DriverEntry(
     ChewInit( IPDeviceObject );
 
     Status = IoCreateDevice(DriverObject, 0, &strIp6DeviceName,
-        FILE_DEVICE_NETWORK, 0, FALSE, &IP6DeviceObject);
+        FILE_DEVICE_NETWORK, FILE_DEVICE_SECURE_OPEN, FALSE, &IP6DeviceObject);
     if (!NT_SUCCESS(Status)) {
         TI_DbgPrint(MIN_TRACE, ("Failed to create IPv6 device object. Status (0x%X).\n", Status));
         TiUnload(DriverObject);
@@ -1378,7 +1401,7 @@ DriverEntry(
 
     /* Create RawIP device object */
     Status = IoCreateDevice(DriverObject, 0, &strRawDeviceName,
-        FILE_DEVICE_NETWORK, 0, FALSE, &RawIPDeviceObject);
+        FILE_DEVICE_NETWORK, FILE_DEVICE_SECURE_OPEN, FALSE, &RawIPDeviceObject);
     if (!NT_SUCCESS(Status)) {
         TI_DbgPrint(MIN_TRACE, ("Failed to create RawIP device object. Status (0x%X).\n", Status));
         TiUnload(DriverObject);
@@ -1387,7 +1410,7 @@ DriverEntry(
 
     /* Create UDP device object */
     Status = IoCreateDevice(DriverObject, 0, &strUdpDeviceName,
-        FILE_DEVICE_NETWORK, 0, FALSE, &UDPDeviceObject);
+        FILE_DEVICE_NETWORK, FILE_DEVICE_SECURE_OPEN, FALSE, &UDPDeviceObject);
     if (!NT_SUCCESS(Status)) {
         TI_DbgPrint(MIN_TRACE, ("Failed to create UDP device object. Status (0x%X).\n", Status));
         TiUnload(DriverObject);
@@ -1396,7 +1419,7 @@ DriverEntry(
 
     /* Create TCP device object */
     Status = IoCreateDevice(DriverObject, 0, &strTcpDeviceName,
-        FILE_DEVICE_NETWORK, 0, FALSE, &TCPDeviceObject);
+        FILE_DEVICE_NETWORK, FILE_DEVICE_SECURE_OPEN, FALSE, &TCPDeviceObject);
     if (!NT_SUCCESS(Status)) {
         TI_DbgPrint(MIN_TRACE, ("Failed to create TCP device object. Status (0x%X).\n", Status));
         TiUnload(DriverObject);
