@@ -410,10 +410,186 @@ TestMinimumLengths(void)
     NtClose(SocketHandle);
 }
 
+static
+void
+TestSelect(void)
+{
+    NTSTATUS Status;
+    HANDLE SocketHandle;
+    IO_STATUS_BLOCK IoStatus;
+    UCHAR Buffer[sizeof(AFD_POLL_INFO) + sizeof(AFD_HANDLE)];
+
+    Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    /* every handle in the array must be referenced for the caller's mode:
+     * a request for an access the caller does not hold must not fail */
+    RtlZeroMemory(Buffer, sizeof(Buffer));
+    ((PAFD_POLL_INFO)Buffer)->Timeout.QuadPart = 0;
+    ((PAFD_POLL_INFO)Buffer)->HandleCount = 1;
+    ((PAFD_POLL_INFO)Buffer)->Handles[0].Handle = (HANDLE)SocketHandle;
+    ((PAFD_POLL_INFO)Buffer)->Handles[0].Events = AFD_EVENT_SEND;
+
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   NULL,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_SELECT,
+                                   Buffer,
+                                   sizeof(Buffer),
+                                   Buffer,
+                                   sizeof(Buffer));
+    if (Status == STATUS_PENDING)
+    {
+        NtWaitForSingleObject(SocketHandle, FALSE, NULL);
+        Status = IoStatus.Status;
+    }
+    ok(Status == STATUS_SUCCESS, "select on a socket handle failed with %lx\n", Status);
+
+    NtClose(SocketHandle);
+}
+
+static
+void
+TestConnect(void)
+{
+    HANDLE Listener = NULL, Client = NULL;
+    ULONG SequenceNumber;
+
+    /* a normal loopback connect must keep working: it exercises the
+     * transport-address fit check end to end */
+    SetupListeningPair(&Listener, &Client, &SequenceNumber);
+    ok(Listener != NULL, "loopback connect through the fit check failed\n");
+    if (Listener) NtClose(Listener);
+    if (Client) NtClose(Client);
+}
+
+static
+void
+TestShortAddress(void)
+{
+    NTSTATUS Status;
+    HANDLE SocketHandle;
+    IO_STATUS_BLOCK IoStatus;
+    UCHAR Buffer[sizeof(AFD_SEND_INFO_UDP)];
+    AFD_SEND_INFO_UDP SendInfo;
+    AFD_WSABUF AfdBuffer;
+    UCHAR Payload[4];
+    struct sockaddr_in Addr;
+    /* an address that stops right after the count and the entry header */
+    UCHAR ShortAddress[FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
+                       FIELD_OFFSET(TA_ADDRESS, Address)];
+
+    Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    RtlZeroMemory(&Addr, sizeof(Addr));
+    Addr.sin_family = AF_INET;
+    Addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    Addr.sin_port = 0;
+    Status = AfdBind(SocketHandle, (const struct sockaddr *)&Addr, sizeof(Addr));
+    ok(Status == STATUS_SUCCESS, "AfdBind failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+    {
+        NtClose(SocketHandle);
+        return;
+    }
+
+    RtlZeroMemory(&SendInfo, sizeof(SendInfo));
+    RtlZeroMemory(ShortAddress, sizeof(ShortAddress));
+    ((PTRANSPORT_ADDRESS)ShortAddress)->TAAddressCount = 1;
+    ((PTRANSPORT_ADDRESS)ShortAddress)->Address[0].AddressType = TDI_ADDRESS_TYPE_IP;
+    ((PTRANSPORT_ADDRESS)ShortAddress)->Address[0].AddressLength = TDI_ADDRESS_LENGTH_IP;
+
+    AfdBuffer.buf = (PCHAR)Payload;
+    AfdBuffer.len = sizeof(Payload);
+    SendInfo.BufferArray = &AfdBuffer;
+    SendInfo.BufferCount = 1;
+    SendInfo.TdiFlags = 0;
+    SendInfo.AfdFlags = 0;
+    SendInfo.TdiConnection.RemoteAddress = (PVOID)ShortAddress;
+    SendInfo.TdiConnection.RemoteAddressLength = sizeof(ShortAddress);
+
+    RtlCopyMemory(Buffer, &SendInfo, sizeof(SendInfo));
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   NULL,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_SEND_DATAGRAM,
+                                   Buffer,
+                                   sizeof(Buffer),
+                                   NULL,
+                                   0);
+    ok(!NT_SUCCESS(Status), "sendto with an address that ends at its header succeeded with %lx\n",
+       Status);
+
+    NtClose(SocketHandle);
+}
+
+static
+void
+TestCountZeroBind(void)
+{
+    NTSTATUS Status;
+    HANDLE SocketHandle;
+    IO_STATUS_BLOCK IoStatus;
+    struct
+    {
+        ULONG ShareType;
+        TRANSPORT_ADDRESS Address;
+    } BindRequest;
+    static const struct
+    {
+        const char *What;
+        LONG Count;
+    } Cases[] =
+    {
+        { "zero", 0 },
+        { "three", 3 },
+    };
+    ULONG i;
+
+    for (i = 0; i < RTL_NUMBER_OF(Cases); i++)
+    {
+        Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+        if (!NT_SUCCESS(Status))
+            return;
+
+        RtlZeroMemory(&BindRequest, sizeof(BindRequest));
+        BindRequest.Address.TAAddressCount = Cases[i].Count;
+
+        Status = NtDeviceIoControlFile(SocketHandle,
+                                       NULL,
+                                       NULL,
+                                       NULL,
+                                       &IoStatus,
+                                       IOCTL_AFD_BIND,
+                                       &BindRequest,
+                                       sizeof(BindRequest),
+                                       NULL,
+                                       0);
+        ok(!NT_SUCCESS(Status), "bind with a count of %s succeeded with %lx\n",
+           Cases[i].What, Status);
+
+        NtClose(SocketHandle);
+    }
+}
+
 void
 func_ioctl(void)
 {
     TestAcceptForeignHandle();
     TestNullBufferSend();
     TestMinimumLengths();
+    TestSelect();
+    TestConnect();
+    TestShortAddress();
+    TestCountZeroBind();
 }
