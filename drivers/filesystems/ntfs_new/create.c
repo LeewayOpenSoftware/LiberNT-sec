@@ -74,6 +74,25 @@ NtfsReturnCreateReparse(
     }
 
     /*
+     * A junction or symbolic link on the volume may predate set-time
+     * validation or come from crafted media: the I/O manager follows its
+     * name offsets, so both names must lie inside the data.
+     */
+    if (ReparseData->ReparseType == NTFS_IO_REPARSE_TAG_MOUNT_POINT ||
+        ReparseData->ReparseType == NTFS_IO_REPARSE_TAG_SYMLINK)
+    {
+        NtfsReparseNameView View;
+
+        if (!NT_SUCCESS(NtfsParseNameSurrogateReparsePoint((const UCHAR*)ReparseData,
+                                                           BufferLength,
+                                                           &View)))
+        {
+            ExFreePoolWithTag(ReparseData, TAG_NTFS);
+            return STATUS_IO_REPARSE_DATA_INVALID;
+        }
+    }
+
+    /*
      * The common header is layout-compatible with REPARSE_DATA_BUFFER.
      * The I/O manager consumes Reserved as the byte count of the unparsed
      * suffix and owns AuxiliaryBuffer after STATUS_REPARSE is returned.

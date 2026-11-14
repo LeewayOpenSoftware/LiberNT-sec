@@ -197,6 +197,25 @@ if(BUILD_TESTING)
         COMMAND ntfslib_resident_update_test
     )
 
+    # Junction and symbolic-link names must lie inside the reparse data:
+    # malformed offsets, lengths and truncated buffers are refused at set.
+    add_executable(ntfslib_reparse_name_bounds_test
+        tests/reparse_name_bounds.cpp
+    )
+    target_compile_features(ntfslib_reparse_name_bounds_test PRIVATE cxx_std_17)
+    target_compile_options(ntfslib_reparse_name_bounds_test PRIVATE
+        -Wall
+        -Wextra
+    )
+    target_include_directories(ntfslib_reparse_name_bounds_test PRIVATE
+        "${NTFSLIB_ROOT}/include/internal"
+    )
+    target_link_libraries(ntfslib_reparse_name_bounds_test PRIVATE ntfslib_linux)
+    add_test(
+        NAME ntfslib_linux_reparse_name_bounds
+        COMMAND ntfslib_reparse_name_bounds_test
+    )
+
     # The index walk of the checker on hand-built nodes: a split cut short is
     # trimmed, not reset. It includes check.cpp to reach the walk.
     add_executable(ntfslib_check_split_trim_test
