@@ -952,7 +952,22 @@ done:
     do { \
         if ((g_IsMiniNT == FALSE) && (IsCallerAdministrator(hBinding) == FALSE)) \
         { \
-            DPRINT1("PNP access denied: caller is not an administrator\n"); \
+            DPRINT("PNP access denied: caller is not an administrator\n"); \
+            return CR_ACCESS_DENIED; \
+        } \
+    } while (0)
+
+/*
+ * A few state changes that Windows lets the logged-on user perform - device eject
+ * from Safely Remove Hardware and PC eject/undock from the tray - require only an
+ * interactive caller, not an administrator, so those shell paths keep working for a
+ * standard user. Query-remove and the rest stay administrator-only.
+ */
+#define PNP_REQUIRE_INTERACTIVE(hBinding) \
+    do { \
+        if ((g_IsMiniNT == FALSE) && (IsCallerInteractive(hBinding) == FALSE)) \
+        { \
+            DPRINT("PNP access denied: caller is not interactive\n"); \
             return CR_ACCESS_DENIED; \
         } \
     } while (0)
@@ -4557,7 +4572,7 @@ PNP_RequestDeviceEject(
     NTSTATUS Status;
     DWORD ret = CR_SUCCESS;
 
-    PNP_REQUIRE_ADMIN(hBinding);
+    PNP_REQUIRE_INTERACTIVE(hBinding);
     DPRINT1("PNP_RequestDeviceEject(%p %S %p %p %lu 0x%lx)\n",
             hBinding, pszDeviceID, pVetoType, pszVetoName,
             ulNameLength, ulFlags);
@@ -4667,7 +4682,7 @@ PNP_RequestEjectPC(
     PLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA DockData;
     NTSTATUS Status;
 
-    PNP_REQUIRE_ADMIN(hBinding);
+    PNP_REQUIRE_INTERACTIVE(hBinding);
     DPRINT("PNP_RequestEjectPC(%p)\n", hBinding);
 
     /* Retrieve the dock device */

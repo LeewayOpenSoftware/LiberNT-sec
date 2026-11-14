@@ -130,6 +130,14 @@ START_TEST(PnpAccessPolicy)
     ok(cr == CR_SUCCESS,
        "Non-admin query returned %lu, expected CR_SUCCESS (queries stay open)\n", cr);
 
+    /* SHOULD-1: device eject is allowed for an interactive caller without admin
+     * (Safely Remove Hardware runs as the logged-on user). The restricted token
+     * keeps the Interactive SID, so the gate must not deny it with CR_ACCESS_DENIED.
+     * The eject itself may fail for another reason on the root node; that is fine. */
+    cr = CM_Request_Device_EjectW(RootDevInst, NULL, NULL, 0, 0);
+    ok(cr != CR_ACCESS_DENIED,
+       "Interactive (non-admin) eject returned CR_ACCESS_DENIED; the interactive gate must allow it\n");
+
     SetThreadToken(NULL, NULL);
     CloseHandle(hImp);
 }
