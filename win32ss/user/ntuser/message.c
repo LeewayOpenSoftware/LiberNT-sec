@@ -3871,6 +3871,15 @@ NtUserMessageCall( HWND hWnd,
            {
                break;
            }
+           /* The default procedure is what a window procedure calls for its
+              own window. For a window of another process it would change
+              that window (text, close, system commands) without any of the
+              checks a sent message goes through. */
+           if (Window->head.pti->ppi != PsGetCurrentThreadWin32Thread()->ppi)
+           {
+               EngSetLastError(ERROR_ACCESS_DENIED);
+               break;
+           }
            UserRefObjectCo(Window, &Ref);
         }
         ProcAnsi = Ansi;

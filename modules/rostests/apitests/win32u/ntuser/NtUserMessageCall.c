@@ -86,6 +86,12 @@ TestKernelProcedures(HWND hWnd)
     Ret = NtUserMessageCall(hWnd, WM_WINDOWPOSCHANGING, 0, KernelAddress, 0, FNID_DESKTOP, FALSE);
     ok(Ret == 0, "Ret = %Id\n", Ret);
     ok(IsWindow(hWnd), "The window is gone\n");
+
+    /* The default procedure does not run for a window of another process */
+    SetLastError(0xdeadbeef);
+    Ret = NtUserMessageCall(GetDesktopWindow(), WM_GETTEXTLENGTH, 0, 0, 0, FNID_DEFWINDOWPROC, FALSE);
+    ok(Ret == 0, "Ret = %Id\n", Ret);
+    ok(GetLastError() == ERROR_ACCESS_DENIED, "GetLastError() = %lu\n", GetLastError());
 }
 
 START_TEST(NtUserMessageCall)
