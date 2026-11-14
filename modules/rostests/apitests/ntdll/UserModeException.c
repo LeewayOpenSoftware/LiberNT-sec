@@ -401,10 +401,79 @@ Test_InstructionFaults(void)
     VirtualFree(RwxMemory, 0, MEM_RELEASE);
 }
 
+#ifdef _M_AMD64
+/* The record of a fault the processor raised has two parameters for an access violation;
+ * the alignment field and the parameters it does not use are zero (Windows 11 x64). */
+static
+void
+Test_ExceptionRecordTail(void)
+{
+    static const struct
+    {
+        ULONG_PTR Address;
+        BOOLEAN Write;
+    } Cases[] =
+    {
+        { 0x10, FALSE },
+        { 0x20, TRUE },
+    };
+    PEXCEPTION_POINTERS ExcPtrs;
+    EXCEPTION_RECORD ExceptionRecord;
+    NTSTATUS Status;
+    ULONG Case, Index, Alignment;
+
+    for (Case = 0; Case < ARRAYSIZE(Cases); Case++)
+    {
+        volatile UCHAR *Pointer = (volatile UCHAR *)Cases[Case].Address;
+
+        RtlFillMemory(&ExceptionRecord, sizeof(ExceptionRecord), 0xAA);
+        Status = STATUS_SUCCESS;
+
+        _SEH2_TRY
+        {
+            if (Cases[Case].Write)
+                *Pointer = 1;
+            else
+                (void)*Pointer;
+        }
+        _SEH2_EXCEPT(ExcPtrs = _SEH2_GetExceptionInformation(),
+                     RtlCopyMemory(&ExceptionRecord, ExcPtrs->ExceptionRecord, sizeof(ExceptionRecord)),
+                     EXCEPTION_EXECUTE_HANDLER)
+        {
+            Status = _SEH2_GetExceptionCode();
+        }
+        _SEH2_END;
+
+        ok(Status == STATUS_ACCESS_VIOLATION, "Case %lu: Status = 0x%lx\n", Case, Status);
+        ok(ExceptionRecord.ExceptionCode == (DWORD)STATUS_ACCESS_VIOLATION,
+           "Case %lu: ExceptionCode = 0x%lx\n", Case, ExceptionRecord.ExceptionCode);
+        ok(ExceptionRecord.NumberParameters == 2,
+           "Case %lu: NumberParameters = %lu\n", Case, ExceptionRecord.NumberParameters);
+        ok(ExceptionRecord.ExceptionInformation[0] == Cases[Case].Write,
+           "Case %lu: ExceptionInformation[0] = 0x%Ix\n", Case, (SIZE_T)ExceptionRecord.ExceptionInformation[0]);
+        ok(ExceptionRecord.ExceptionInformation[1] == Cases[Case].Address,
+           "Case %lu: ExceptionInformation[1] = 0x%Ix\n", Case, (SIZE_T)ExceptionRecord.ExceptionInformation[1]);
+
+        RtlCopyMemory(&Alignment, (PUCHAR)&ExceptionRecord.NumberParameters + sizeof(ULONG), sizeof(Alignment));
+        ok(Alignment == 0, "Case %lu: the alignment field after NumberParameters = 0x%lx\n", Case, Alignment);
+
+        for (Index = 2; Index < EXCEPTION_MAXIMUM_PARAMETERS; Index++)
+        {
+            ok(ExceptionRecord.ExceptionInformation[Index] == 0,
+               "Case %lu: ExceptionInformation[%lu] = 0x%Ix\n",
+               Case, Index, (SIZE_T)ExceptionRecord.ExceptionInformation[Index]);
+        }
+    }
+}
+#endif
+
 START_TEST(UserModeException)
 {
     DetermineCpuFeatures();
 
     Test_RaisedAccessViolations();
     Test_InstructionFaults();
+#ifdef _M_AMD64
+    Test_ExceptionRecordTail();
+#endif
 }
