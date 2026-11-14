@@ -624,7 +624,7 @@ NtGdiSetDIBitsToDeviceInternal(
     LONGLONG llHeight, llSrcY;
     LONG lHeight, lBandHeight;
 
-    if (!Bits) return 0;
+    if (!Bits || !cjMaxBits || !cjMaxInfo) return 0;
 
     pbmiSafe = ExAllocatePoolWithTag(PagedPool, cjMaxInfo, 'pmTG');
     if (!pbmiSafe) return 0;
