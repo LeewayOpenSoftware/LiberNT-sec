@@ -550,8 +550,9 @@ NTSTATUS AfdSuperAccept( PDEVICE_OBJECT DeviceObject, PIRP Irp,
     } _SEH2_END;
 
     if( NT_SUCCESS(Status) &&
-        IrpSp->Parameters.DeviceIoControl.InputBufferLength <
-        Info->ReceiveDataLength + Info->LocalAddressLength + Info->RemoteAddressLength ) {
+        (ULONG64)Info->ReceiveDataLength + Info->LocalAddressLength +
+        Info->RemoteAddressLength >
+        IrpSp->Parameters.DeviceIoControl.InputBufferLength ) {
         Status = STATUS_INVALID_PARAMETER;
     }
 
