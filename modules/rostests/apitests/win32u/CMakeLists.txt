@@ -57,6 +57,7 @@ list(APPEND SOURCE
 #    ntuser/NtUserGetIconInfo.c
     ntuser/NtUserGetKeyboardLayoutName.c
     ntuser/NtUserGetMenuItemRect.c
+    ntuser/NtUserGetProcDefLayout.c
     ntuser/NtUserGetThreadState.c
     ntuser/NtUserGetTitleBarInfo.c
     ntuser/NtUserProcessConnect.c

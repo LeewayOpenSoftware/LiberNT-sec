@@ -55,6 +55,7 @@ extern void func_NtUserGetCursorInfo(void);
 //extern void func_NtUserGetIconInfo(void);
 extern void func_NtUserGetKeyboardLayoutName(void);
 extern void func_NtUserGetMenuItemRect(void);
+extern void func_NtUserGetProcDefLayout(void);
 extern void func_NtUserGetThreadState(void);
 extern void func_NtUserGetTitleBarInfo(void);
 extern void func_NtUserProcessConnect(void);
@@ -127,6 +128,7 @@ const struct test winetest_testlist[] =
     //{ "NtUserGetIconInfo", func_NtUserGetIconInfo },
     { "NtUserGetKeyboardLayoutName", func_NtUserGetKeyboardLayoutName },
     { "NtUserGetMenuItemRect", func_NtUserGetMenuItemRect },
+    { "NtUserGetProcDefLayout", func_NtUserGetProcDefLayout },
     { "NtUserGetThreadState", func_NtUserGetThreadState },
     { "NtUserGetTitleBarInfo", func_NtUserGetTitleBarInfo },
     { "NtUserProcessConnect", func_NtUserProcessConnect },

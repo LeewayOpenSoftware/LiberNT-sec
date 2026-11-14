@@ -86,24 +86,8 @@ Test_OneParamRoutine_SwapMouseButtons(void) /* 0x42 */
     // TODO: test other values
 }
 
-void
-Test_OneParamRoutine_GetProcDefLayout(void)
-{
-    DWORD dwLayout = 0xdeadbeef;
-
-    /* A buffer of the caller is written */
-    TEST(NtUserCallOneParam((DWORD_PTR)&dwLayout, ONEPARAM_ROUTINE_GETPROCDEFLAYOUT) == TRUE);
-    TEST(dwLayout != 0xdeadbeef);
-
-    /* A kernel address is refused */
-    SetLastError(ERROR_SUCCESS);
-    TEST(NtUserCallOneParam((DWORD_PTR)(LONG_PTR)-4096, ONEPARAM_ROUTINE_GETPROCDEFLAYOUT) == FALSE);
-    TEST(GetLastError() == ERROR_NOACCESS);
-}
-
 START_TEST(NtUserCallOneParam)
 {
-    Test_OneParamRoutine_GetProcDefLayout();
     Test_OneParamRoutine_BeginDeferWindowPos(); /* 0x1e */
     Test_OneParamRoutine_WindowFromDC(); /* 0x1f */
     Test_OneParamRoutine_CreateEmptyCurObject(); /* XP/2k3 : 0x21, vista 0x25 */
