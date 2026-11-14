@@ -804,6 +804,39 @@ NTSTATUS QueueUserModeIrp(PAFD_FCB FCB, PIRP Irp, UINT Function)
     return Status;
 }
 
+/* The control requests of this driver pass their output by address and the
+ * I/O manager checks nothing for them. These two copy to or from that address
+ * after checking it against the mode of the caller. */
+NTSTATUS AfdCopyToCaller( PIRP Irp, const VOID *Source, ULONG Length ) {
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    _SEH2_TRY {
+        if (Irp->RequestorMode != KernelMode)
+            ProbeForWrite(Irp->UserBuffer, Length, sizeof(UCHAR));
+
+        RtlCopyMemory(Irp->UserBuffer, Source, Length);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        Status = _SEH2_GetExceptionCode();
+    } _SEH2_END;
+
+    return Status;
+}
+
+NTSTATUS AfdCopyFromCaller( PIRP Irp, PVOID Destination, ULONG Length ) {
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    _SEH2_TRY {
+        if (Irp->RequestorMode != KernelMode)
+            ProbeForRead(Irp->UserBuffer, Length, sizeof(UCHAR));
+
+        RtlCopyMemory(Destination, Irp->UserBuffer, Length);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        Status = _SEH2_GetExceptionCode();
+    } _SEH2_END;
+
+    return Status;
+}
+
 NTSTATUS LeaveIrpUntilLater( PAFD_FCB FCB, PIRP Irp, UINT Function ) {
     NTSTATUS Status;
 

@@ -71,11 +71,7 @@ AfdGetDisconnectOptions(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (FCB->FilledDisconnectOptions < BufferSize) BufferSize = FCB->FilledDisconnectOptions;
 
-    RtlCopyMemory(Irp->UserBuffer,
-                  FCB->DisconnectOptions,
-                  BufferSize);
-
-    return UnlockAndMaybeComplete(FCB, STATUS_SUCCESS, Irp, BufferSize);
+    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->DisconnectOptions, BufferSize), Irp, BufferSize);
 }
 
 NTSTATUS
@@ -183,11 +179,7 @@ AfdGetDisconnectData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     if (FCB->FilledDisconnectData < BufferSize)
         BufferSize = FCB->FilledDisconnectData;
 
-    RtlCopyMemory(Irp->UserBuffer,
-                  FCB->DisconnectData,
-                  BufferSize);
-
-    return UnlockAndMaybeComplete(FCB, STATUS_SUCCESS, Irp, BufferSize);
+    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->DisconnectData, BufferSize), Irp, BufferSize);
 }
 
 NTSTATUS
@@ -280,9 +272,12 @@ AfdGetTdiHandles(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     PFILE_OBJECT FileObject = IrpSp->FileObject;
     PAFD_FCB FCB = FileObject->FsContext;
     PULONG HandleFlags = LockRequest(Irp, IrpSp, TRUE, NULL);
-    PAFD_TDI_HANDLE_DATA HandleData = Irp->UserBuffer;
-    PAFD_TDI_HANDLE_DATA32 HandleData32 = Irp->UserBuffer;
+    AFD_TDI_HANDLE_DATA LocalHandleData;
+    AFD_TDI_HANDLE_DATA32 LocalHandleData32;
+    PAFD_TDI_HANDLE_DATA HandleData = &LocalHandleData;
+    PAFD_TDI_HANDLE_DATA32 HandleData32 = &LocalHandleData32;
     BOOLEAN Is32Bit = AfdIs32bitIoctl(Irp);
+    NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
@@ -301,14 +296,22 @@ AfdGetTdiHandles(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (Is32Bit)
     {
+        Status = AfdCopyFromCaller(Irp, HandleData32, sizeof(*HandleData32));
+        if (!NT_SUCCESS(Status))
+            return UnlockAndMaybeComplete(FCB, Status, Irp, 0);
+
         if ((*HandleFlags) & AFD_ADDRESS_HANDLE)
             HandleData32->TdiAddressHandle = HandleToUlong(FCB->AddressFile.Handle);
 
         if ((*HandleFlags) & AFD_CONNECTION_HANDLE)
             HandleData32->TdiConnectionHandle = HandleToUlong(FCB->Connection.Handle);
 
-        return UnlockAndMaybeComplete(FCB, STATUS_SUCCESS, Irp, 0);
+        return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, HandleData32, sizeof(*HandleData32)), Irp, 0);
     }
+
+    Status = AfdCopyFromCaller(Irp, HandleData, sizeof(*HandleData));
+    if (!NT_SUCCESS(Status))
+        return UnlockAndMaybeComplete(FCB, Status, Irp, 0);
 
     if ((*HandleFlags) & AFD_ADDRESS_HANDLE)
         HandleData->TdiAddressHandle = FCB->AddressFile.Handle;
@@ -316,7 +319,7 @@ AfdGetTdiHandles(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     if ((*HandleFlags) & AFD_CONNECTION_HANDLE)
         HandleData->TdiConnectionHandle = FCB->Connection.Handle;
 
-    return UnlockAndMaybeComplete(FCB, STATUS_SUCCESS, Irp, 0);
+    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, HandleData, sizeof(*HandleData)), Irp, 0);
 }
 
 static NTSTATUS NTAPI
