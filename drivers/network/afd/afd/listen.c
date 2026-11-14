@@ -390,6 +390,9 @@ NTSTATUS AfdListenSocket( PDEVICE_OBJECT DeviceObject, PIRP Irp,
         return UnlockAndMaybeComplete( FCB, STATUS_NO_MEMORY, Irp,
                                        0 );
 
+    if (IrpSp->Parameters.DeviceIoControl.InputBufferLength < sizeof(AFD_LISTEN_DATA))
+        return UnlockAndMaybeComplete( FCB, STATUS_INVALID_PARAMETER, Irp, 0 );
+
     if( FCB->SharedData.State != SOCKET_STATE_BOUND ) {
         Status = STATUS_INVALID_PARAMETER;
         AFD_DbgPrint(MIN_TRACE,("Could not listen an unbound socket\n"));

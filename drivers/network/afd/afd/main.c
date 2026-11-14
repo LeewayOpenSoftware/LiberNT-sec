@@ -900,6 +900,11 @@ AfdDisconnect(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         return UnlockAndMaybeComplete( FCB, STATUS_NO_MEMORY,
                                        Irp, 0 );
 
+    if (IrpSp->Parameters.DeviceIoControl.InputBufferLength <
+        sizeof(DisReq->DisconnectType))
+        return UnlockAndMaybeComplete( FCB, STATUS_INVALID_PARAMETER,
+                                       Irp, 0 );
+
     /* Send direction only */
     if ((DisReq->DisconnectType & AFD_DISCONNECT_SEND) &&
         !(DisReq->DisconnectType & AFD_DISCONNECT_RECV))

@@ -670,6 +670,14 @@ AfdStreamSocketConnect(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         return UnlockAndMaybeComplete( FCB, STATUS_NO_MEMORY, Irp,
                                        0 );
 
+    if (IrpSp->Parameters.DeviceIoControl.InputBufferLength <
+        FIELD_OFFSET(AFD_CONNECT_INFO, RemoteAddress) ||
+        !AfdTransportAddressFits(&ConnectReq->RemoteAddress,
+                                 IrpSp->Parameters.DeviceIoControl.InputBufferLength -
+                                 FIELD_OFFSET(AFD_CONNECT_INFO, RemoteAddress)))
+        return UnlockAndMaybeComplete( FCB, STATUS_INVALID_PARAMETER, Irp,
+                                       0 );
+
     AFD_DbgPrint(MID_TRACE,("Connect request:\n"));
 #if 0
     OskitDumpBuffer

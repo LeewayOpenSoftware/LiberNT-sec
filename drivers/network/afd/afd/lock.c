@@ -106,6 +106,29 @@ AfdTransferRequestSize(ULONG Code, BOOLEAN Is32Bit)
     }
 }
 
+
+/* TRUE when a transport address read from a request buffer of Available
+ * bytes stays inside that buffer. */
+BOOLEAN
+AfdTransportAddressFits(PTRANSPORT_ADDRESS Address, ULONG Available)
+{
+    ULONG i, Offset;
+
+    if (Available < FIELD_OFFSET(TRANSPORT_ADDRESS, Address))
+        return FALSE;
+
+    Offset = FIELD_OFFSET(TRANSPORT_ADDRESS, Address);
+    for (i = 0; i < (ULONG)Address->TAAddressCount; i++)
+    {
+        if (Available - Offset < sizeof(TA_ADDRESS))
+            return FALSE;
+        if (Address->Address[i].AddressLength > Available - Offset - sizeof(TA_ADDRESS))
+            return FALSE;
+        Offset += sizeof(TA_ADDRESS) + Address->Address[i].AddressLength;
+    }
+    return TRUE;
+}
+
 BOOLEAN
 AfdIsRecvMsgRequest(PIRP Irp, PIO_STACK_LOCATION IrpSp)
 {

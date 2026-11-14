@@ -405,6 +405,7 @@ PAFD_WSABUF LockBuffers( PAFD_WSABUF Buf, UINT Count,
                         BOOLEAN Write, BOOLEAN LockAddress,
                         KPROCESSOR_MODE LockMode, BOOLEAN Is32Bit );
 VOID UnlockBuffers( PAFD_WSABUF Buf, UINT Count, BOOL Address );
+BOOLEAN AfdTransportAddressFits(PTRANSPORT_ADDRESS Address, ULONG Available);
 BOOLEAN AfdIsRecvMsgRequest(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 BOOLEAN AfdLockMessageBuffers(PAFD_WSABUF Buf, UINT Count, PAFD_RECV_MSG_INFO Message, KPROCESSOR_MODE LockMode);
 BOOLEAN SocketAcquireStateLock( PAFD_FCB FCB );

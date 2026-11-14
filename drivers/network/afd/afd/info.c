@@ -65,6 +65,10 @@ AfdGetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
     if (!InfoReq)
         return UnlockAndMaybeComplete(FCB, STATUS_NO_MEMORY, Irp, 0);
 
+    if (IrpSp->Parameters.DeviceIoControl.InputBufferLength <
+        FIELD_OFFSET(AFD_INFO, Information) + sizeof(InfoReq->Information))
+        return UnlockAndMaybeComplete(FCB, STATUS_INVALID_PARAMETER, Irp, 0);
+
     _SEH2_TRY {
         switch( InfoReq->InformationClass ) {
         case AFD_INFO_RECEIVE_WINDOW_SIZE:
@@ -149,6 +153,10 @@ AfdSetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (!InfoReq)
         return UnlockAndMaybeComplete(FCB, STATUS_NO_MEMORY, Irp, 0);
+
+    if (IrpSp->Parameters.DeviceIoControl.InputBufferLength <
+        FIELD_OFFSET(AFD_INFO, Information) + sizeof(InfoReq->Information))
+        return UnlockAndMaybeComplete(FCB, STATUS_INVALID_PARAMETER, Irp, 0);
 
     _SEH2_TRY {
         switch (InfoReq->InformationClass) {
