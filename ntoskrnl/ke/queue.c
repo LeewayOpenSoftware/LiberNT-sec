@@ -194,7 +194,11 @@ FASTCALL
 KiUnpinThreadQueue(VOID)
 {
     ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
-    KiQueueInUse[KeGetCurrentProcessorNumber()] = NULL;
+
+    /* Everything this processor did to the queue must be visible before the
+     * entry reads as free, because the owner of the queue may free it then.
+     * The exchange makes that sure by itself, whatever was done just before. */
+    InterlockedExchangePointer((PVOID volatile *)&KiQueueInUse[KeGetCurrentProcessorNumber()], NULL);
 }
 
 /* Waits until no processor is still using a queue that was just run down */
