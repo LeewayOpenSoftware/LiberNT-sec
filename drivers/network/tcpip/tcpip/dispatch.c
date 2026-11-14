@@ -1588,8 +1588,6 @@ NTSTATUS DispTdiQueryInformationEx(
     UINT OutputBufferLength;
     ULONG RequestLength;
     ULONG ContextOffset;
-    BOOLEAN InputMdlLocked  = FALSE;
-    BOOLEAN OutputMdlLocked = FALSE;
     PMDL InputMdl           = NULL;
     PMDL OutputMdl          = NULL;
     NTSTATUS Status         = STATUS_SUCCESS;
@@ -1676,8 +1674,6 @@ NTSTATUS DispTdiQueryInformationEx(
 
             MmBuildMdlForNonPagedPool(InputMdl);
             MmBuildMdlForNonPagedPool(OutputMdl);
-            InputMdlLocked = TRUE;    /* not locked, but treated as such for cleanup */
-            OutputMdlLocked = TRUE;
 
             /* Save the original user pointers so completion can copy back. */
             QueryContext->UserInputBuffer  = InputBuffer;
@@ -1694,6 +1690,9 @@ NTSTATUS DispTdiQueryInformationEx(
                 QueryContext->InputMdl  = InputMdl;
                 QueryContext->OutputMdl = OutputMdl;
 
+                /* The query below is synchronous and is completed here, in the
+                 * caller's process: the completion writes to the saved user
+                 * addresses and must not move to another context. */
                 Request.RequestNotifyObject = DispTdiQueryInformationExComplete;
                 Request.RequestContext      = QueryContext;
                 Status = InfoTdiQueryInformationEx(&Request,
@@ -1709,14 +1708,10 @@ NTSTATUS DispTdiQueryInformationEx(
             /* An error occurred if we get here */
 
             if (InputMdl) {
-                if (InputMdlLocked)
-                    MmUnlockPages(InputMdl);
                 IoFreeMdl(InputMdl);
             }
 
             if (OutputMdl) {
-                if (OutputMdlLocked)
-                    MmUnlockPages(OutputMdl);
                 IoFreeMdl(OutputMdl);
             }
 
