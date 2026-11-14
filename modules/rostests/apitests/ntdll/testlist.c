@@ -101,6 +101,7 @@ extern void func_NtOpenMaximumAllowed(void);
 extern void func_ObTraverse(void);
 extern void func_NtQueryInformationFile(void);
 extern void func_NtQueryDirectoryFile(void);
+extern void func_NtQueryInformationJobObject(void);
 extern void func_NtQueryInformationProcess(void);
 extern void func_NtQueryInformationThread(void);
 extern void func_NtQueryInformationToken(void);
@@ -333,6 +334,7 @@ const struct test winetest_testlist[] =
     { "ObTraverse",                     func_ObTraverse },
     { "NtQueryInformationFile",         func_NtQueryInformationFile },
     { "NtQueryDirectoryFile",           func_NtQueryDirectoryFile },
+    { "NtQueryInformationJobObject",    func_NtQueryInformationJobObject },
     { "NtQueryInformationProcess",      func_NtQueryInformationProcess },
     { "NtQueryInformationThread",       func_NtQueryInformationThread },
     { "NtQueryInformationToken",        func_NtQueryInformationToken },

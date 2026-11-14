@@ -120,6 +120,7 @@ list(APPEND SOURCE
     ObTraverse.c
     NtQueryInformationFile.c
     NtQueryDirectoryFile.c
+    NtQueryInformationJobObject.c
     NtQueryInformationProcess.c
     NtQueryInformationThread.c
     NtQueryInformationToken.c
