@@ -1563,9 +1563,13 @@ AlpcpCompleteLegacyConnect(
     Port->ConnectThread = NULL;
     if (!Message) return Thread;
 
+    ASSERT(Message->State & ALPC_MSG_STATE_ACCEPT_IN_PROGRESS);
     Message->State &= ~ALPC_MSG_STATE_ACCEPT_IN_PROGRESS;
     if (Message->WaitingThread != Thread)
     {
+        /* The client left while the server was accepting: its wait canceled the request,
+           which may have put it on the connection port's canceled queue. */
+        AlpcpReclaimCanceledMessage(Message);
         AlpcpFreeMessage(Message);
     }
     else if (Accept)
