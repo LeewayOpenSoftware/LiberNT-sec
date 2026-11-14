@@ -315,6 +315,13 @@ Test_NtUserSystemParametersInfo_Params(void)
     SetLastError(ERROR_SUCCESS);
     TEST(NtUserSystemParametersInfo(SPI_GETFOCUSBORDERHEIGHT, 0, (PVOID)(LONG_PTR)0x80000000, 0) == FALSE);
     TEST(GetLastError() == ERROR_NOACCESS);
+    /* Every "get" action probes the caller's buffer, these two included: a kernel address is refused */
+    SetLastError(ERROR_SUCCESS);
+    TEST(NtUserSystemParametersInfo(SPI_GETWINARRANGING, 0, (PVOID)(LONG_PTR)-4096, 0) == FALSE);
+    TEST(GetLastError() == ERROR_NOACCESS);
+    SetLastError(ERROR_SUCCESS);
+    TEST(NtUserSystemParametersInfo(SPI_GETDOCKMOVING, 0, (PVOID)(LONG_PTR)-4096, 0) == FALSE);
+    TEST(GetLastError() == ERROR_NOACCESS);
     for(i = 0; i < 1000; i++) data[i] = 0xdeadbeef;
 
     /* test wrong bools */

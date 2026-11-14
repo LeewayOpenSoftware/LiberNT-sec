@@ -2504,6 +2504,8 @@ SpiGetSetProbeBuffer(UINT uiAction, UINT uiParam, PVOID pvParam)
         case SPI_GETFOCUSBORDERWIDTH:
         case SPI_GETFOCUSBORDERHEIGHT:
         case SPI_GETFONTSMOOTHINGORIENTATION:
+        case SPI_GETWINARRANGING:
+        case SPI_GETDOCKMOVING:
             cbSize = sizeof(INT);
             break;
 
