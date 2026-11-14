@@ -362,22 +362,36 @@ WddmBridgeRejectBadBuffer(
 }
 
 /*
- * A pointer this bridge receives is either a user-mode buffer (the caller came
- * straight from a thunk that has not captured yet) or win32k's own kernel copy
- * (the thunk already probed the user buffer and captured it). ExGetPreviousMode
- * still reports UserMode for the latter, because it describes who entered the
- * syscall, not where this pointer lives -- probing a kernel address on that
- * basis fails the whole call with STATUS_ACCESS_VIOLATION. Probe on the
- * pointer's own range instead. This is safe: a user-supplied pointer is always
- * a user address here (the thunk rejected anything else before copying).
+ * A buffer this bridge reads or writes for a call from user mode is either the
+ * kernel copy win32k's thunk made of the call's top-level structure, or memory
+ * named by a pointer inside that structure. The second is the caller's choice
+ * and is probed whatever its address: a kernel address there is refused, not
+ * used. The thunk says which memory its copy is (D3dkmtGetUserCallCapture).
+ * Outside such a call (a kernel caller on a thread that entered from user
+ * mode), the address range decides as before.
  */
 FORCEINLINE
 BOOLEAN
 WddmBridgeNeedsProbe(
-    _In_opt_ CONST VOID *Address)
+    _In_opt_ CONST VOID *Address,
+    _In_ SIZE_T Size)
 {
-    return (ExGetPreviousMode() != KernelMode) &&
-           (Address == NULL || (PVOID)Address <= MmHighestUserAddress);
+    PVOID CaptureBase;
+    SIZE_T CaptureSize;
+    ULONG_PTR Offset;
+
+    if (ExGetPreviousMode() == KernelMode)
+        return FALSE;
+
+    if (D3dkmtGetUserCallCapture(&CaptureBase, &CaptureSize))
+    {
+        Offset = (ULONG_PTR)Address - (ULONG_PTR)CaptureBase;
+        return !((ULONG_PTR)Address >= (ULONG_PTR)CaptureBase &&
+                 Size <= CaptureSize &&
+                 Offset <= CaptureSize - Size);
+    }
+
+    return (Address == NULL || (PVOID)Address <= MmHighestUserAddress);
 }
 
 static NTSTATUS
@@ -396,7 +410,7 @@ WddmBridgeSafeCopyFrom(
 
     _SEH2_TRY
     {
-        if (WddmBridgeNeedsProbe(Source))
+        if (WddmBridgeNeedsProbe(Source, Size))
             ProbeForRead(Source, Size, 1);
         RtlCopyMemory(Destination, Source, Size);
     }
@@ -425,7 +439,7 @@ WddmBridgeSafeCopyTo(
 
     _SEH2_TRY
     {
-        if (WddmBridgeNeedsProbe(Destination))
+        if (WddmBridgeNeedsProbe(Destination, Size))
             ProbeForWrite(Destination, Size, 1);
         RtlCopyMemory(Destination, Source, Size);
     }
@@ -451,7 +465,7 @@ WddmBridgeSafeProbeForWrite(
     if (Destination == NULL)
         return STATUS_INVALID_PARAMETER;
 
-    if (!WddmBridgeNeedsProbe(Destination))
+    if (!WddmBridgeNeedsProbe(Destination, Size))
         return STATUS_SUCCESS;
 
     _SEH2_TRY

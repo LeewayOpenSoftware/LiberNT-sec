@@ -408,6 +408,50 @@ D3dkmtCaptureUserStructure(
     return Status;
 }
 
+BOOLEAN
+NTAPI
+D3dkmtGetUserCallCapture(
+    _Out_ PVOID *Base,
+    _Out_ SIZE_T *Size)
+{
+    PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+
+    *Base = NULL;
+    *Size = 0;
+    if (pti == NULL || pti->pvD3dkmtCapture == NULL)
+        return FALSE;
+
+    *Base = pti->pvD3dkmtCapture;
+    *Size = pti->cbD3dkmtCapture;
+    return TRUE;
+}
+
+/* Runs the bridge on the kernel copy of a caller's structure, telling it which
+ * memory that copy is: anything else it is handed comes from the caller. */
+static NTSTATUS
+D3dkmtCallWithCapture(
+    _In_ PD3DKMT_ARGUMENT_CALLBACK Callback,
+    _In_ PVOID Captured,
+    _In_ SIZE_T Size)
+{
+    PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
+    PVOID PreviousBase;
+    SIZE_T PreviousSize;
+    NTSTATUS Status;
+
+    if (pti == NULL)
+        return STATUS_INVALID_PARAMETER;
+
+    PreviousBase = pti->pvD3dkmtCapture;
+    PreviousSize = pti->cbD3dkmtCapture;
+    pti->pvD3dkmtCapture = Captured;
+    pti->cbD3dkmtCapture = Size;
+    Status = Callback(Captured);
+    pti->pvD3dkmtCapture = PreviousBase;
+    pti->cbD3dkmtCapture = PreviousSize;
+    return Status;
+}
+
 static NTSTATUS
 D3dkmtCallCaptured(
     _In_opt_ PVOID Argument,
@@ -430,11 +474,11 @@ D3dkmtCallCaptured(
     if (Argument == NULL || !NT_SUCCESS(D3dkmtCaptureUserStructure(Argument, Size, Captured)))
     {
         RtlZeroMemory(Captured, Size);
-        Status = ZeroOnBadArgument ? Callback(Captured) : STATUS_INVALID_PARAMETER;
+        Status = ZeroOnBadArgument ? D3dkmtCallWithCapture(Callback, Captured, Size) : STATUS_INVALID_PARAMETER;
         goto Done;
     }
     RtlCopyMemory(Captured + Size, Captured, Size);
-    Status = Callback(Captured);
+    Status = D3dkmtCallWithCapture(Callback, Captured, Size);
     if (RtlCompareMemory(Captured, Captured + Size, Size) != Size)
     {
         _SEH2_TRY
