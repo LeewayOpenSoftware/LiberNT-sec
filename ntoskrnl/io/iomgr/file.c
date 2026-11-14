@@ -179,10 +179,16 @@ IopDoSymbolicLinkTransmogrify(IN PIRP Irp,
 
     PAGED_CODE();
 
+    /* The name fields are there only if the data is at least as long as they are */
+    if (DataBuffer->ReparseDataLength < HeaderLength)
+    {
+        Status = STATUS_IO_REPARSE_DATA_INVALID;
+        goto Done;
+    }
+
     SubstituteLength = DataBuffer->SymbolicLinkReparseBuffer.SubstituteNameLength;
     UnparsedLength = DataBuffer->Reserved;
-    if (DataBuffer->ReparseDataLength < HeaderLength ||
-        DataBuffer->SymbolicLinkReparseBuffer.SubstituteNameOffset + SubstituteLength >
+    if (DataBuffer->SymbolicLinkReparseBuffer.SubstituteNameOffset + SubstituteLength >
             DataBuffer->ReparseDataLength - HeaderLength ||
         SubstituteLength == 0 ||
         (SubstituteLength & 1) ||
