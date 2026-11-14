@@ -2014,7 +2014,7 @@ NtSetInformationToken(
                                 {
                                     RtlMoveMemory(Token->DynamicPart,
                                                   Token->DefaultDacl,
-                                                  RtlLengthSid(Token->PrimaryGroup));
+                                                  Token->DefaultDacl->AclSize);
                                     Token->DefaultDacl = (PACL)(Token->DynamicPart);
                                 }
 

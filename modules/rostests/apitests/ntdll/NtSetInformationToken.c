@@ -370,6 +370,56 @@ SetTokenKernelPointerTests(
     ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
 }
 
+/* Setting the primary group moves the default DACL inside the token; the DACL must survive it whole */
+static
+VOID
+SetTokenPrimaryGroupKeepsDaclTests(
+    _In_ HANDLE Token)
+{
+    PTOKEN_DEFAULT_DACL Before, After;
+    ULONG BeforeLength, AfterLength, Length;
+    UCHAR GroupBuffer[sizeof(TOKEN_PRIMARY_GROUP) + SECURITY_MAX_SID_SIZE];
+    PTOKEN_PRIMARY_GROUP Group = (PTOKEN_PRIMARY_GROUP)GroupBuffer;
+    NTSTATUS Status;
+
+    Before = QueryOriginalDefaultDacl(Token, &BeforeLength);
+    if (!Before)
+        return;
+    if (Before->DefaultDacl == NULL)
+    {
+        skip("The token has no default DACL\n");
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+        return;
+    }
+
+    Status = NtQueryInformationToken(Token, TokenPrimaryGroup, GroupBuffer, sizeof(GroupBuffer), &Length);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        /* The token's own primary group is always one of its groups */
+        Status = NtSetInformationToken(Token, TokenPrimaryGroup, Group, sizeof(TOKEN_PRIMARY_GROUP));
+        ok_ntstatus(Status, STATUS_SUCCESS);
+
+        After = QueryOriginalDefaultDacl(Token, &AfterLength);
+        if (After)
+        {
+            ok(After->DefaultDacl != NULL, "The default DACL is gone\n");
+            if (After->DefaultDacl)
+            {
+                ok(After->DefaultDacl->AclSize == Before->DefaultDacl->AclSize,
+                   "Default DACL size %u before, %u after\n",
+                   Before->DefaultDacl->AclSize, After->DefaultDacl->AclSize);
+                ok(After->DefaultDacl->AclSize == Before->DefaultDacl->AclSize &&
+                   RtlEqualMemory(Before->DefaultDacl, After->DefaultDacl, Before->DefaultDacl->AclSize),
+                   "The default DACL changed when the primary group was set\n");
+            }
+            RtlFreeHeap(RtlGetProcessHeap(), 0, After);
+        }
+    }
+
+    RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+}
+
 START_TEST(NtSetInformationToken)
 {
     NTSTATUS Status;
@@ -405,6 +455,7 @@ START_TEST(NtSetInformationToken)
     SetTokenBadPointerTests(Token);
     SetTokenMandatoryPolicyTests(Token);
     SetTokenKernelPointerTests(Token);
+    SetTokenPrimaryGroupKeepsDaclTests(Token);
 
     CloseHandle(Token);
 }
