@@ -538,6 +538,8 @@ PAFD_WSABUF LockBuffers( PAFD_WSABUF Buf, UINT Count,
             }
             if( LockAddress ) {
                 if (AddressBuf && AddressLen) {
+                    if (LockMode != KernelMode)
+                        ProbeForWrite(AddressLen, sizeof(*AddressLen), sizeof(ULONG));
                     NewBuf[Count].buf = AddressBuf;
                     NewBuf[Count].len = *AddressLen;
                     NewBuf[Count + 1].buf = (PVOID)AddressLen;
