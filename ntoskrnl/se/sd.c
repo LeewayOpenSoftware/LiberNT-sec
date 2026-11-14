@@ -1448,7 +1448,8 @@ SeValidSecurityDescriptor(
 
     // NOTE: Same as SeLengthSid(Sid); but doesn't use hardcoded values.
     SdLength += (sizeof(SID) + (Sid->SubAuthorityCount - 1) * sizeof(ULONG));
-    if (Length < SdLength)
+    if ((Length < SdLength) ||
+        (Length - SecurityDescriptor->Owner < RtlLengthRequiredSid(Sid->SubAuthorityCount)))
     {
         DPRINT1("Invalid Owner SID size\n");
         return FALSE;
@@ -1481,7 +1482,8 @@ SeValidSecurityDescriptor(
 
         // NOTE: Same as SeLengthSid(Sid); but doesn't use hardcoded values.
         SdLength += (sizeof(SID) + (Sid->SubAuthorityCount - 1) * sizeof(ULONG));
-        if (Length < SdLength)
+        if ((Length < SdLength) ||
+            (Length - SecurityDescriptor->Group < RtlLengthRequiredSid(Sid->SubAuthorityCount)))
         {
             DPRINT1("Invalid Group SID size\n");
             return FALSE;
@@ -1509,7 +1511,8 @@ SeValidSecurityDescriptor(
         Acl = (PACL)((ULONG_PTR)SecurityDescriptor + SecurityDescriptor->Dacl);
 
         SdLength += Acl->AclSize;
-        if (Length < SdLength)
+        if ((Length < SdLength) ||
+            (Length - SecurityDescriptor->Dacl < Acl->AclSize))
         {
             DPRINT1("Invalid DACL size\n");
             return FALSE;
@@ -1543,7 +1546,8 @@ SeValidSecurityDescriptor(
         Acl = (PACL)((ULONG_PTR)SecurityDescriptor + SecurityDescriptor->Sacl);
 
         SdLength += Acl->AclSize;
-        if (Length < SdLength)
+        if ((Length < SdLength) ||
+            (Length - SecurityDescriptor->Sacl < Acl->AclSize))
         {
             DPRINT1("Invalid SACL size\n");
             return FALSE;
