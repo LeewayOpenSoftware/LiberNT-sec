@@ -776,6 +776,86 @@ Cleanup:
     if (Listener) NtClose(Listener);
 }
 
+/* an address whose first entry names a type but claims none of its bytes:
+ * the driver copies addresses by the canonical type size, so this must be
+ * refused rather than read past the request */
+static
+void
+TestUnixZeroLength(void)
+{
+    NTSTATUS Status;
+    HANDLE SocketHandle;
+    IO_STATUS_BLOCK IoStatus;
+    UCHAR Buffer[sizeof(AFD_SEND_INFO_UDP)];
+    AFD_SEND_INFO_UDP SendInfo;
+    AFD_WSABUF AfdBuffer;
+    UCHAR Payload[4];
+    struct sockaddr_in Addr;
+    UCHAR UnixAddress[FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
+                      FIELD_OFFSET(TA_ADDRESS, Address) + 16];
+
+    Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    RtlZeroMemory(&Addr, sizeof(Addr));
+    Addr.sin_family = AF_INET;
+    Addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    Addr.sin_port = 0;
+    Status = AfdBind(SocketHandle, (const struct sockaddr *)&Addr, sizeof(Addr));
+    ok(Status == STATUS_SUCCESS, "AfdBind failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+    {
+        NtClose(SocketHandle);
+        return;
+    }
+
+    RtlZeroMemory(UnixAddress, sizeof(UnixAddress));
+    ((PTRANSPORT_ADDRESS)UnixAddress)->TAAddressCount = 1;
+    ((PTRANSPORT_ADDRESS)UnixAddress)->Address[0].AddressType = TDI_ADDRESS_TYPE_UNIX;
+    ((PTRANSPORT_ADDRESS)UnixAddress)->Address[0].AddressLength = 0;
+
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   NULL,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_BIND,
+                                   UnixAddress,
+                                   sizeof(UnixAddress) - FIELD_OFFSET(TRANSPORT_ADDRESS, Address),
+                                   NULL,
+                                   0);
+    ok(!NT_SUCCESS(Status), "bind with a zero-length UNIX entry succeeded with %lx\n", Status);
+
+    RtlZeroMemory(&SendInfo, sizeof(SendInfo));
+    AfdBuffer.buf = (PCHAR)Payload;
+    AfdBuffer.len = sizeof(Payload);
+    SendInfo.BufferArray = &AfdBuffer;
+    SendInfo.BufferCount = 1;
+    SendInfo.TdiFlags = 0;
+    SendInfo.AfdFlags = 0;
+    SendInfo.TdiConnection.RemoteAddress = (PVOID)UnixAddress;
+    SendInfo.TdiConnection.RemoteAddressLength = sizeof(UnixAddress);
+
+    RtlZeroMemory(Buffer, sizeof(Buffer));
+    RtlCopyMemory(Buffer, &SendInfo, sizeof(SendInfo));
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   NULL,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_SEND_DATAGRAM,
+                                   Buffer,
+                                   sizeof(Buffer),
+                                   NULL,
+                                   0);
+    ok(!NT_SUCCESS(Status), "sendto with a zero-length UNIX entry succeeded with %lx\n",
+       Status);
+
+    NtClose(SocketHandle);
+}
+
 void
 func_ioctl(void)
 {
@@ -789,4 +869,5 @@ func_ioctl(void)
     TestPaddedBind();
     TestSendTo();
     TestConnectExWithData();
+    TestUnixZeroLength();
 }

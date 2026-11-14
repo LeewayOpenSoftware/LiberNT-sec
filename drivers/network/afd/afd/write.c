@@ -850,18 +850,13 @@ AfdPacketSocketWriteData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         return UnlockAndMaybeComplete( FCB, STATUS_INVALID_PARAMETER, Irp, 0 );
     }
 
-    /* The buffer is padded and zeroed so a helper that copies an address by
-     * its canonical type size can read a couple of alignment bytes past the
-     * declared entry length without leaving this allocation. */
     CapturedAddress = ExAllocatePoolWithTag( NonPagedPool,
-                                             SendReq->TdiConnection.RemoteAddressLength + 2 * sizeof(TA_ADDRESS),
+                                             SendReq->TdiConnection.RemoteAddressLength,
                                              TAG_AFD_TRANSPORT_ADDRESS );
     if( !CapturedAddress ) {
         UnlockRequest( Irp, IrpSp );
         return UnlockAndMaybeComplete( FCB, STATUS_NO_MEMORY, Irp, 0 );
     }
-    RtlZeroMemory( CapturedAddress,
-                   SendReq->TdiConnection.RemoteAddressLength + 2 * sizeof(TA_ADDRESS) );
 
     _SEH2_TRY {
         if( LockMode != KernelMode )
