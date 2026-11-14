@@ -11,7 +11,7 @@ static GENERIC_MAPPING TestMapping = {0x1, 0x2, 0x4, 0x7};
 
 static
 BOOLEAN
-SetThreadToken(HANDLE Token)
+SetImpersonationToken(HANDLE Token)
 {
     NTSTATUS Status = NtSetInformationThread(NtCurrentThread(),
                                              ThreadImpersonationToken,
@@ -227,7 +227,7 @@ START_TEST(NtAccessCheckAndAuditAlarm)
     }
 
     Token = MakeImpersonationToken();
-    if (Token == NULL || !SetThreadToken(Token))
+    if (Token == NULL || !SetImpersonationToken(Token))
     {
         skip("Cannot impersonate\n");
         return;
@@ -305,6 +305,6 @@ START_TEST(NtAccessCheckAndAuditAlarm)
     ok_ntstatus(StatusList[0], STATUS_SUCCESS);
     ok_hex(GrantedList[0], 0x1);
 
-    SetThreadToken(NULL);
+    SetImpersonationToken(NULL);
     NtClose(Token);
 }
