@@ -486,4 +486,23 @@ printf("dib with bitfileds: %p\n", hbmp);
     printf("hbmp = %p, pvBits = %p, hSection = %p\n", hbmp, pvBits, hSection);
 //system("PAUSE");
     if (hbmp) DeleteObject(hbmp);
+
+#ifdef _WIN64
+    /* Neither the header nor the place for the address of the bits may lie in
+     * the system range: no bitmap is made, and nothing is read or written
+     * there. Nothing is mapped at this address, so a system that does use it
+     * stops here. */
+    pvBits = 0;
+    hbmp = NtGdiCreateDIBSection(hDC, NULL, 0, pbmi, 0, cjHeader, 0, 0,
+                                 (PVOID*)(ULONG_PTR)0xFFFF800000000000ULL);
+    TEST(hbmp == 0);
+    if (hbmp) DeleteObject(hbmp);
+
+    hbmp = NtGdiCreateDIBSection(hDC, NULL, 0,
+                                 (BITMAPINFO*)(ULONG_PTR)0xFFFF800000000000ULL,
+                                 0, cjHeader, 0, 0, &pvBits);
+    TEST(hbmp == 0);
+    TEST(pvBits == NULL);
+    if (hbmp) DeleteObject(hbmp);
+#endif
 }
