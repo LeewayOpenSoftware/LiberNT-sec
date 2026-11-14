@@ -81,7 +81,8 @@ SysAudioOpenVirtualDevice(
 
     /* get device context */
     Entry = GetListEntry(&DeviceExtension->KsAudioDeviceList, DeviceNumber);
-    ASSERT(Entry != NULL);
+    if (Entry == NULL)
+        return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
 
     /* store device entry in FsContext
      * see pin.c DispatchCreateSysAudioPin for details
