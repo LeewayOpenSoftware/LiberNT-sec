@@ -1365,8 +1365,7 @@ IopGetDeviceRelations(PPLUGPLAY_CONTROL_DEVICE_RELATIONS_DATA RelationsData)
     PWCHAR Buffer = NULL, Ptr;
     NTSTATUS Status = STATUS_SUCCESS;
 
-    DPRINT1("IopGetDeviceRelations() called\n");
-    DPRINT1("Device name: %wZ\n", &RelationsData->DeviceInstance);
+    DPRINT("IopGetDeviceRelations() called\n");
     DPRINT("Relations: %lu\n", RelationsData->Relations);
     DPRINT("BufferSize: %lu\n", RelationsData->BufferSize);
     DPRINT("Buffer: %p\n", RelationsData->Buffer);
