@@ -496,3 +496,44 @@ AfdGetInformation(
 
     return Status;
 }
+
+NTSTATUS
+AfdGetSockName(
+    _In_ HANDLE SocketHandle,
+    _Out_ struct sockaddr *Address,
+    _Inout_ PINT AddressLength)
+{
+    NTSTATUS Status;
+    IO_STATUS_BLOCK IoStatus;
+    HANDLE Event;
+
+    Status = NtCreateEvent(&Event,
+                           EVENT_ALL_ACCESS,
+                           NULL,
+                           NotificationEvent,
+                           FALSE);
+    if (!NT_SUCCESS(Status))
+    {
+        return Status;
+    }
+
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   Event,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_GET_SOCK_NAME,
+                                   NULL,
+                                   0,
+                                   Address,
+                                   *AddressLength);
+    if (Status == STATUS_PENDING)
+    {
+        NtWaitForSingleObject(Event, FALSE, NULL);
+        Status = IoStatus.Status;
+    }
+
+    NtClose(Event);
+
+    return Status;
+}

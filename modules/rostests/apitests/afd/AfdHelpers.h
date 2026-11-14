@@ -56,3 +56,9 @@ AfdGetInformation(
     _In_opt_ PBOOLEAN Boolean,
     _In_opt_ PULONG Ulong,
     _In_opt_ PLARGE_INTEGER LargeInteger);
+
+NTSTATUS
+AfdGetSockName(
+    _In_ HANDLE SocketHandle,
+    _Out_ struct sockaddr *Address,
+    _Inout_ PINT AddressLength);
