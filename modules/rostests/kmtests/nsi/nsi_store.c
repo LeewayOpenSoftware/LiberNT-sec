@@ -258,6 +258,16 @@ TestRows(VOID)
     ok_eq_hex(Status, STATUS_NOT_FOUND);
 }
 
+static BOOLEAN
+WaitCompletion(
+    _In_ PKEVENT Event)
+{
+    LARGE_INTEGER Timeout;
+
+    Timeout.QuadPart = -5LL * 10000000;
+    return KeWaitForSingleObject(Event, Executive, KernelMode, FALSE, &Timeout) == STATUS_SUCCESS;
+}
+
 static NTSTATUS NTAPI
 NotifyComplete(
     _In_ PDEVICE_OBJECT DeviceObject,
@@ -404,16 +414,6 @@ TestCancelByDevice(VOID)
     ok_eq_hex(IrpB->IoStatus.Status, STATUS_CANCELLED);
     IoFreeIrp(IrpA);
     IoFreeIrp(IrpB);
-}
-
-static BOOLEAN
-WaitCompletion(
-    _In_ PKEVENT Event)
-{
-    LARGE_INTEGER Timeout;
-
-    Timeout.QuadPart = -5LL * 10000000;
-    return KeWaitForSingleObject(Event, Executive, KernelMode, FALSE, &Timeout) == STATUS_SUCCESS;
 }
 
 static VOID
