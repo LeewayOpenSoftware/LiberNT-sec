@@ -6,6 +6,8 @@
  */
 
 #include "precomp.h"
+#include <ndk/iofuncs.h>
+#include <ndk/iotypes.h>
 
 #define LMS TEXT("\\\\.\\mailslot\\rostest_slot")
 #define MSG (0x50DA)
@@ -89,7 +91,50 @@ StartTestCORE10188(VOID)
     ok(dInMsg == dOutMsg, "Transfer data failed\n");
 }
 
+static
+VOID
+TestSetMailslotInformationTimeout(VOID)
+{
+    const LARGE_INTEGER WantedTimeout = { { 0, -1 } }; /* relative 0.5s */
+    FILE_MAILSLOT_QUERY_INFORMATION QueryInfo;
+    FILE_MAILSLOT_SET_INFORMATION SetInfo;
+    IO_STATUS_BLOCK Iosb;
+    HANDLE Mailslot;
+    NTSTATUS Status;
+
+    Mailslot = CreateMailslot(LMS, 0L, MAILSLOT_WAIT_FOREVER, NULL);
+    ok(Mailslot != INVALID_HANDLE_VALUE, "CreateMailslot failed\n");
+    if (Mailslot == INVALID_HANDLE_VALUE)
+        return;
+
+    /* A valid timeout pointer is captured and applied */
+    SetInfo.ReadTimeout = (PLARGE_INTEGER)&WantedTimeout;
+    Status = NtSetInformationFile(Mailslot, &Iosb, &SetInfo, sizeof(SetInfo), FileMailslotSetInformation);
+    ok(Status == STATUS_SUCCESS, "NtSetInformationFile(FileMailslotSetInformation) returned 0x%lx\n", Status);
+    if (Status == STATUS_SUCCESS)
+    {
+        Status = NtQueryInformationFile(Mailslot, &Iosb, &QueryInfo, sizeof(QueryInfo), FileMailslotQueryInformation);
+        ok(Status == STATUS_SUCCESS, "NtQueryInformationFile(FileMailslotQueryInformation) returned 0x%lx\n", Status);
+        if (Status == STATUS_SUCCESS)
+            ok(QueryInfo.ReadTimeout.QuadPart == WantedTimeout.QuadPart,
+               "ReadTimeout is %I64d, expected %I64d\n", QueryInfo.ReadTimeout.QuadPart, WantedTimeout.QuadPart);
+    }
+
+    /* A caller pointer that faults is rejected, not dereferenced in kernel mode */
+    SetInfo.ReadTimeout = (PLARGE_INTEGER)(ULONG_PTR)0x7EADBEEC;
+    Status = NtSetInformationFile(Mailslot, &Iosb, &SetInfo, sizeof(SetInfo), FileMailslotSetInformation);
+    ok(Status == STATUS_ACCESS_VIOLATION, "NtSetInformationFile with a bad timeout pointer returned 0x%lx\n", Status);
+
+    /* The mailslot still takes timeouts after the rejected call */
+    SetInfo.ReadTimeout = (PLARGE_INTEGER)&WantedTimeout;
+    Status = NtSetInformationFile(Mailslot, &Iosb, &SetInfo, sizeof(SetInfo), FileMailslotSetInformation);
+    ok(Status == STATUS_SUCCESS, "NtSetInformationFile(FileMailslotSetInformation) after the fault returned 0x%lx\n", Status);
+
+    CloseHandle(Mailslot);
+}
+
 START_TEST(MailslotRead)
 {
     StartTestCORE10188();
+    TestSetMailslotInformationTimeout();
 }
