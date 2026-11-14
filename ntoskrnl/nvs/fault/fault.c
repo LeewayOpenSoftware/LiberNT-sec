@@ -405,6 +405,7 @@ RetryPage:
                 goto Failed;
             }
             *CopyCharged = TRUE;
+            WasValid = FALSE;
             OldIrql = MiPfnLock(&System->Pfn, TableFrame);
             goto RetryPage;
         }
