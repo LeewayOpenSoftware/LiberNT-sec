@@ -344,6 +344,8 @@ typedef struct _DXGKP_PROCESS_PRIORITY_REQUEST
 #define D3DKMT_BRIDGE_MAX_ALLOCATIONS 4096U
 #define D3DKMT_BRIDGE_MAX_PRIVATE_BYTES RXGK_WDDM_MAX_PRIVATE_DRIVER_DATA
 #define D3DKMT_BRIDGE_MAX_FIXED_BYTES 65536U
+/* dxgkrnl keeps at most this much private data with a keyed mutex */
+#define D3DKMT_BRIDGE_MAX_KEYED_MUTEX_DATA 1024U
 #define D3DKMT_BRIDGE_MAX_ENUM_ADAPTERS 256U
 #define D3DKMT_BRIDGE_MAX_PRESENT_SUBRECTS 64U
 
@@ -571,6 +573,89 @@ WddmBridgeCaptureFixedIoctl(
         Status = WddmBridgeSafeCopyTo(UserData, Captured, Size);
 
 Cleanup:
+    ExFreePoolWithTag(Captured, TAG_WDDM_BRIDGE);
+    return Status;
+}
+
+/*
+ * Like WddmBridgeCaptureFixedIoctl, for a structure with one buffer named by
+ * a pointer inside it. dxgkrnl reads the buffers of an internal request as
+ * kernel memory, so that buffer is captured here (probed as a caller buffer)
+ * and the request carries the kernel copy. The caller gets its own pointer
+ * back in the structure.
+ */
+static NTSTATUS
+WddmBridgeCaptureFixedIoctlWithBuffer(
+    _In_ ULONG IoControlCode,
+    _Inout_updates_bytes_(Size) PVOID UserData,
+    _In_ ULONG Size,
+    _In_ BOOLEAN CopyBack,
+    _In_ SIZE_T PointerOffset,
+    _In_ SIZE_T SizeOffset,
+    _In_ ULONG MaximumBytes)
+{
+    PUCHAR Captured;
+    PVOID UserBuffer;
+    PVOID Buffer = NULL;
+    UINT Bytes;
+    ULONG_PTR Information = 0;
+    NTSTATUS Status;
+
+    if (UserData == NULL || Size == 0 || Size > D3DKMT_BRIDGE_MAX_FIXED_BYTES ||
+        PointerOffset + sizeof(PVOID) > Size || SizeOffset + sizeof(UINT) > Size)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    Captured = ExAllocatePoolWithTag(NonPagedPool, Size, TAG_WDDM_BRIDGE);
+    if (Captured == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    Status = WddmBridgeSafeCopyFrom(Captured, UserData, Size);
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+
+    RtlCopyMemory(&UserBuffer, Captured + PointerOffset, sizeof(UserBuffer));
+    RtlCopyMemory(&Bytes, Captured + SizeOffset, sizeof(Bytes));
+    if (UserBuffer != NULL && Bytes != 0)
+    {
+        if (Bytes > MaximumBytes)
+        {
+            Status = STATUS_INVALID_PARAMETER;
+            goto Cleanup;
+        }
+        Buffer = ExAllocatePoolWithTag(NonPagedPool, Bytes, TAG_WDDM_BRIDGE);
+        if (Buffer == NULL)
+        {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Cleanup;
+        }
+        Status = WddmBridgeSafeCopyFrom(Buffer, UserBuffer, Bytes);
+        if (!NT_SUCCESS(Status))
+            goto Cleanup;
+        RtlCopyMemory(Captured + PointerOffset, &Buffer, sizeof(Buffer));
+    }
+
+    if (CopyBack)
+    {
+        Status = WddmBridgeSafeProbeForWrite(UserData, Size);
+        if (!NT_SUCCESS(Status))
+            goto Cleanup;
+    }
+
+    Status = WddmBridgeSendIoctlWithInformation(IoControlCode, Captured, Size, CopyBack ? Captured : NULL, CopyBack ? Size : 0, &Information);
+    if (NT_SUCCESS(Status) && CopyBack && Information != Size)
+        Status = STATUS_INFO_LENGTH_MISMATCH;
+    if (NT_SUCCESS(Status) && CopyBack)
+    {
+        /* The caller's own pointer, never the kernel copy */
+        RtlCopyMemory(Captured + PointerOffset, &UserBuffer, sizeof(UserBuffer));
+        Status = WddmBridgeSafeCopyTo(UserData, Captured, Size);
+    }
+
+Cleanup:
+    if (Buffer != NULL)
+        ExFreePoolWithTag(Buffer, TAG_WDDM_BRIDGE);
     ExFreePoolWithTag(Captured, TAG_WDDM_BRIDGE);
     return Status;
 }
@@ -2706,7 +2791,8 @@ APIENTRY
 D3DKMTCreateOverlay(
     _Inout_ D3DKMT_CREATEOVERLAY *pData)
 {
-    return WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_CREATEOVERLAY, pData, sizeof(*pData), TRUE);
+    return WddmBridgeCaptureFixedIoctlWithBuffer(IOCTL_D3DKMT_CREATEOVERLAY, pData, sizeof(*pData), TRUE,
+                                                 FIELD_OFFSET(D3DKMT_CREATEOVERLAY, OverlayInfo.pPrivateDriverData), FIELD_OFFSET(D3DKMT_CREATEOVERLAY, OverlayInfo.PrivateDriverDataSize), RXGK_WDDM_MAX_PRIVATE_DRIVER_DATA);
 }
 
 NTSTATUS
@@ -2722,7 +2808,10 @@ APIENTRY
 D3DKMTFlipOverlay(
     _In_ CONST D3DKMT_FLIPOVERLAY *pData)
 {
-    return WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_FLIPOVERLAY, (PVOID)pData, sizeof(*pData), FALSE);
+    return WddmBridgeCaptureFixedIoctlWithBuffer(IOCTL_D3DKMT_FLIPOVERLAY, (PVOID)pData, sizeof(*pData), FALSE,
+                                                 FIELD_OFFSET(D3DKMT_FLIPOVERLAY, pPrivateDriverData),
+                                                 FIELD_OFFSET(D3DKMT_FLIPOVERLAY, PrivateDriverDataSize),
+                                                 RXGK_WDDM_MAX_PRIVATE_DRIVER_DATA);
 }
 
 NTSTATUS
@@ -2730,7 +2819,8 @@ APIENTRY
 D3DKMTUpdateOverlay(
     _In_ CONST D3DKMT_UPDATEOVERLAY *pData)
 {
-    return WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_UPDATEOVERLAY, (PVOID)pData, sizeof(*pData), FALSE);
+    return WddmBridgeCaptureFixedIoctlWithBuffer(IOCTL_D3DKMT_UPDATEOVERLAY, (PVOID)pData, sizeof(*pData), FALSE,
+                                                 FIELD_OFFSET(D3DKMT_UPDATEOVERLAY, OverlayInfo.pPrivateDriverData), FIELD_OFFSET(D3DKMT_UPDATEOVERLAY, OverlayInfo.PrivateDriverDataSize), RXGK_WDDM_MAX_PRIVATE_DRIVER_DATA);
 }
 
 NTSTATUS
@@ -5146,7 +5236,10 @@ APIENTRY
 D3DKMTCreateKeyedMutex2(
     _Inout_ D3DKMT_CREATEKEYEDMUTEX2 *pData)
 {
-    return WddmBridgeRejectBadBuffer(WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_CREATEKEYEDMUTEX2, pData, sizeof(*pData), TRUE));
+    return WddmBridgeRejectBadBuffer(WddmBridgeCaptureFixedIoctlWithBuffer(IOCTL_D3DKMT_CREATEKEYEDMUTEX2, pData, sizeof(*pData), TRUE,
+                                                                           FIELD_OFFSET(D3DKMT_CREATEKEYEDMUTEX2, pPrivateRuntimeData),
+                                                                           FIELD_OFFSET(D3DKMT_CREATEKEYEDMUTEX2, PrivateRuntimeDataSize),
+                                                                           D3DKMT_BRIDGE_MAX_KEYED_MUTEX_DATA));
 }
 
 NTSTATUS
@@ -5162,7 +5255,10 @@ APIENTRY
 D3DKMTOpenKeyedMutex2(
     _Inout_ D3DKMT_OPENKEYEDMUTEX2 *pData)
 {
-    return WddmBridgeRejectBadBuffer(WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_OPENKEYEDMUTEX2, pData, sizeof(*pData), TRUE));
+    return WddmBridgeRejectBadBuffer(WddmBridgeCaptureFixedIoctlWithBuffer(IOCTL_D3DKMT_OPENKEYEDMUTEX2, pData, sizeof(*pData), TRUE,
+                                                                           FIELD_OFFSET(D3DKMT_OPENKEYEDMUTEX2, pPrivateRuntimeData),
+                                                                           FIELD_OFFSET(D3DKMT_OPENKEYEDMUTEX2, PrivateRuntimeDataSize),
+                                                                           D3DKMT_BRIDGE_MAX_KEYED_MUTEX_DATA));
 }
 
 NTSTATUS
@@ -5273,7 +5369,10 @@ D3DKMTReleaseKeyedMutex2(
 {
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
-    return WddmBridgeRejectBadBuffer(WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_RELEASEKEYEDMUTEX2, pData, sizeof(*pData), FALSE));
+    return WddmBridgeRejectBadBuffer(WddmBridgeCaptureFixedIoctlWithBuffer(IOCTL_D3DKMT_RELEASEKEYEDMUTEX2, pData, sizeof(*pData), FALSE,
+                                                                           FIELD_OFFSET(D3DKMT_RELEASEKEYEDMUTEX2, pPrivateRuntimeData),
+                                                                           FIELD_OFFSET(D3DKMT_RELEASEKEYEDMUTEX2, PrivateRuntimeDataSize),
+                                                                           D3DKMT_BRIDGE_MAX_KEYED_MUTEX_DATA));
 }
 
 
