@@ -8,6 +8,7 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_device_access(void);
 extern void func_fragment_reassembly(void);
 extern void func_raw_receive(void);
 extern void func_raw_send(void);
@@ -15,6 +16,7 @@ extern void func_set_information(void);
 
 const struct test winetest_testlist[] =
 {
+    { "device_access", func_device_access },
     { "fragment_reassembly", func_fragment_reassembly },
     { "raw_receive", func_raw_receive },
     { "raw_send", func_raw_send },
