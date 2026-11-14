@@ -3549,6 +3549,155 @@ IntDoSendMessageAnsi(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+/*
+ * The window procedures that run in the kernel (the default one and the ones of
+ * the desktop, menu and message-only classes) are also reached from user mode,
+ * through NtUserMessageCall, with the caller's lParam. They read and write the
+ * memory behind it as if it were the kernel's, so it is captured here first.
+ */
+typedef struct tagPROCCAPTURE
+{
+    MSGCAPTURE Capture;
+    MSG UserMsg;
+    MSG KernelMsg;
+    BOOL Generic;
+    PVOID TextOut;
+    SIZE_T TextUnits;
+    UNICODE_STRING TextIn;
+    CREATESTRUCTW Cs;
+}
+PROCCAPTURE, *PPROCCAPTURE;
+
+static NTSTATUS
+IntCaptureProcMessage(PWND Window, DWORD fnid, UINT Msg, WPARAM *wParam, LPARAM *lParam, BOOL *Ansi, PPROCCAPTURE Pc)
+{
+    PMSGMEMORY MsgMemoryEntry;
+    NTSTATUS Status;
+
+    RtlZeroMemory(Pc, sizeof(*Pc));
+    Pc->UserMsg.hwnd = Window ? UserHMGetHandle(Window) : NULL;
+    Pc->UserMsg.message = Msg;
+    Pc->UserMsg.wParam = *wParam;
+    Pc->UserMsg.lParam = *lParam;
+
+    if (!*lParam || !is_pointer_message(Msg, *wParam))
+        return STATUS_SUCCESS;
+    MsgMemoryEntry = FindMsgMemory(Msg);
+    if (!MsgMemoryEntry)
+        return STATUS_SUCCESS;
+
+    /* Whatever is done with it below, it is never a kernel address */
+    if ((ULONG_PTR)*lParam >= (ULONG_PTR)MmUserProbeAddress)
+        return STATUS_ACCESS_VIOLATION;
+
+    if (Msg == WM_GETTEXT)
+    {
+        SIZE_T Units;
+
+        /* Without a window or a count nothing is written */
+        if (!Window || !*wParam)
+            return STATUS_SUCCESS;
+
+        /* The procedure writes the window text and a terminator, never more
+           than the count it is given */
+        if (*Ansi)
+            Units = (SIZE_T)Window->strName.Length + 1;
+        else
+            Units = Window->strName.Length / sizeof(WCHAR) + 1;
+        if (Units > *wParam)
+            Units = *wParam;
+
+        Pc->TextOut = ExAllocatePoolWithTag(PagedPool,
+                                            Units * (*Ansi ? sizeof(CHAR) : sizeof(WCHAR)),
+                                            TAG_MSG);
+        if (!Pc->TextOut)
+            return STATUS_NO_MEMORY;
+        RtlZeroMemory(Pc->TextOut, Units * (*Ansi ? sizeof(CHAR) : sizeof(WCHAR)));
+        Pc->TextUnits = Units;
+        *wParam = Units;
+        *lParam = (LPARAM)Pc->TextOut;
+        return STATUS_SUCCESS;
+    }
+
+    if (Msg == WM_SETTEXT && *Ansi)
+    {
+        Status = IntCaptureAnsiString((PCSZ)*lParam, &Pc->TextIn);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        *lParam = (LPARAM)Pc->TextIn.Buffer;
+        *Ansi = FALSE;
+        return STATUS_SUCCESS;
+    }
+
+    if (Msg == WM_CREATE || Msg == WM_NCCREATE)
+    {
+        /* Only the menu window procedure reads the structure, and of it only
+           the creation parameter */
+        if (fnid != FNID_MENU || Msg != WM_CREATE)
+            return STATUS_SUCCESS;
+        Status = MmCopyFromCaller(&Pc->Cs, (PVOID)*lParam, sizeof(Pc->Cs));
+        if (!NT_SUCCESS(Status))
+            return Status;
+        Pc->Cs.lpszName = NULL;
+        Pc->Cs.lpszClass = NULL;
+        *lParam = (LPARAM)&Pc->Cs;
+        return STATUS_SUCCESS;
+    }
+
+    /* The structures of a fixed size, the two forms of WM_NCCALCSIZE and the
+       text of WM_SETTEXT are what these procedures read or write. The other
+       pointer messages pass through as the user address they are: nothing
+       here dereferences them. */
+    if ((INT)MsgMemoryEntry->Size > 0 || Msg == WM_NCCALCSIZE || Msg == WM_SETTEXT)
+    {
+        Status = CopyMsgToKernelMem(&Pc->KernelMsg, &Pc->UserMsg, MsgMemoryEntry, &Pc->Capture);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        Pc->Generic = TRUE;
+        *lParam = Pc->KernelMsg.lParam;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static VOID
+IntReleaseProcMessage(PPROCCAPTURE Pc, BOOL Ansi, LRESULT *Result)
+{
+    if (Pc->TextOut)
+    {
+        SIZE_T Units = (SIZE_T)*Result + 1;
+
+        if (Units > Pc->TextUnits)
+            Units = Pc->TextUnits;
+        if (!NT_SUCCESS(MmCopyToCaller((PVOID)Pc->UserMsg.lParam,
+                                       Pc->TextOut,
+                                       Units * (Ansi ? sizeof(CHAR) : sizeof(WCHAR)))))
+        {
+            *Result = 0;
+        }
+        ExFreePoolWithTag(Pc->TextOut, TAG_MSG);
+    }
+    if (Pc->TextIn.Buffer)
+        RtlFreeUnicodeString(&Pc->TextIn);
+    if (Pc->Generic)
+        CopyMsgToUserMem(&Pc->UserMsg, &Pc->KernelMsg, &Pc->Capture);
+}
+
+/* A built-in window procedure runs only for a window of its own class, in the
+   thread that owns the window */
+static BOOL
+IntIsServerProcWindow(PWND Window, int fnid)
+{
+    int iCls;
+
+    if (Window->head.pti != PsGetCurrentThreadWin32Thread())
+        return FALSE;
+    if (!LookupFnIdToiCls(fnid, &iCls))
+        return FALSE;
+    return gpsi->atomSysClass[iCls] != 0 &&
+           Window->pcls->atomClassName == gpsi->atomSysClass[iCls];
+}
+
 static SIZE_T
 IntDpiMessageDataSize(UINT Msg, WPARAM wParam)
 {
@@ -3586,14 +3735,13 @@ co_IntCallDefWindowProc(PWND Window, UINT Msg, WPARAM wParam, LPARAM lParam, BOO
     {
         if (lParam == 0)
             return IntDefWindowProc(Window, Msg, wParam, lParam, Ansi);
+        /* lParam is the kernel copy made by IntCaptureProcMessage */
         _SEH2_TRY
         {
-            ProbeForWrite((PVOID)lParam, Size, 1);
             RtlCopyMemory(&Captured, (PVOID)lParam, Size);
             if (Msg == WM_NCCALCSIZE && wParam && Captured.NcCalc.Params.lppos != NULL)
             {
                 UserPos = Captured.NcCalc.Params.lppos;
-                ProbeForWrite(UserPos, sizeof(WINDOWPOS), 1);
                 Captured.NcCalc.Pos = *UserPos;
                 Captured.NcCalc.Params.lppos = &Captured.NcCalc.Pos;
             }
@@ -3642,6 +3790,9 @@ NtUserMessageCall( HWND hWnd,
     BOOL Ret = FALSE;
     PWND Window = NULL;
     USER_REFERENCE_ENTRY Ref;
+    PROCCAPTURE ProcCapture;
+    BOOL ProcAnsi;
+    NTSTATUS Status;
 
     /* The numbers above WM_MAXIMUM are the messages win32k sends to itself.
        They carry kernel pointers and act on any window: never from user mode. */
@@ -3674,38 +3825,40 @@ NtUserMessageCall( HWND hWnd,
     {
     case FNID_SCROLLBAR:
         {
-           lResult = ScrollBarWndProc(hWnd, Msg, wParam, lParam);
+           Window = UserGetWindowObject(hWnd);
+           if (Window && Window->head.pti == PsGetCurrentThreadWin32Thread())
+           {
+              lResult = ScrollBarWndProc(hWnd, Msg, wParam, lParam);
+           }
            break;
         }
     case FNID_DESKTOP:
+    case FNID_MENU:
+    case FNID_MESSAGEWND:
         {
            Window = UserGetWindowObject(hWnd);
-           if (Window)
+           if (!Window || !IntIsServerProcWindow(Window, dwType))
            {
-              //ERR("FNID_DESKTOP IN\n");
-              Ret = DesktopWindowProc(Window, Msg, wParam, lParam, &lResult);
-              //ERR("FNID_DESKTOP OUT\n");
+              break;
            }
+           ProcAnsi = FALSE;
+           Status = IntCaptureProcMessage(Window, dwType, Msg, &wParam, &lParam, &ProcAnsi, &ProcCapture);
+           if (!NT_SUCCESS(Status))
+           {
+              SetLastNtError(Status);
+              break;
+           }
+           UserRefObjectCo(Window, &Ref);
+           if (dwType == FNID_DESKTOP)
+              Ret = DesktopWindowProc(Window, Msg, wParam, lParam, &lResult);
+           else if (dwType == FNID_MENU)
+              Ret = PopupMenuWndProc(Window, Msg, wParam, lParam, &lResult);
+           else
+              Ret = !UserMessageWindowProc(Window, Msg, wParam, lParam, &lResult);
+           UserDerefObjectCo(Window);
+           IntReleaseProcMessage(&ProcCapture, FALSE, &lResult);
            break;
         }
-   case FNID_MENU:
-       {
-          Window = UserGetWindowObject(hWnd);
-          if (Window)
-          {
-              Ret = PopupMenuWndProc( Window, Msg, wParam, lParam, &lResult);
-          }
-          break;
-       }
-   case FNID_MESSAGEWND:
-       {
-           Window = UserGetWindowObject(hWnd);
-           if (Window)
-           {
-                Ret = !UserMessageWindowProc(Window, Msg, wParam, lParam, &lResult);
-           }
-           break;
-       }
     case FNID_DEFWINDOWPROC:
         /* Validate input */
         if (hWnd)
@@ -3717,7 +3870,17 @@ NtUserMessageCall( HWND hWnd,
            }
            UserRefObjectCo(Window, &Ref);
         }
-        lResult = co_IntCallDefWindowProc(Window, Msg, wParam, lParam, Ansi);
+        ProcAnsi = Ansi;
+        Status = IntCaptureProcMessage(Window, dwType, Msg, &wParam, &lParam, &ProcAnsi, &ProcCapture);
+        if (NT_SUCCESS(Status))
+        {
+           lResult = co_IntCallDefWindowProc(Window, Msg, wParam, lParam, ProcAnsi);
+           IntReleaseProcMessage(&ProcCapture, Ansi, &lResult);
+        }
+        else
+        {
+           SetLastNtError(Status);
+        }
         Ret = TRUE;
         if (hWnd)
             UserDerefObjectCo(Window);
