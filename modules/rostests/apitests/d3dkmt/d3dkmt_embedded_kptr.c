@@ -104,15 +104,13 @@ Test_KeyedMutex2(void)
 
     if (!pfn)
     {
-        skip("D3DKMTCreateKeyedMutex2 not exported
-");
+        skip("D3DKMTCreateKeyedMutex2 not exported\n");
         return;
     }
     memset(&Data, 0, sizeof(Data));
     Data.pPrivateRuntimeData = KERNEL_READABLE_ADDRESS;
     Data.PrivateRuntimeDataSize = 16;
-    ok_failed(CallGuarded(pfn, &Data), "CreateKeyedMutex2 with kernel private data
-");
+    ok_failed(CallGuarded(pfn, &Data), "CreateKeyedMutex2 with kernel private data\n");
 }
 
 /* The structure pointer itself is a kernel address on a direct service */
@@ -123,12 +121,10 @@ Test_DirectStructurePointer(void)
 
     if (!pfn)
     {
-        skip("D3DKMTGetOverlayState not exported
-");
+        skip("D3DKMTGetOverlayState not exported\n");
         return;
     }
-    ok_failed(CallGuarded(pfn, KERNEL_UNMAPPED_ADDRESS), "GetOverlayState with a kernel structure pointer
-");
+    ok_failed(CallGuarded(pfn, KERNEL_UNMAPPED_ADDRESS), "GetOverlayState with a kernel structure pointer\n");
 }
 
 START_TEST(embedded_kptr)
