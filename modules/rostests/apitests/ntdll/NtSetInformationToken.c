@@ -347,6 +347,29 @@ SetTokenMandatoryPolicyTests(
     ok_ntstatus(Status, STATUS_PRIVILEGE_NOT_HELD);
 }
 
+/* A SID pointer into kernel space must be refused by the probe, not read */
+static
+VOID
+SetTokenKernelPointerTests(
+    _In_ HANDLE Token)
+{
+    TOKEN_MANDATORY_LABEL Label;
+    NTSTATUS Status;
+
+#ifdef _WIN64
+    Label.Label.Sid = (PSID)(ULONG_PTR)0xFFFFF78000000000ULL;
+#else
+    Label.Label.Sid = (PSID)(ULONG_PTR)0xFFDF0000;
+#endif
+    Label.Label.Attributes = SE_GROUP_INTEGRITY;
+    Status = NtSetInformationToken(Token, TokenIntegrityLevel, &Label, sizeof(Label));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+
+    Label.Label.Sid = NULL;
+    Status = NtSetInformationToken(Token, TokenIntegrityLevel, &Label, sizeof(Label));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+}
+
 START_TEST(NtSetInformationToken)
 {
     NTSTATUS Status;
@@ -381,6 +404,7 @@ START_TEST(NtSetInformationToken)
     SetTokenSessionIdTests(Token);
     SetTokenBadPointerTests(Token);
     SetTokenMandatoryPolicyTests(Token);
+    SetTokenKernelPointerTests(Token);
 
     CloseHandle(Token);
 }

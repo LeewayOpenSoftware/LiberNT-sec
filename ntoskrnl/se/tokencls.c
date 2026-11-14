@@ -2413,23 +2413,13 @@ NtSetInformationToken(
             {
                 TOKEN_MANDATORY_LABEL CapturedLabel;
                 PSID_AND_ATTRIBUTES Integrity;
-                PSID NewSid = NULL;
+                PSID NewSid = NULL, CapturedSid;
                 ULONG NewRid = 0, OldRid;
                 BOOLEAN HasTcbPrivilege;
 
                 _SEH2_TRY
                 {
                     CapturedLabel = *(PTOKEN_MANDATORY_LABEL)TokenInformation;
-                    if (!RtlValidSid(CapturedLabel.Label.Sid) ||
-                        *RtlSubAuthorityCountSid(CapturedLabel.Label.Sid) != 1 ||
-                        !RtlEqualMemory(RtlIdentifierAuthoritySid(CapturedLabel.Label.Sid),
-                                        &SeMandatoryLabelAuthority,
-                                        sizeof(SID_IDENTIFIER_AUTHORITY)))
-                    {
-                        Status = STATUS_INVALID_SID;
-                        _SEH2_YIELD(goto Cleanup);
-                    }
-                    NewRid = *RtlSubAuthoritySid(CapturedLabel.Label.Sid, 0);
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {
@@ -2437,6 +2427,28 @@ NtSetInformationToken(
                     _SEH2_YIELD(goto Cleanup);
                 }
                 _SEH2_END;
+
+                /* The SID pointer is the caller's: probe and copy it before reading it */
+                Status = SepCaptureSid(CapturedLabel.Label.Sid,
+                                       PreviousMode,
+                                       PagedPool,
+                                       FALSE,
+                                       &CapturedSid);
+                if (!NT_SUCCESS(Status))
+                    break;
+
+                if (!RtlValidSid(CapturedSid) ||
+                    *RtlSubAuthorityCountSid(CapturedSid) != 1 ||
+                    !RtlEqualMemory(RtlIdentifierAuthoritySid(CapturedSid),
+                                    &SeMandatoryLabelAuthority,
+                                    sizeof(SID_IDENTIFIER_AUTHORITY)))
+                {
+                    SepReleaseSid(CapturedSid, PreviousMode, FALSE);
+                    Status = STATUS_INVALID_SID;
+                    break;
+                }
+                NewRid = *RtlSubAuthoritySid(CapturedSid, 0);
+                SepReleaseSid(CapturedSid, PreviousMode, FALSE);
 
                 switch (NewRid)
                 {
