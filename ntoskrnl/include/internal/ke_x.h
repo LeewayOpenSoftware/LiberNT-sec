@@ -1439,8 +1439,10 @@ KxActivateWaiterQueue(IN PKTHREAD Thread)
 
     if (Queue)
     {
+        /* The queue counts this thread only while the association lasts */
         KiAcquireDispatcherObject(&Queue->Header);
-        KiActivateWaiterQueue(Queue);
+        if (Thread->Queue == Queue)
+            KiActivateWaiterQueue(Queue);
         KiReleaseDispatcherObject(&Queue->Header);
     }
 }

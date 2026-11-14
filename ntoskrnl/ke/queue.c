@@ -401,9 +401,15 @@ KiRemoveQueueExInternal(
 
     if ((Queue != PreviousQueue) && (PreviousQueue != NULL))
     {
+        /* The rundown of the previous queue ends the association from
+         * another processor, with that queue locked. It is ours to end only
+         * if it is still there once we hold that lock. */
         KiAcquireDispatcherObject(&PreviousQueue->Header);
-        RemoveEntryList(QueueEntry);
-        KiActivateWaiterQueue(PreviousQueue);
+        if (Thread->Queue == PreviousQueue)
+        {
+            RemoveEntryList(QueueEntry);
+            KiActivateWaiterQueue(PreviousQueue);
+        }
         KiReleaseDispatcherObject(&PreviousQueue->Header);
     }
 
