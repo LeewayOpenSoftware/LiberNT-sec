@@ -63,6 +63,46 @@ FindAdapterContextByName(PNDIS_STRING DeviceName)
     return NULL;
 }
 
+/* Returns the adapter that the file object is opened on and keeps it alive
+ * until NduEndIo. Returns NULL if the file object has no adapter, which is
+ * also the case after the adapter was unbound. */
+PNDISUIO_ADAPTER_CONTEXT
+NduBeginIo(PFILE_OBJECT FileObject,
+           PBOOLEAN WriteOnly)
+{
+    PNDISUIO_ADAPTER_CONTEXT AdapterContext;
+    PNDISUIO_OPEN_ENTRY OpenEntry;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&GlobalAdapterListLock, &OldIrql);
+    AdapterContext = FileObject->FsContext;
+    if (AdapterContext != NULL)
+    {
+        OpenEntry = FileObject->FsContext2;
+        ASSERT(!AdapterContext->Unbinding);
+        ASSERT(OpenEntry != NULL);
+
+        AdapterContext->IoCount++;
+        if (WriteOnly != NULL)
+            *WriteOnly = OpenEntry->WriteOnly;
+    }
+    KeReleaseSpinLock(&GlobalAdapterListLock, OldIrql);
+
+    return AdapterContext;
+}
+
+VOID
+NduEndIo(PNDISUIO_ADAPTER_CONTEXT AdapterContext)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&GlobalAdapterListLock, &OldIrql);
+    ASSERT(AdapterContext->IoCount > 0);
+    if (--AdapterContext->IoCount == 0 && AdapterContext->Unbinding)
+        KeSetEvent(&AdapterContext->IoDoneEvent, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&GlobalAdapterListLock, OldIrql);
+}
+
 VOID
 ReferenceAdapterContext(PNDISUIO_ADAPTER_CONTEXT AdapterContext)
 {

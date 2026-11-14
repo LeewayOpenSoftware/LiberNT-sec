@@ -29,6 +29,12 @@ typedef struct _NDISUIO_ADAPTER_CONTEXT
     ULONG OpenCount;
     LIST_ENTRY OpenEntryList;
 
+    /* Requests that use this context now. The unbind waits for them.
+     * Both fields are protected by the global adapter list lock. */
+    LONG IoCount;
+    BOOLEAN Unbinding;
+    KEVENT IoDoneEvent;
+
     /* NDIS pools */
     NDIS_HANDLE NblPoolHandle;
 
@@ -109,6 +115,13 @@ NduDoRequest(PNDISUIO_ADAPTER_CONTEXT AdapterContext,
 
 PNDISUIO_ADAPTER_CONTEXT
 FindAdapterContextByName(PNDIS_STRING DeviceName);
+
+PNDISUIO_ADAPTER_CONTEXT
+NduBeginIo(PFILE_OBJECT FileObject,
+           PBOOLEAN WriteOnly);
+
+VOID
+NduEndIo(PNDISUIO_ADAPTER_CONTEXT AdapterContext);
 
 VOID
 ReferenceAdapterContext(PNDISUIO_ADAPTER_CONTEXT AdapterContext);
