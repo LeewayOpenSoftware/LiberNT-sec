@@ -1286,8 +1286,8 @@ QSI_DEF(SystemPathInformation)
 }
 
 /* Class 5 - Process Information / 57 - SystemExtendedProcessInformation  */
-static
 #define TAG_EXP_PROCESS_INFO 'PIxE'
+static
 NTSTATUS
 ExpQuerySystemProcessInformation(
     _Out_writes_bytes_(Size) PVOID Buffer,
@@ -3453,13 +3453,26 @@ QSI_DEF(SystemLogicalProcessorInformation)
 }
 
 /* Class 76 - System firmware table information */
+/*
+ * The request is read from the caller's buffer once, the table is built in kernel memory, and
+ * the caller's buffer is written once at the end, in a try whose finally frees what was
+ * allocated: a fault on the caller's buffer leaks no pool or mapping, and nothing the caller
+ * rewrites in the meantime is read back.
+ */
+#define TAG_EXP_FIRMWARE_TABLE 'TFxE'
 QSI_DEF(SystemFirmwareTableInformation)
 {
     PSYSTEM_FIRMWARE_TABLE_INFORMATION SysFirmwareInfo = (PSYSTEM_FIRMWARE_TABLE_INFORMATION)Buffer;
     NTSTATUS Status = STATUS_SUCCESS;
+    ULONG ProviderSignature, TableID;
+    SYSTEM_FIRMWARE_TABLE_ACTION Action;
     ULONG DataBufSize;
     ULONG DataSize = 0;
     ULONG TableCount = 0;
+    ULONG TableLength = 0;
+    ULONG SmallTable[2];
+    PVOID Data = NULL;
+    PVOID Source = NULL;
 
     DPRINT("NtQuerySystemInformation - SystemFirmwareTableInformation\n");
 
@@ -3472,8 +3485,13 @@ QSI_DEF(SystemFirmwareTableInformation)
         return STATUS_INFO_LENGTH_MISMATCH;
     }
 
+    /* Read the request once */
+    ProviderSignature = SysFirmwareInfo->ProviderSignature;
+    Action = SysFirmwareInfo->Action;
+    TableID = SysFirmwareInfo->TableID;
+
     DataBufSize = Size - *ReqSize;
-    switch (SysFirmwareInfo->ProviderSignature)
+    switch (ProviderSignature)
     {
         /*
          * ExpFirmwareTableResource and ExpFirmwareTableProviderListHead
@@ -3481,7 +3499,7 @@ QSI_DEF(SystemFirmwareTableInformation)
          */
         case SIG_ACPI:
         {
-            if (SysFirmwareInfo->Action == SystemFirmwareTable_Enumerate)
+            if (Action == SystemFirmwareTable_Enumerate)
             {
                 PACPI_ENUM_SYSTEM_TABLES_ENTRY Entries;
                 ULONG_PTR Information = 0;
@@ -3542,22 +3560,31 @@ QSI_DEF(SystemFirmwareTableInformation)
 
                 TableCount = (ULONG)(Information / sizeof(*Entries));
                 DataSize = TableCount * sizeof(ULONG);
-                if (DataSize <= DataBufSize)
+                if (DataSize != 0 && DataSize <= DataBufSize)
                 {
+                    Data = ExAllocatePoolWithTag(PagedPool, DataSize, TAG_EXP_FIRMWARE_TABLE);
+                    if (Data == NULL)
+                    {
+                        ExFreePoolWithTag(Entries, 'tfwA');
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        break;
+                    }
+
                     /* A table is identified by its signature, as a ULONG */
                     for (Index = 0; Index < TableCount; Index++)
                     {
-                        RtlCopyMemory(&((PULONG)SysFirmwareInfo->TableBuffer)[Index],
+                        RtlCopyMemory(&((PULONG)Data)[Index],
                                       Entries[Index].Signature,
                                       sizeof(ULONG));
                     }
+                    Source = Data;
                 }
 
                 ExFreePoolWithTag(Entries, 'tfwA');
-                SysFirmwareInfo->TableBufferLength = DataSize;
+                TableLength = DataSize;
                 *ReqSize += DataSize;
             }
-            else if (SysFirmwareInfo->Action == SystemFirmwareTable_Get)
+            else if (Action == SystemFirmwareTable_Get)
             {
                 ACPI_GET_SYSTEM_TABLE_INPUT Input;
                 DESCRIPTION_HEADER Header;
@@ -3565,7 +3592,7 @@ QSI_DEF(SystemFirmwareTableInformation)
 
                 RtlZeroMemory(&Input, sizeof(Input));
                 RtlCopyMemory(Input.Signature,
-                              &SysFirmwareInfo->TableID,
+                              &TableID,
                               sizeof(Input.Signature));
                 Input.Instance = 1;
 
@@ -3589,14 +3616,22 @@ QSI_DEF(SystemFirmwareTableInformation)
                     Status = STATUS_SUCCESS;
                     if (DataSize <= DataBufSize)
                     {
+                        /* The driver writes into kernel memory, never into the caller's buffer */
+                        Data = ExAllocatePoolWithTag(PagedPool, DataSize, TAG_EXP_FIRMWARE_TABLE);
+                        if (Data == NULL)
+                        {
+                            Status = STATUS_INSUFFICIENT_RESOURCES;
+                            break;
+                        }
                         Status = ExpSendAcpiTableIoctl(IOCTL_ACPI_GET_SYSTEM_TABLE,
                                                        &Input,
                                                        sizeof(Input),
-                                                       SysFirmwareInfo->TableBuffer,
-                                                       DataBufSize,
+                                                       Data,
+                                                       DataSize,
                                                        &Information);
                         if (NT_SUCCESS(Status) && Information != DataSize)
                             Status = STATUS_ACPI_INVALID_DATA;
+                        Source = Data;
                     }
                 }
                 else if (NT_SUCCESS(Status))
@@ -3609,13 +3644,22 @@ QSI_DEF(SystemFirmwareTableInformation)
 
                     DataSize = sizeof(Header);
                     if (DataSize <= DataBufSize)
-                        RtlCopyMemory(SysFirmwareInfo->TableBuffer, &Header, DataSize);
+                    {
+                        Data = ExAllocatePoolWithTag(PagedPool, DataSize, TAG_EXP_FIRMWARE_TABLE);
+                        if (Data == NULL)
+                        {
+                            Status = STATUS_INSUFFICIENT_RESOURCES;
+                            break;
+                        }
+                        RtlCopyMemory(Data, &Header, DataSize);
+                        Source = Data;
+                    }
                 }
 
                 if (!NT_SUCCESS(Status))
                     break;
 
-                SysFirmwareInfo->TableBufferLength = DataSize;
+                TableLength = DataSize;
                 *ReqSize += DataSize;
             }
             else
@@ -3637,19 +3681,18 @@ QSI_DEF(SystemFirmwareTableInformation)
                 break;
             }
 
-            if (SysFirmwareInfo->Action == SystemFirmwareTable_Enumerate)
+            if (Action == SystemFirmwareTable_Enumerate)
             {
-                SysFirmwareInfo->TableBufferLength = sizeof(ULONG) * RTL_NUMBER_OF(FirmTables);
-                *ReqSize += SysFirmwareInfo->TableBufferLength;
-                if (SysFirmwareInfo->TableBufferLength <= DataBufSize)
-                {
-                    for (Index = 0; Index < RTL_NUMBER_OF(FirmTables); Index++)
-                        ((PULONG)SysFirmwareInfo->TableBuffer)[Index] = FirmTables[Index][0];
-                }
+                TableLength = sizeof(ULONG) * RTL_NUMBER_OF(FirmTables);
+                *ReqSize += TableLength;
+                for (Index = 0; Index < RTL_NUMBER_OF(FirmTables); Index++)
+                    SmallTable[Index] = FirmTables[Index][0];
+                if (TableLength <= DataBufSize)
+                    Source = SmallTable;
                 break;
             }
 
-            if (SysFirmwareInfo->Action != SystemFirmwareTable_Get)
+            if (Action != SystemFirmwareTable_Get)
             {
                 Status = STATUS_INVALID_PARAMETER_1;
                 break;
@@ -3657,7 +3700,7 @@ QSI_DEF(SystemFirmwareTableInformation)
 
             for (Index = 0; Index < RTL_NUMBER_OF(FirmTables); Index++)
             {
-                if (FirmTables[Index][0] == SysFirmwareInfo->TableID)
+                if (FirmTables[Index][0] == TableID)
                     break;
             }
             if (Index == RTL_NUMBER_OF(FirmTables))
@@ -3666,11 +3709,18 @@ QSI_DEF(SystemFirmwareTableInformation)
                 break;
             }
 
-            SysFirmwareInfo->TableBufferLength = FirmTables[Index][1];
+            TableLength = FirmTables[Index][1];
             *ReqSize += FirmTables[Index][1];
             if (FirmTables[Index][1] > DataBufSize)
                 break;
 
+            /* Copy the region out of the mapping before the caller's buffer is touched */
+            Data = ExAllocatePoolWithTag(PagedPool, FirmTables[Index][1], TAG_EXP_FIRMWARE_TABLE);
+            if (Data == NULL)
+            {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
             Physical.QuadPart = FirmTables[Index][0];
             Mapping = MmMapIoSpaceEx(Physical, FirmTables[Index][1], PAGE_READWRITE | PAGE_NOCACHE);
             if (Mapping == NULL)
@@ -3678,8 +3728,9 @@ QSI_DEF(SystemFirmwareTableInformation)
                 Status = STATUS_NOT_FOUND;
                 break;
             }
-            RtlCopyMemory(SysFirmwareInfo->TableBuffer, Mapping, FirmTables[Index][1]);
+            RtlCopyMemory(Data, Mapping, FirmTables[Index][1]);
             MmUnmapIoSpace(Mapping, FirmTables[Index][1]);
+            Source = Data;
             break;
         }
         case SIG_RSMB:
@@ -3688,20 +3739,30 @@ QSI_DEF(SystemFirmwareTableInformation)
             if (DataSize > 0)
             {
                 TableCount = 1;
-                if (SysFirmwareInfo->Action == SystemFirmwareTable_Enumerate)
+                if (Action == SystemFirmwareTable_Enumerate)
                 {
                     DataSize = TableCount * sizeof(ULONG);
                     if (DataSize <= DataBufSize)
                     {
-                        *(ULONG *)SysFirmwareInfo->TableBuffer = 0;
+                        SmallTable[0] = 0;
+                        Source = SmallTable;
                     }
                 }
-                else if (SysFirmwareInfo->Action == SystemFirmwareTable_Get
+                else if (Action == SystemFirmwareTable_Get
                          && DataSize <= DataBufSize)
                 {
-                    Status = ExpGetRawSMBiosTable(SysFirmwareInfo->TableBuffer, &DataSize, DataBufSize);
+                    Data = ExAllocatePoolWithTag(PagedPool, DataSize, TAG_EXP_FIRMWARE_TABLE);
+                    if (Data == NULL)
+                    {
+                        Status = STATUS_INSUFFICIENT_RESOURCES;
+                        break;
+                    }
+                    /* The table may have changed size since; the call reports the new size
+                       and refuses to write past the buffer */
+                    Status = ExpGetRawSMBiosTable(Data, &DataSize, DataSize);
+                    Source = Data;
                 }
-                SysFirmwareInfo->TableBufferLength = DataSize;
+                TableLength = DataSize;
                 *ReqSize += DataSize;
             }
             break;
@@ -3709,7 +3770,7 @@ QSI_DEF(SystemFirmwareTableInformation)
         default:
         {
             DPRINT1("SystemFirmwareTableInformation: Unsupported provider (0x%x)\n",
-                    SysFirmwareInfo->ProviderSignature);
+                    ProviderSignature);
             *ReqSize = 0;
             Status = STATUS_NOT_IMPLEMENTED;
         }
@@ -3717,12 +3778,12 @@ QSI_DEF(SystemFirmwareTableInformation)
 
     if (NT_SUCCESS(Status))
     {
-        switch (SysFirmwareInfo->Action)
+        switch (Action)
         {
             case SystemFirmwareTable_Enumerate:
             case SystemFirmwareTable_Get:
             {
-                if (SysFirmwareInfo->TableBufferLength > DataBufSize)
+                if (TableLength > DataBufSize)
                 {
                     Status = STATUS_BUFFER_TOO_SMALL;
                 }
@@ -3731,15 +3792,30 @@ QSI_DEF(SystemFirmwareTableInformation)
             default:
             {
                 DPRINT1("SystemFirmwareTableInformation: Unsupported action (0x%x)\n",
-                        SysFirmwareInfo->Action);
+                        Action);
                 Status = STATUS_ILLEGAL_FUNCTION;
             }
         }
     }
     else
     {
-        SysFirmwareInfo->TableBufferLength = 0;
+        TableLength = 0;
     }
+
+    /* The only writes to the caller's buffer */
+    _SEH2_TRY
+    {
+        SysFirmwareInfo->TableBufferLength = TableLength;
+        if (NT_SUCCESS(Status) && Source != NULL && TableLength != 0)
+            RtlCopyMemory(SysFirmwareInfo->TableBuffer, Source, TableLength);
+    }
+    _SEH2_FINALLY
+    {
+        if (Data != NULL)
+            ExFreePoolWithTag(Data, TAG_EXP_FIRMWARE_TABLE);
+    }
+    _SEH2_END;
+
     return Status;
 }
 
@@ -3888,7 +3964,7 @@ ExpQueryProcessIdInformation(
     UNICODE_STRING Name;
     HANDLE ProcessId;
     PEPROCESS Process;
-    USHORT Required;
+    ULONG Required;
     NTSTATUS Status;
 
     if (Size != sizeof(*IdInfo))
@@ -3902,9 +3978,6 @@ ExpQueryProcessIdInformation(
     Name = IdInfo->ImageName;
     if ((Name.Length != 0) || (Name.MaximumLength & 1))
         return STATUS_INVALID_PARAMETER;
-
-    if (ExGetPreviousMode() != KernelMode)
-        ProbeForRead(Name.Buffer, Name.MaximumLength, sizeof(WCHAR));
 
     Status = PsLookupProcessByProcessId(ProcessId, &Process);
     if (!NT_SUCCESS(Status))
@@ -3929,16 +4002,25 @@ ExpQueryProcessIdInformation(
         }
         else
         {
-            Required = ImageName->Length + sizeof(WCHAR);
-            if (Name.MaximumLength < Required)
+            /* Computed in a ULONG: name plus terminator can exceed what a USHORT holds */
+            Required = (ULONG)ImageName->Length + sizeof(WCHAR);
+            if (Required > MAXUSHORT)
             {
-                IdInfo->ImageName.MaximumLength = Required;
+                /* No caller buffer can hold it, so a retry with a bigger one cannot help */
+                Status = STATUS_NAME_TOO_LONG;
+            }
+            else if (Name.MaximumLength < Required)
+            {
+                IdInfo->ImageName.MaximumLength = (USHORT)Required;
                 Status = STATUS_INFO_LENGTH_MISMATCH;
             }
             else
             {
+                /* Probe exactly what is written */
+                if (ExGetPreviousMode() != KernelMode)
+                    ProbeForWrite(Name.Buffer, Required, sizeof(WCHAR));
                 IdInfo->ImageName.Length = ImageName->Length;
-                IdInfo->ImageName.MaximumLength = Required;
+                IdInfo->ImageName.MaximumLength = (USHORT)Required;
                 RtlCopyMemory(Name.Buffer, ImageName->Buffer, ImageName->Length);
                 Name.Buffer[ImageName->Length / sizeof(WCHAR)] = UNICODE_NULL;
             }
