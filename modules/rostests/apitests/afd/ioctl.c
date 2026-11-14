@@ -582,6 +582,200 @@ TestCountZeroBind(void)
     }
 }
 
+/* build the IPv4 transport address the way msafd does: the unpadded wire
+ * length (14) in the entry, inside a request padded past the address */
+static
+void
+BuildMsafdIpv4Address(
+    _Out_ PTRANSPORT_ADDRESS Address,
+    _In_ ULONG AddressSize,
+    _In_ ULONG IpAddress,
+    _In_ USHORT Port)
+{
+    RtlZeroMemory(Address, AddressSize);
+    Address->TAAddressCount = 1;
+    Address->Address[0].AddressType = TDI_ADDRESS_TYPE_IP;
+    Address->Address[0].AddressLength =
+        (USHORT)(sizeof(struct sockaddr_in) - FIELD_OFFSET(struct sockaddr, sa_data));
+    ((PTDI_ADDRESS_IP)&Address->Address[0].Address)->sin_port = htons(Port);
+    ((PTDI_ADDRESS_IP)&Address->Address[0].Address)->in_addr = IpAddress;
+}
+
+static
+void
+TestPaddedBind(void)
+{
+    NTSTATUS Status;
+    HANDLE SocketHandle;
+    IO_STATUS_BLOCK IoStatus;
+    /* the msafd request is padded well past the 22 bytes the address uses */
+    UCHAR Request[104];
+
+    Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    BuildMsafdIpv4Address(&((PAFD_BIND_DATA)Request)->Address,
+                          sizeof(Request) - FIELD_OFFSET(AFD_BIND_DATA, Address),
+                          inet_addr("127.0.0.1"),
+                          0);
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   NULL,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_BIND,
+                                   Request,
+                                   sizeof(Request),
+                                   NULL,
+                                   0);
+    ok(Status == STATUS_SUCCESS, "padded IPv4 bind failed with %lx\n", Status);
+
+    NtClose(SocketHandle);
+}
+
+static
+void
+TestSendTo(void)
+{
+    NTSTATUS Status;
+    HANDLE SocketHandle;
+    struct sockaddr_in Addr;
+    UCHAR Payload[4] = { 1, 2, 3, 4 };
+
+    Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    RtlZeroMemory(&Addr, sizeof(Addr));
+    Addr.sin_family = AF_INET;
+    Addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    Addr.sin_port = htons(9);
+
+    Status = AfdBind(SocketHandle, (const struct sockaddr *)&Addr, sizeof(Addr));
+    ok(Status == STATUS_SUCCESS, "AfdBind failed with %lx\n", Status);
+
+    if (NT_SUCCESS(Status))
+    {
+        Status = AfdSendTo(SocketHandle, Payload, sizeof(Payload),
+                           (const struct sockaddr *)&Addr, sizeof(Addr));
+        ok(Status == STATUS_SUCCESS, "sendto failed with %lx\n", Status);
+    }
+
+    NtClose(SocketHandle);
+}
+
+static
+void
+TestConnectExWithData(void)
+{
+    NTSTATUS Status;
+    HANDLE Listener = NULL, SocketHandle = NULL;
+    IO_STATUS_BLOCK IoStatus;
+    HANDLE Event = NULL;
+    UCHAR Request[64];
+    AFD_SUPER_CONNECT_INFO SuperConnect;
+    struct sockaddr_in Addr;
+    INT NameLength = sizeof(Addr);
+    static const UCHAR ConnectData[8] = { 'C', 'O', 'N', 'N', 'E', 'C', 'T', 0 };
+
+    {
+        IO_STATUS_BLOCK ListenIosb;
+        AFD_LISTEN_DATA ListenData;
+
+        Status = AfdCreateSocket(&Listener, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        ok(Status == STATUS_SUCCESS, "AfdCreateSocket(listener) failed with %lx\n", Status);
+        if (!NT_SUCCESS(Status))
+            return;
+
+        RtlZeroMemory(&Addr, sizeof(Addr));
+        Addr.sin_family = AF_INET;
+        Addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        Addr.sin_port = 0;
+        Status = AfdBind(Listener, (const struct sockaddr *)&Addr, sizeof(Addr));
+        ok(Status == STATUS_SUCCESS, "AfdBind(listener) failed with %lx\n", Status);
+        if (!NT_SUCCESS(Status)) goto Cleanup;
+
+        RtlZeroMemory(&ListenData, sizeof(ListenData));
+        ListenData.Backlog = 4;
+        Status = NtDeviceIoControlFile(Listener,
+                                       NULL,
+                                       NULL,
+                                       NULL,
+                                       &ListenIosb,
+                                       IOCTL_AFD_LISTEN,
+                                       &ListenData,
+                                       sizeof(ListenData),
+                                       NULL,
+                                       0);
+        if (Status == STATUS_PENDING)
+        {
+            NtWaitForSingleObject(Listener, FALSE, NULL);
+            Status = ListenIosb.Status;
+        }
+        ok(Status == STATUS_SUCCESS, "IOCTL_AFD_LISTEN failed with %lx\n", Status);
+        if (!NT_SUCCESS(Status)) goto Cleanup;
+
+        Status = AfdGetSockName(Listener, (struct sockaddr *)&Addr, &NameLength);
+        ok(Status == STATUS_SUCCESS, "AfdGetSockName failed with %lx\n", Status);
+        if (!NT_SUCCESS(Status)) goto Cleanup;
+    }
+
+    Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ok(Status == STATUS_SUCCESS, "AfdCreateSocket failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status)) goto Cleanup;
+
+    {
+        struct sockaddr_in BindAddr;
+        RtlZeroMemory(&BindAddr, sizeof(BindAddr));
+        BindAddr.sin_family = AF_INET;
+        BindAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        BindAddr.sin_port = 0;
+        Status = AfdBind(SocketHandle, (const struct sockaddr *)&BindAddr, sizeof(BindAddr));
+        ok(Status == STATUS_SUCCESS, "AfdBind failed with %lx\n", Status);
+        if (!NT_SUCCESS(Status)) goto Cleanup;
+    }
+
+    Status = NtCreateEvent(&Event, EVENT_ALL_ACCESS, NULL, NotificationEvent, FALSE);
+    ok(Status == STATUS_SUCCESS, "NtCreateEvent failed with %lx\n", Status);
+    if (!NT_SUCCESS(Status)) goto Cleanup;
+
+    RtlZeroMemory(Request, sizeof(Request));
+    RtlZeroMemory(&SuperConnect, sizeof(SuperConnect));
+    BuildMsafdIpv4Address(&SuperConnect.RemoteAddress,
+                          sizeof(SuperConnect) - FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress),
+                          Addr.sin_addr.s_addr,
+                          Addr.sin_port);
+    RtlCopyMemory(Request, &SuperConnect, sizeof(SuperConnect));
+
+    Status = NtDeviceIoControlFile(SocketHandle,
+                                   Event,
+                                   NULL,
+                                   NULL,
+                                   &IoStatus,
+                                   IOCTL_AFD_SUPER_CONNECT,
+                                   Request,
+                                   FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress) +
+                                       FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
+                                       FIELD_OFFSET(TA_ADDRESS, Address) +
+                                       SuperConnect.RemoteAddress.Address[0].AddressLength,
+                                   (PVOID)ConnectData,
+                                   sizeof(ConnectData));
+    if (Status == STATUS_PENDING)
+    {
+        NtWaitForSingleObject(Event, FALSE, NULL);
+        Status = IoStatus.Status;
+    }
+    ok(Status == STATUS_SUCCESS, "super connect with data failed with %lx\n", Status);
+
+Cleanup:
+    if (Event) NtClose(Event);
+    if (SocketHandle) NtClose(SocketHandle);
+    if (Listener) NtClose(Listener);
+}
+
 void
 func_ioctl(void)
 {
@@ -592,4 +786,7 @@ func_ioctl(void)
     TestConnect();
     TestShortAddress();
     TestCountZeroBind();
+    TestPaddedBind();
+    TestSendTo();
+    TestConnectExWithData();
 }
