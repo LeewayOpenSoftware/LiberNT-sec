@@ -349,8 +349,107 @@ TestRecordCapture(VOID)
     VirtualFree(Pages, 0, MEM_RELEASE);
 }
 
+static volatile LONG g_TailSeen;
+static ULONG g_TailCount;
+static ULONG_PTR g_TailSlots[EXCEPTION_MAXIMUM_PARAMETERS];
+
+static
+LONG
+CALLBACK
+TailHandler(
+    _In_ PEXCEPTION_POINTERS ExceptionInfo)
+{
+    PEXCEPTION_RECORD Record = ExceptionInfo->ExceptionRecord;
+    ULONG i;
+
+    if (GetCurrentThreadId() != g_MainThreadId ||
+        Record->ExceptionCode != RAISE_TEST_CODE ||
+        (Record->ExceptionFlags & EXCEPTION_UNWIND))
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (InterlockedIncrement(&g_TailSeen) == 1)
+    {
+        g_TailCount = Record->NumberParameters;
+        for (i = 0; i < EXCEPTION_MAXIMUM_PARAMETERS; i++)
+            g_TailSlots[i] = Record->ExceptionInformation[i];
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* The slots past the declared count come back as zero: neither the caller's own bytes nor anything else */
+static
+VOID
+TestUnusedParameters(
+    _In_ ULONG Declared)
+{
+    EXCEPTION_RECORD Record;
+    BOOLEAN Caught;
+    PVOID Handler;
+    ULONG Round, i, NotDelivered = 0, WrongCount = 0, WrongDeclared = 0, NonZeroTail = 0;
+    ULONG_PTR FirstNonZero = 0;
+
+    g_MainThreadId = GetCurrentThreadId();
+    Handler = AddVectoredExceptionHandler(1, TailHandler);
+    ok(Handler != NULL, "AddVectoredExceptionHandler failed\n");
+    if (Handler == NULL)
+        return;
+
+    for (Round = 0; Round < 64; Round++)
+    {
+        RtlZeroMemory(&Record, sizeof(Record));
+        Record.ExceptionCode = RAISE_TEST_CODE;
+        Record.NumberParameters = Declared;
+        for (i = 0; i < EXCEPTION_MAXIMUM_PARAMETERS; i++)
+            Record.ExceptionInformation[i] = MakeParameter(Declared, i);
+
+        g_TailSeen = 0;
+        g_TailCount = MAXULONG;
+        RtlFillMemory(g_TailSlots, sizeof(g_TailSlots), 0xEE);
+
+        NtYieldExecution();
+        Caught = FALSE;
+        InvokeRaiseException(&Record, &Caught);
+
+        if (!Caught || g_TailSeen == 0)
+        {
+            NotDelivered++;
+            continue;
+        }
+        if (g_TailCount != Declared)
+            WrongCount++;
+        for (i = 0; i < Declared; i++)
+        {
+            if (g_TailSlots[i] != MakeParameter(Declared, i))
+                WrongDeclared++;
+        }
+        for (i = Declared; i < EXCEPTION_MAXIMUM_PARAMETERS; i++)
+        {
+            if (g_TailSlots[i] != 0)
+            {
+                if (NonZeroTail == 0)
+                    FirstNonZero = g_TailSlots[i];
+                NonZeroTail++;
+            }
+        }
+    }
+
+    RemoveVectoredExceptionHandler(Handler);
+
+    ok(NotDelivered == 0, "%lu parameters: %lu of 64 exceptions were not delivered\n", Declared, NotDelivered);
+    ok(WrongCount == 0, "%lu parameters: the handler saw another count %lu times\n", Declared, WrongCount);
+    ok(WrongDeclared == 0, "%lu parameters: %lu declared slots changed\n", Declared, WrongDeclared);
+    ok(NonZeroTail == 0, "%lu parameters: %lu unused slots were not zero, the first held %p\n",
+       Declared, NonZeroTail, (PVOID)FirstNonZero);
+}
+
 START_TEST(NtRaiseException)
 {
     TestCallerContext();
     TestRecordCapture();
+    TestUnusedParameters(0);
+    TestUnusedParameters(3);
+    TestUnusedParameters(EXCEPTION_MAXIMUM_PARAMETERS);
 }
