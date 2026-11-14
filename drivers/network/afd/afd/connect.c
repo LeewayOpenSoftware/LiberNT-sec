@@ -36,7 +36,7 @@ AfdGetConnectOptions(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (FCB->FilledConnectOptions < BufferSize) BufferSize = FCB->FilledConnectOptions;
 
-    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->ConnectOptions, BufferSize), Irp, BufferSize);
+    return AfdCopyToCallerAndComplete(FCB, Irp, FCB->ConnectOptions, BufferSize);
 }
 
 NTSTATUS
@@ -144,7 +144,7 @@ AfdGetConnectData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (FCB->FilledConnectData < BufferSize) BufferSize = FCB->FilledConnectData;
 
-    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->ConnectData, BufferSize), Irp, BufferSize);
+    return AfdCopyToCallerAndComplete(FCB, Irp, FCB->ConnectData, BufferSize);
 }
 
 NTSTATUS

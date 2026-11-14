@@ -34,7 +34,7 @@ AfdGetContext( PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     AFD_DbgPrint(MID_TRACE,("Returning %x\n", Status));
 
-    return UnlockAndMaybeComplete( FCB, Status, Irp, ContextSize );
+    return UnlockAndMaybeComplete( FCB, Status, Irp, NT_SUCCESS(Status) ? ContextSize : 0 );
 }
 
 NTSTATUS NTAPI
@@ -54,7 +54,7 @@ AfdGetContextSize( PDEVICE_OBJECT DeviceObject, PIRP Irp,
         return UnlockAndMaybeComplete(FCB, STATUS_BUFFER_TOO_SMALL, Irp, sizeof(ULONG));
     }
 
-    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, &FCB->ContextSize, sizeof(ULONG)), Irp, sizeof(ULONG));
+    return AfdCopyToCallerAndComplete(FCB, Irp, &FCB->ContextSize, sizeof(ULONG));
 }
 
 NTSTATUS NTAPI

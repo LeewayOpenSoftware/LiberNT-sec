@@ -837,6 +837,14 @@ NTSTATUS AfdCopyFromCaller( PIRP Irp, PVOID Destination, ULONG Length ) {
     return Status;
 }
 
+/* Copies to the caller and completes the request. The request reports the
+ * copied length only when the copy was done. */
+NTSTATUS AfdCopyToCallerAndComplete( PAFD_FCB FCB, PIRP Irp, const VOID *Source, ULONG Length ) {
+    NTSTATUS Status = AfdCopyToCaller(Irp, Source, Length);
+
+    return UnlockAndMaybeComplete(FCB, Status, Irp, NT_SUCCESS(Status) ? Length : 0);
+}
+
 NTSTATUS LeaveIrpUntilLater( PAFD_FCB FCB, PIRP Irp, UINT Function ) {
     NTSTATUS Status;
 

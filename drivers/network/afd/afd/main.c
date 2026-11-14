@@ -71,7 +71,7 @@ AfdGetDisconnectOptions(PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
     if (FCB->FilledDisconnectOptions < BufferSize) BufferSize = FCB->FilledDisconnectOptions;
 
-    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->DisconnectOptions, BufferSize), Irp, BufferSize);
+    return AfdCopyToCallerAndComplete(FCB, Irp, FCB->DisconnectOptions, BufferSize);
 }
 
 NTSTATUS
@@ -179,7 +179,7 @@ AfdGetDisconnectData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     if (FCB->FilledDisconnectData < BufferSize)
         BufferSize = FCB->FilledDisconnectData;
 
-    return UnlockAndMaybeComplete(FCB, AfdCopyToCaller(Irp, FCB->DisconnectData, BufferSize), Irp, BufferSize);
+    return AfdCopyToCallerAndComplete(FCB, Irp, FCB->DisconnectData, BufferSize);
 }
 
 NTSTATUS

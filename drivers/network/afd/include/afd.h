@@ -420,6 +420,7 @@ PVOID LockRequest( PIRP Irp, PIO_STACK_LOCATION IrpSp, BOOLEAN Output, KPROCESSO
 VOID UnlockRequest( PIRP Irp, PIO_STACK_LOCATION IrpSp );
 NTSTATUS AfdCopyToCaller( PIRP Irp, const VOID *Source, ULONG Length );
 NTSTATUS AfdCopyFromCaller( PIRP Irp, PVOID Destination, ULONG Length );
+NTSTATUS AfdCopyToCallerAndComplete( PAFD_FCB FCB, PIRP Irp, const VOID *Source, ULONG Length );
 PVOID GetLockedData( PIRP Irp, PIO_STACK_LOCATION IrpSp );
 BOOLEAN AfdCaptureRecvRequest(PVOID InputBuffer, ULONG InputBufferLength, KPROCESSOR_MODE Mode, BOOLEAN Is32Bit, PAFD_RECV_INFO Request);
 VOID AfdReadUserWsaBuf(PAFD_WSABUF Array, UINT Index, KPROCESSOR_MODE Mode, BOOLEAN Is32Bit, PAFD_WSABUF Buffer);
