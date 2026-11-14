@@ -497,6 +497,7 @@ PAFD_WSABUF LockBuffers( PAFD_WSABUF Buf, UINT Count,
     UINT i;
     /* Copy the buffer array so we don't lose it */
     UINT Lock = LockAddress ? EXTRA_LOCK_BUFFERS : 0;
+    UINT BufCount = Count;
     SIZE_T Size;
     PAFD_WSABUF NewBuf;
     BOOLEAN LockFailed = FALSE;
@@ -558,6 +559,14 @@ PAFD_WSABUF LockBuffers( PAFD_WSABUF Buf, UINT Count,
         for( i = 0; i < Count; i++ ) {
             AFD_DbgPrint(MID_TRACE,("Locking buffer %u (%p:%u)\n",
                                     i, NewBuf[i].buf, NewBuf[i].len));
+
+            /* The buffers the caller gave must not claim data at NULL; the
+             * address entries appended for LockAddress exempt a NULL address. */
+            if( i < BufCount && !NewBuf[i].buf && NewBuf[i].len ) {
+                AfdUnlockMdlArray( MapBuf, i );
+                ExFreePoolWithTag(NewBuf, TAG_AFD_WSA_BUFFER);
+                return NULL;
+            }
 
             if( NewBuf[i].buf && NewBuf[i].len ) {
                 MapBuf[i].Mdl = IoAllocateMdl( NewBuf[i].buf,
