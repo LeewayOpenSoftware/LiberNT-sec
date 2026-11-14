@@ -3889,7 +3889,7 @@ VOID
 PspSaveIdealProcessorInTeb(
     _In_ PETHREAD Thread)
 {
-    PEPROCESS Process = Thread->ThreadsProcess;
+    PEPROCESS Process = (PEPROCESS)Thread->ThreadsProcess;
     KAPC_STATE ApcState;
     BOOLEAN Attached = FALSE;
     PTEB Teb;
