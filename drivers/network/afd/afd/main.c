@@ -346,6 +346,20 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     EaInfo = Irp->AssociatedIrp.SystemBuffer;
 
     if( EaInfo ) {
+        /* The create packet and the transport name inside it must fit in the
+         * EA buffer the caller gave, or the reads below leave the buffer. */
+        if( IrpSp->Parameters.Create.EaLength < FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName) ||
+            EaInfo->EaNameLength + 1 >
+                IrpSp->Parameters.Create.EaLength - FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName) ||
+            EaInfo->EaValueLength < FIELD_OFFSET(AFD_CREATE_PACKET, TransportName) ||
+            EaInfo->EaValueLength >
+                IrpSp->Parameters.Create.EaLength -
+                FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName) - EaInfo->EaNameLength - 1 ) {
+            Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+            IoCompleteRequest( Irp, IO_NO_INCREMENT );
+            return STATUS_INVALID_PARAMETER;
+        }
+
         ConnectInfo = (PAFD_CREATE_PACKET)(EaInfo->EaName + EaInfo->EaNameLength + 1);
         EaInfoValue = (PWCHAR)(((PCHAR)ConnectInfo) + sizeof(AFD_CREATE_PACKET));
 
@@ -416,6 +430,16 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         {
             TransportName = ConnectInfoNt6->TransportName;
             SizeOfTransportName = ConnectInfoNt6->SizeOfTransportName;
+        }
+        else if (SizeOfTransportName >
+                 EaInfo->EaValueLength - FIELD_OFFSET(AFD_CREATE_PACKET, TransportName))
+        {
+            if (FCB->ReceiveWorkItem)
+                IoFreeWorkItem(FCB->ReceiveWorkItem);
+            ExFreePoolWithTag(FCB, TAG_AFD_FCB);
+            Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+            IoCompleteRequest( Irp, IO_NO_INCREMENT );
+            return STATUS_INVALID_PARAMETER;
         }
 
         FCB->TdiDeviceName.Length = SizeOfTransportName;
