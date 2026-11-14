@@ -655,16 +655,24 @@ NTSTATUS AfdAccept( PDEVICE_OBJECT DeviceObject, PIRP Irp,
 
             Status = ObReferenceObjectByHandle
                 ( ListenHandle,
-                  FILE_ALL_ACCESS,
-                  NULL,
-                  KernelMode,
+                  FILE_READ_DATA | FILE_WRITE_DATA,
+                  *IoFileObjectType,
+                  Irp->RequestorMode,
                   (PVOID *)&NewFileObject,
                   NULL );
 
-            if( !NT_SUCCESS(Status) ) return UnlockAndMaybeComplete( FCB, Status, Irp, 0 );
-
-            ASSERT(NewFileObject != FileObject);
-            ASSERT(NewFileObject->FsContext != FCB);
+            if( !NT_SUCCESS(Status) ||
+                NewFileObject->DeviceObject != DeviceObject ||
+                NewFileObject == FileObject ||
+                !NewFileObject->FsContext ||
+                NewFileObject->FsContext == FCB ) {
+                if( NT_SUCCESS(Status) ) ObDereferenceObject( NewFileObject );
+                ExFreePoolWithTag(PendingConnObj, TAG_AFD_ACCEPT_QUEUE);
+                return UnlockAndMaybeComplete
+                    ( FCB,
+                      NT_SUCCESS(Status) ? STATUS_INVALID_PARAMETER : Status,
+                      Irp, 0 );
+            }
 
             /* We have a pending connection ... complete this irp right away */
             Status = SatisfyAccept( DeviceExt, Irp, NewFileObject, PendingConnObj );
