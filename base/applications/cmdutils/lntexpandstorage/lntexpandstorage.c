@@ -398,7 +398,8 @@ IsSignatureInUse(ULONG DriveNumber, ULONG Signature)
             continue;
 
         _snwprintf(DevicePath, sizeof(DevicePath) / sizeof(DevicePath[0]), L"\\\\.\\PhysicalDrive%lu", Number);
-        Handle = CreateFileW(DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        /* IOCTL_DISK_GET_LENGTH_INFO is a read-class code: the handle needs read access */
+        Handle = CreateFileW(DevicePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
         if (Handle == INVALID_HANDLE_VALUE)
             continue;
 

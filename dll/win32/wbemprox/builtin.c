@@ -3886,7 +3886,8 @@ static UINT get_wmi_partitions( UINT disk, struct wmi_partition *parts, UINT cap
     UINT count = 0;
 
     swprintf( path, ARRAY_SIZE( path ), L"\\\\.\\PhysicalDrive%u", disk );
-    handle = CreateFileW( path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
+    /* IOCTL_DISK_GET_LENGTH_INFO below is a read-class code */
+    handle = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
     if (handle == INVALID_HANDLE_VALUE) return 0;
 
     layout = get_drive_layout( handle );
@@ -8291,7 +8292,8 @@ static enum fill_status fill_msft_phys_disk( struct table *table, const struct e
     for (index = 0; index < 64; index++)
     {
         swprintf( path, ARRAY_SIZE( path ), L"\\\\.\\PhysicalDrive%u", index );
-        handle = CreateFileW( path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
+        /* the layout id below needs IOCTL_DISK_GET_DRIVE_LAYOUT, a read-class code */
+        handle = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
         if (handle == INVALID_HANDLE_VALUE) continue;
 
         memset( &device, 0, sizeof(device) );

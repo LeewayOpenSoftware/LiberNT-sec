@@ -2289,7 +2289,8 @@ static void DetectDiskDetails(int index)
     WCHAR path[64];
     StringCchPrintfW(path, _countof(path),
                      L"\\\\.\\PhysicalDrive%lu", disk->number);
-    sampler->handle = CreateFileW(path, 0,
+    /* IOCTL_DISK_GET_LENGTH_INFO is a read-class code: the handle needs read access */
+    sampler->handle = CreateFileW(path, GENERIC_READ,
                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
                                   NULL, OPEN_EXISTING, 0, NULL);
     if (sampler->handle != INVALID_HANDLE_VALUE)
