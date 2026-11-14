@@ -158,10 +158,11 @@ KiDispatchExceptionToUser(
     /* Make sure we have a valid SS */
     if (TrapFrame->SegSs != (KGDT64_R3_DATA | RPL_MASK))
     {
-        /* Raise an access violation instead */
+        /* Raise an access violation instead. The record goes whole to the
+         * user stack, so the fields that are not set here are zero. */
+        RtlZeroMemory(&LocalExceptRecord, sizeof(LocalExceptRecord));
         LocalExceptRecord.ExceptionCode = STATUS_ACCESS_VIOLATION;
-        LocalExceptRecord.ExceptionFlags = 0;
-        LocalExceptRecord.NumberParameters = 0;
+        LocalExceptRecord.ExceptionAddress = ExceptionRecord->ExceptionAddress;
         ExceptionRecord = &LocalExceptRecord;
     }
 
