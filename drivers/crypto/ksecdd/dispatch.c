@@ -170,9 +170,12 @@ KsecDeviceControl(
             break;
 
         default:
-            DPRINT1("Unhandled control code 0x%lx\n", IoControlCode);
-            __debugbreak();
-            return STATUS_INVALID_PARAMETER;
+            /* Any process can send any code to this device: one that is not
+             * handled is refused, and nothing is returned for it */
+            DPRINT("Unhandled control code 0x%lx\n", IoControlCode);
+            if (OutputLength != NULL)
+                *OutputLength = 0;
+            return STATUS_INVALID_DEVICE_REQUEST;
     }
 
     return Status;
