@@ -5193,7 +5193,14 @@ NtSetInformationThread(
 
             if (NT_SUCCESS(Status))
             {
-                OldThread = InterlockedExchangePointer(&Thread->WorkOnBehalfThread, TicketThread);
+                /* The query reads this field and references the thread it
+                 * names with the lock held shared, so the thread it found
+                 * can lose its reference only after the lock is released */
+                PspLockThreadSecurityExclusive(Thread);
+                OldThread = Thread->WorkOnBehalfThread;
+                Thread->WorkOnBehalfThread = TicketThread;
+                PspUnlockThreadSecurityExclusive(Thread);
+
                 if (OldThread != NULL)
                     ObDereferenceObject(OldThread);
             }
