@@ -617,6 +617,17 @@ WddmBridgeCaptureFixedIoctlWithBuffer(
 
     RtlCopyMemory(&UserBuffer, Captured + PointerOffset, sizeof(UserBuffer));
     RtlCopyMemory(&Bytes, Captured + SizeOffset, sizeof(Bytes));
+    if (UserBuffer == NULL && Bytes != 0)
+    {
+        /* A size without a buffer */
+        Status = STATUS_INVALID_PARAMETER;
+        goto Cleanup;
+    }
+    if (UserBuffer != NULL && Bytes == 0)
+    {
+        /* Nothing to copy: dxgkrnl never sees the caller's address */
+        RtlZeroMemory(Captured + PointerOffset, sizeof(PVOID));
+    }
     if (UserBuffer != NULL && Bytes != 0)
     {
         if (Bytes > MaximumBytes)
