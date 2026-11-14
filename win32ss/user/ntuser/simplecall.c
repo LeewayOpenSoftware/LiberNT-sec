@@ -664,6 +664,8 @@ NtUserCallOneParam(
             _SEH2_TRY
             {
                pdwLayout = (PDWORD)Param;
+               if (ExGetPreviousMode() != KernelMode)
+                   ProbeForWrite(pdwLayout, sizeof(*pdwLayout), sizeof(UCHAR));
                *pdwLayout = ppi->dwLayout;
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
