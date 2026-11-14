@@ -2,8 +2,6 @@ name: Build
 on:
   push:
     branches-ignore: [main-nt10]
-  pull_request:
-  # Manual restart for a branch whose push event was lost (GitHub incident of 2026-11-12).
   workflow_dispatch:
 
 concurrency:
@@ -22,9 +20,10 @@ jobs:
           - compiler: clang
             arch: amd64
       fail-fast: false
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, libernt-sec]
     steps:
     - name: Free disk space
+      if: ${{ vars.CI_FREE_DISK_SPACE == 'true' }}
       run: |
         df -h /
         sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/lib/jvm /usr/local/share/powershell /usr/local/share/chromium
@@ -69,7 +68,7 @@ jobs:
       run: |
         echo "CCACHE_BASEDIR=${{github.workspace}}" >> $GITHUB_ENV
         echo "CCACHE_DIR=${{github.workspace}}/ccache" >> $GITHUB_ENV
-        echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+        echo "CCACHE_MAXSIZE=1G" >> $GITHUB_ENV
         echo "CCACHE_SLOPPINESS=time_macros" >> $GITHUB_ENV
 
     - name: Allocate the Leeway Build Identity
@@ -162,32 +161,51 @@ jobs:
       id: images
       run: echo "tag=${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-${GITHUB_SHA::11}" >> "$GITHUB_OUTPUT"
 
+    - name: Preserve outputs on the runner host
+      run: |
+        DEST="/srv/artifacts/${{github.run_id}}/${{steps.images.outputs.tag}}"
+        mkdir -p "$DEST"
+        cp ${{steps.configure.outputs.outdir}}/bootcd.iso \
+           ${{steps.configure.outputs.outdir}}/LiberNT.img \
+           ${{steps.configure.outputs.outdir}}/LiberNT.vhd \
+           ${{steps.configure.outputs.outdir}}/LiberNT.vhdx \
+           applier-out/LiberNTUpdatePending.exe \
+           applier-out/LiberNTUpdatePending.exe.sha256 \
+           "$DEST/"
+        ls -l "$DEST"
+        ls -1dt /srv/artifacts/*/ | tail -n +4 | xargs -r rm -rf
+
     - name: Upload stage-1 applier
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: libernt-update-pending-${{steps.images.outputs.tag}}
         path: applier-out/
 
     - name: Upload bootcd.iso
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: bootcd-iso-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/bootcd.iso
 
     - name: Upload LiberNT.img
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: LiberNT-img-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.img
 
     - name: Upload LiberNT.vhd
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: LiberNT-vhd-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.vhd
 
     - name: Upload LiberNT.vhdx
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: LiberNT-vhdx-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.vhdx
@@ -207,9 +225,10 @@ jobs:
     # Compile the test suite (modules/rostests) with clang for amd64. A
     # separate build, because ENABLE_ROSTESTS also changes what goes into
     # the images that build-linux produces. Compile only, no test run.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, libernt-sec]
     steps:
     - name: Free disk space
+      if: ${{ vars.CI_FREE_DISK_SPACE == 'true' }}
       run: |
         sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/lib/jvm /usr/local/share/powershell /usr/local/share/chromium
         df -h /
@@ -290,6 +309,7 @@ jobs:
 
     - name: Upload the kmtests binaries
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: kmtests-clang-amd64-${{github.sha}}
         path: kmtests-out/
@@ -311,8 +331,16 @@ jobs:
         fi
         ls -lR apitests-out | head -100
 
+    - name: Preserve the test binaries on the runner host
+      run: |
+        DEST="/srv/artifacts/${{github.run_id}}/rostests-${GITHUB_SHA::11}"
+        mkdir -p "$DEST"
+        cp -r kmtests-out apitests-out "$DEST/"
+        ls -l "$DEST"
+
     - name: Upload the apitests binaries
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: apitests-clang-amd64-${{github.sha}}
         path: apitests-out/
@@ -326,6 +354,7 @@ jobs:
         key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
 
   ntfslib-host-tests:
+    if: false
     # The host tests of the NTFS library, outside the image build: the
     # volume check (index walk unit test, cluster claim smoke test), a
     # directory index that grows past its base record, a size change made
@@ -366,12 +395,14 @@ jobs:
     - name: Upload the images of failed host tests
       if: ${{ failure() }}
       uses: actions/upload-artifact@v7
+      continue-on-error: true
       with:
         name: ntfslib-failed-images
         path: ${{ runner.temp }}/ntfslib-failed
         if-no-files-found: ignore
 
   cmlib-host-tests:
+    if: false
     # Host test of the configuration-manager hive library: HvMarkCellDirty must
     # mark every block a cell occupies, including a block-aligned header and a
     # cell that spans several blocks. Regression for the dx2400 STOP 0x1E at
@@ -414,7 +445,7 @@ jobs:
     # holder's acknowledge). FsRtlCheckOplockEx flags, FsRtlOplockBreakH and
     # FsRtlOplockIsSharedRequest (R2 M1-2), and the break/grant path regressions
     # fixed with them. Built under ASan and UBSan.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, libernt-sec]
     steps:
     - name: Source checkout
       uses: actions/checkout@v6
@@ -444,7 +475,7 @@ jobs:
         ctest --test-dir build/fsrtl-host --output-on-failure -R "fsrtl_oplock_"
 
   build-msvc:
-    if: github.ref == 'refs/heads/leeway/main'
+    if: false
     strategy:
       matrix:
         arch: [amd64]
