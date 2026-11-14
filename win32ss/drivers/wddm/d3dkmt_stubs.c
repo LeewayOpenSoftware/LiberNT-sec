@@ -3057,7 +3057,41 @@ APIENTRY
 D3DKMTSetGammaRamp(
     _In_ CONST D3DKMT_SETGAMMARAMP *pData)
 {
-    return WddmBridgeCaptureFixedIoctl(IOCTL_D3DKMT_SETGAMMARAMP, (PVOID)pData, sizeof(*pData), FALSE);
+    D3DKMT_SETGAMMARAMP Captured;
+    PVOID Ramp = NULL;
+    NTSTATUS Status;
+
+    if (pData == NULL)
+        return STATUS_INVALID_PARAMETER;
+
+    Status = WddmBridgeSafeCopyFrom(&Captured, pData, sizeof(Captured));
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    /* The ramp is named by a caller pointer, and dxgkrnl reads the buffers
+     * of an internal request as kernel memory: hand it a kernel copy. Its
+     * size against the ramp type is checked by dxgkrnl. */
+    if (Captured.pGammaRampRgb256x3x16 != NULL)
+    {
+        if (Captured.Size == 0 || Captured.Size > D3DKMT_BRIDGE_MAX_FIXED_BYTES)
+            return STATUS_INVALID_PARAMETER;
+
+        Ramp = ExAllocatePoolWithTag(NonPagedPool, Captured.Size, TAG_WDDM_BRIDGE);
+        if (Ramp == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+
+        Status = WddmBridgeSafeCopyFrom(Ramp, Captured.pGammaRampRgb256x3x16, Captured.Size);
+        if (!NT_SUCCESS(Status))
+            goto Cleanup;
+        Captured.pGammaRampRgb256x3x16 = Ramp;
+    }
+
+    Status = WddmBridgeSendIoctl(IOCTL_D3DKMT_SETGAMMARAMP, &Captured, sizeof(Captured), NULL, 0);
+
+Cleanup:
+    if (Ramp != NULL)
+        ExFreePoolWithTag(Ramp, TAG_WDDM_BRIDGE);
+    return Status;
 }
 
 NTSTATUS
