@@ -3090,7 +3090,7 @@ PNP_RegisterDeviceClassAssociation(
 
     UNREFERENCED_PARAMETER(hBinding);
 
-    DPRINT1("PNP_RegisterDeviceClassAssociation(%p %S %p %S %S %p %p 0x%08lx)\n",
+    DPRINT1("PNP_RegisterDeviceClassAssociation(%p %S %p %S %p %p %p 0x%08lx)\n",
            hBinding, pszDeviceID, InterfaceGuid, pszReference, pszSymLink,
            pulLength, pulTransferLen, ulFlags);
 
@@ -3099,6 +3099,16 @@ PNP_RegisterDeviceClassAssociation(
         (pulLength == NULL) ||
         (pulTransferLen == NULL))
         return CR_INVALID_POINTER;
+
+    /* The whole [out] buffer travels back to the caller on every path */
+    ZeroMemory(pszSymLink, *pulTransferLen * sizeof(WCHAR));
+
+    /* The call changes the device interfaces of the system */
+    if (!IsCallerAdministrator(hBinding))
+    {
+        *pulLength = 0;
+        return CR_ACCESS_DENIED;
+    }
 
     if (ulFlags != 0)
         return CR_INVALID_FLAG;
@@ -3111,14 +3121,17 @@ PNP_RegisterDeviceClassAssociation(
     RtlInitUnicodeString(&PlugPlayData.Reference, pszReference);
     PlugPlayData.Register = TRUE;
     PlugPlayData.SymbolicLinkName = pszSymLink;
-    PlugPlayData.SymbolicLinkNameLength = *pulLength;
+    /* The buffer for the link name has *pulTransferLen characters, whatever
+     * *pulLength says. The kernel takes its length in bytes and returns the
+     * bytes of the link name with its terminator. */
+    PlugPlayData.SymbolicLinkNameLength = *pulTransferLen * sizeof(WCHAR);
 
     Status = NtPlugPlayControl(PlugPlayControlDeviceClassAssociation,
                                &PlugPlayData,
                                sizeof(PLUGPLAY_CONTROL_CLASS_ASSOCIATION_DATA));
     if (NT_SUCCESS(Status))
     {
-        *pulLength = PlugPlayData.SymbolicLinkNameLength;
+        *pulLength = PlugPlayData.SymbolicLinkNameLength / sizeof(WCHAR);
         *pulTransferLen = *pulLength;
     }
     else
@@ -3154,10 +3167,14 @@ PNP_UnregisterDeviceClassAssociation(
     if (ulFlags != 0)
         return CR_INVALID_FLAG;
 
+    /* The call changes the device interfaces of the system */
+    if (!IsCallerAdministrator(hBinding))
+        return CR_ACCESS_DENIED;
+
     ZeroMemory(&PlugPlayData, sizeof(PlugPlayData));
     PlugPlayData.Register = FALSE;
     PlugPlayData.SymbolicLinkName = pszInterfaceDevice;
-    PlugPlayData.SymbolicLinkNameLength = wcslen(pszInterfaceDevice) + 1;
+    PlugPlayData.SymbolicLinkNameLength = (wcslen(pszInterfaceDevice) + 1) * sizeof(WCHAR);
 
     Status = NtPlugPlayControl(PlugPlayControlDeviceClassAssociation,
                                &PlugPlayData,
