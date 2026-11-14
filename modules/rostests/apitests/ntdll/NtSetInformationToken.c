@@ -300,6 +300,53 @@ SetTokenBadPointerTests(
     ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
 }
 
+static
+BOOLEAN
+HoldsTcbPrivilege(
+    _In_ HANDLE Token)
+{
+    UCHAR Buffer[sizeof(TOKEN_PRIVILEGES) + 64 * sizeof(LUID_AND_ATTRIBUTES)];
+    PTOKEN_PRIVILEGES Privileges = (PTOKEN_PRIVILEGES)Buffer;
+    ULONG Length, i;
+    NTSTATUS Status;
+
+    Status = NtQueryInformationToken(Token, TokenPrivileges, Buffer, sizeof(Buffer), &Length);
+    if (!NT_SUCCESS(Status))
+        return FALSE;
+
+    for (i = 0; i < Privileges->PrivilegeCount; i++)
+    {
+        if (Privileges->Privileges[i].Luid.LowPart == SE_TCB_PRIVILEGE &&
+            Privileges->Privileges[i].Luid.HighPart == 0)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* Windows lets only TCB holders change the mandatory policy, even on the caller's own token */
+static
+VOID
+SetTokenMandatoryPolicyTests(
+    _In_ HANDLE Token)
+{
+    TOKEN_MANDATORY_POLICY Policy;
+    NTSTATUS Status;
+
+    if (HoldsTcbPrivilege(Token))
+    {
+        skip("The token holds SeTcbPrivilege, the refusal cannot be tested\n");
+        return;
+    }
+
+    Policy.Policy = TOKEN_MANDATORY_POLICY_NO_WRITE_UP;
+    Status = NtSetInformationToken(Token, TokenMandatoryPolicy, &Policy, sizeof(Policy));
+    ok_ntstatus(Status, STATUS_PRIVILEGE_NOT_HELD);
+
+    Policy.Policy = TOKEN_MANDATORY_POLICY_OFF;
+    Status = NtSetInformationToken(Token, TokenMandatoryPolicy, &Policy, sizeof(Policy));
+    ok_ntstatus(Status, STATUS_PRIVILEGE_NOT_HELD);
+}
+
 START_TEST(NtSetInformationToken)
 {
     NTSTATUS Status;
@@ -333,6 +380,7 @@ START_TEST(NtSetInformationToken)
     SetTokenDefaultDaclTests(Token);
     SetTokenSessionIdTests(Token);
     SetTokenBadPointerTests(Token);
+    SetTokenMandatoryPolicyTests(Token);
 
     CloseHandle(Token);
 }

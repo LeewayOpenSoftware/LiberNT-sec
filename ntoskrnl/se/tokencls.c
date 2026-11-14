@@ -2496,6 +2496,13 @@ NtSetInformationToken(
                 }
                 _SEH2_END;
 
+                /* Windows sets the policy for TCB holders only */
+                if (!SeSinglePrivilegeCheck(SeTcbPrivilege, PreviousMode))
+                {
+                    Status = STATUS_PRIVILEGE_NOT_HELD;
+                    break;
+                }
+
                 if (Policy & ~TOKEN_MANDATORY_POLICY_VALID_MASK)
                 {
                     Status = STATUS_INVALID_PARAMETER;
