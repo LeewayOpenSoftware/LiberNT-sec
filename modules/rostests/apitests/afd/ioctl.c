@@ -774,11 +774,12 @@ TestConnectExWithData(void)
         Status = IoStatus.Status;
     }
     ok(Status == STATUS_SUCCESS, "super connect with data failed with %lx "
-       "(type %u len %u addr %lx port %x)\n", Status,
-       SuperConnect.RemoteAddress.Address[0].AddressType,
-       SuperConnect.RemoteAddress.Address[0].AddressLength,
-       ((PTDI_ADDRESS_IP)&SuperConnect.RemoteAddress.Address[0].Address)->in_addr,
-       ((PTDI_ADDRESS_IP)&SuperConnect.RemoteAddress.Address[0].Address)->sin_port);
+       "(tdisize %u inoff %u req %02x%02x%02x%02x sc %02x%02x)\n", Status,
+       (unsigned)sizeof(TDI_ADDRESS_IP),
+       (unsigned)FIELD_OFFSET(TDI_ADDRESS_IP, in_addr),
+       ((PUCHAR)Request)[14], ((PUCHAR)Request)[15],
+       ((PUCHAR)Request)[16], ((PUCHAR)Request)[17],
+       ((PUCHAR)&SuperConnect)[14], ((PUCHAR)&SuperConnect)[15]);
 
 Cleanup:
     if (Event) NtClose(Event);
