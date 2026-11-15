@@ -1231,9 +1231,10 @@ IsInteractiveLogonOfSession(
     return Match;
 }
 
-/* DOMAIN\user of the token, or its SID as text when the name is not known */
+/* DOMAIN\user of the token, or its SID as text when the name is not known or could not
+ * travel as one quoted argument; FALSE when neither can be read */
 static
-VOID
+BOOL
 GetTokenAccountName(
     _In_ HANDLE hToken,
     _Out_writes_(Chars) PWSTR Account,
@@ -1245,19 +1246,22 @@ GetTokenAccountName(
     DWORD Length, NameChars = _countof(Name), DomainChars = _countof(Domain);
     SID_NAME_USE Use;
     PWSTR SidText = NULL;
+    BOOL Named = FALSE;
 
     Account[0] = UNICODE_NULL;
     if (!GetTokenInformation(hToken, TokenUser, Buffer, sizeof(Buffer), &Length))
-        return;
-    if (LookupAccountSidW(NULL, User->User.Sid, Name, &NameChars, Domain, &DomainChars, &Use))
+        return FALSE;
+    if (LookupAccountSidW(NULL, User->User.Sid, Name, &NameChars, Domain, &DomainChars, &Use) &&
+        wcschr(Name, L'"') == NULL && wcschr(Domain, L'"') == NULL)
     {
-        StringCchPrintfW(Account, Chars, L"%ls\\%ls", Domain, Name);
+        Named = SUCCEEDED(StringCchPrintfW(Account, Chars, L"%ls\\%ls", Domain, Name));
     }
-    else if (ConvertSidToStringSidW(User->User.Sid, &SidText))
+    if (!Named && ConvertSidToStringSidW(User->User.Sid, &SidText))
     {
-        StringCchCopyW(Account, Chars, SidText);
+        Named = SUCCEEDED(StringCchCopyW(Account, Chars, SidText));
         LocalFree(SidText);
     }
+    return Named;
 }
 
 static
@@ -1386,8 +1390,9 @@ SeclCreateProcessElevatedW(
     {
         /* A station name resolves in the opener's session: a caller of another session must
          * be an interactive logon of that session and is started only on its default
-         * desktop, which its logon SID already admits it to */
-        dwError = ERROR_ACCESS_DENIED;
+         * desktop, which its logon SID already admits it to; anything else is left to the
+         * shell's credentials dialog */
+        dwError = ERROR_ELEVATION_REQUIRED;
         goto done;
     }
 
@@ -1420,7 +1425,11 @@ SeclCreateProcessElevatedW(
         {
             hwndOwner = pRequest->hwndOwner;
         }
-        GetTokenAccountName(hCallerToken, Account, _countof(Account));
+        if (!GetTokenAccountName(hCallerToken, Account, _countof(Account)))
+        {
+            dwError = ERROR_ACCESS_DENIED;
+            goto done;
+        }
         dwError = AskConsent(SessionId, Desktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
         if (dwError != ERROR_SUCCESS)
             goto done;
