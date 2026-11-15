@@ -92,6 +92,9 @@ RPN_STACK, *PRPN_STACK;
 #define RPN_OP_STACK_SIZE     256
 #define RPN_VALUE_STACK_SIZE  256
 
+/* The parser recurses for each subexpression on the stack of the thread that stopped */
+#define RPN_MAX_NESTING       32
+
 /* GLOBALS *******************************************************************/
 static struct
 {
@@ -847,8 +850,24 @@ get_operand:
         {
             if (p[0] == '(' || p[0] == '[') /* subexpression */
             {
-                if (!RpnpParseExpression(Stack, p + 1, &pend, CharacterOffset + 1,
-                                         ErrOffset, ErrMsg))
+                static ULONG Nesting = 0;
+                BOOLEAN Parsed;
+
+                if (Nesting >= RPN_MAX_NESTING)
+                {
+                    CONST_STRCPY(ErrMsg, "Expression nested too deeply");
+
+                    if (ErrOffset)
+                        *ErrOffset = CharacterOffset;
+
+                    return FALSE;
+                }
+
+                Nesting++;
+                Parsed = RpnpParseExpression(Stack, p + 1, &pend, CharacterOffset + 1,
+                                             ErrOffset, ErrMsg);
+                Nesting--;
+                if (!Parsed)
                 {
                     return FALSE;
                 }
