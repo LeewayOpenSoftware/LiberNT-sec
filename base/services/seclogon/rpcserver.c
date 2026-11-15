@@ -1301,7 +1301,7 @@ SeclCreateProcessElevatedW(
     LUID LogonId;
     DWORD SessionId = 0, CallerPid = 0, Policy, Length, dwError;
     DWORD_PTR hwndOwner = 0;
-    BOOL Allowed = FALSE;
+    BOOL Allowed = FALSE, SameSession = FALSE;
 
     TRACE("SeclCreateProcessElevatedW(%p %p %p)\n", hBinding, pRequest, pResponse);
 
@@ -1320,11 +1320,22 @@ SeclCreateProcessElevatedW(
     }
 
     Desktop = (pRequest->Desktop && pRequest->Desktop[0]) ? pRequest->Desktop : L"WinSta0\\Default";
-    EnterCriticalSection(&DesktopAccessLock);
-    dwError = CheckClientDesktopAccess(hBinding, Desktop);
-    LeaveCriticalSection(&DesktopAccessLock);
-    if (dwError != ERROR_SUCCESS)
+    SameSession = ProcessIdToSessionId(GetCurrentProcessId(), &Length) && Length == SessionId;
+    if (SameSession)
     {
+        EnterCriticalSection(&DesktopAccessLock);
+        dwError = CheckClientDesktopAccess(hBinding, Desktop);
+        LeaveCriticalSection(&DesktopAccessLock);
+        if (dwError != ERROR_SUCCESS)
+        {
+            dwError = ERROR_ACCESS_DENIED;
+            goto done;
+        }
+    }
+    else if (_wcsicmp(Desktop, L"WinSta0\\Default") != 0)
+    {
+        /* A station name resolves in the opener's session: a caller of another session is
+         * started only on its own default desktop, which its logon SID already admits it to */
         dwError = ERROR_ACCESS_DENIED;
         goto done;
     }
@@ -1373,7 +1384,7 @@ SeclCreateProcessElevatedW(
         goto done;
     }
 
-    if (pRequest->dwDesktopInherited)
+    if (pRequest->dwDesktopInherited && SameSession)
     {
         Grant = GrantDesktopAccess(hBinding, Linked.LinkedToken, Desktop, &dwError);
         dwError = ERROR_SUCCESS;
