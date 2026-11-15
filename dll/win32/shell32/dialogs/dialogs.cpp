@@ -568,6 +568,7 @@ static INT_PTR CALLBACK RunDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                     DWORD cchExpand;
                     SHELLEXECUTEINFOW sei = { sizeof(sei) };
                     NMRUNFILEDLGW nmrfd;
+                    HRESULT hr;
 
                     ic = GetWindowTextLengthW(htxt);
                     if (ic == 0)
@@ -665,8 +666,10 @@ static INT_PTR CALLBACK RunDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                             /* We use SECL_NO_UI because we don't want to see
                              * errors here, but we will try again below and
                              * there we will output our errors. */
-                            if (SUCCEEDED(ShellExecCmdLine(hwnd, pszExpanded, pszStartDir, SW_SHOWNORMAL, NULL,
-                                                           SECL_ALLOW_NONEXE | SECL_NO_UI)))
+                            hr = ShellExecCmdLine(hwnd, pszExpanded, pszStartDir, SW_SHOWNORMAL, NULL,
+                                                  SECL_ALLOW_NONEXE | SECL_NO_UI);
+                            /* An elevation the user declined is a finished attempt, not one to try another way */
+                            if (SUCCEEDED(hr) || hr == HRESULT_FROM_WIN32(ERROR_CANCELLED))
                             {
                                 /* Call GetWindowText again in case the contents of the edit box have changed. */
                                 GetWindowTextW(htxt, psz, ic + 1);
@@ -674,7 +677,8 @@ static INT_PTR CALLBACK RunDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                                 EndDialog(hwnd, IDOK);
                                 break;
                             }
-                            else if (ShellExecuteExW(&sei))
+                            /* A refusal the shell has already reported is not tried again either */
+                            else if (hr != HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED) && ShellExecuteExW(&sei))
                             {
                                 /* Call GetWindowText again in case the contents of the edit box have changed. */
                                 GetWindowTextW(htxt, psz, ic + 1);

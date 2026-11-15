@@ -73,8 +73,11 @@ static void fatal_error(const WCHAR *msg, DWORD error_code, const WCHAR *filenam
     LPVOID lpMsgBuf;
     int status;
 
-    output(msg);
-    output(L": ");
+    if (msg)
+    {
+        output(msg);
+        output(L": ");
+    }
     args[0] = (DWORD_PTR)filename;
     status = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ARGUMENT_ARRAY,
                             NULL, error_code, 0, (LPWSTR)&lpMsgBuf, 0, (va_list *)args );
@@ -644,6 +647,11 @@ shell:
             DWORD size, filename_len;
             WCHAR *name, *env;
             DWORD error = HandleToULong(opts.sei.hInstApp);
+            DWORD last = GetLastError();
+
+            /* A declined or refused elevation is the answer: no other extension is tried, the reason is printed */
+            if (last == ERROR_CANCELLED || last == ERROR_ELEVATION_REQUIRED)
+                fatal_error(NULL, last, filename);
 
             size = GetEnvironmentVariableW(L"PATHEXT", NULL, 0);
             if (size)
