@@ -936,11 +936,12 @@ NtCreateWnfStateName(PWNF_STATE_NAME StateName,
 
         /* Our SeAccessCheck consumes specific ACE masks: translate the
            caller's GENERIC_* masks once, at capture. */
-        if (NT_SUCCESS(RtlGetDaclSecurityDescriptor(CapturedSd,
+        if ((CapturedSd != NULL) &&
+            NT_SUCCESS(RtlGetDaclSecurityDescriptor(CapturedSd,
                                                     &DaclPresent,
                                                     &Dacl,
                                                     &DaclDefaulted)) &&
-            DaclPresent)
+            DaclPresent && (Dacl != NULL) && RtlValidAcl(Dacl))
         {
             ExpWnfMapAclGenericAccess(Dacl);
         }
@@ -1418,7 +1419,9 @@ NtSubscribeWnfStateChange(PCWNF_STATE_NAME StateName,
         else
         {
             ExpWnfUnlockExclusive(&Instance->SubscriptionListLock);
-            ExpWnfReapSubscription(Subscription);
+            /* The other thread owns the reap and the free; only drop
+               the call-local reference so its rundown wait completes. */
+            ExpWnfDereferenceSubscription(Subscription);
         }
     }
     else
