@@ -635,6 +635,143 @@ ExpWnfCheckAccess(PWNF_NAME_INSTANCE Instance,
     return Granted ? STATUS_SUCCESS : AccessStatus;
 }
 
+
+/* A caller-supplied descriptor may carry no owner or group; an
+   owner-less descriptor must never reach SeAccessCheck. Complete it
+   from the creator's token like SeAssignSecurity does, rebuilding an
+   absolute descriptor whose pieces we own. */
+static
+NTSTATUS
+ExpWnfCompleteCapturedSecurityDescriptor(PSECURITY_DESCRIPTOR *SdInOut)
+{
+    PSECURITY_DESCRIPTOR CapturedSd = *SdInOut;
+    PSECURITY_DESCRIPTOR NewSd = NULL;
+    PSID NewOwner = NULL, NewGroup = NULL, Owner, Group, Src;
+    PACL NewDacl = NULL, NewSacl = NULL, Dacl, Sacl;
+    BOOLEAN DaclPresent, SaclPresent, Defaulted;
+    HANDLE TokenHandle = NULL;
+    UCHAR Buffer[128];
+    ULONG ReturnLength;
+    NTSTATUS Status;
+
+    RtlGetOwnerSecurityDescriptor(CapturedSd, &Owner, &Defaulted);
+    RtlGetGroupSecurityDescriptor(CapturedSd, &Group, &Defaulted);
+    if ((Owner != NULL) && (Group != NULL))
+        return STATUS_SUCCESS;
+
+    /* Copy whichever of owner/group the caller did supply; the captured
+       block is released once the replacement is built. */
+    if (Owner != NULL)
+    {
+        NewOwner = ExAllocatePoolWithTag(PagedPool, RtlLengthSid(Owner), TAG_WNF_INSTANCE);
+        if (NewOwner == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        RtlCopySid(RtlLengthSid(Owner), NewOwner, Owner);
+    }
+    if (Group != NULL)
+    {
+        NewGroup = ExAllocatePoolWithTag(PagedPool, RtlLengthSid(Group), TAG_WNF_INSTANCE);
+        if (NewGroup == NULL)
+        {
+            ExFreePoolWithTag(NewOwner, TAG_WNF_INSTANCE);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        RtlCopySid(RtlLengthSid(Group), NewGroup, Group);
+    }
+
+    Status = ZwOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, &TokenHandle);
+    if (!NT_SUCCESS(Status))
+        goto Fail;
+
+    if (Owner == NULL)
+    {
+        Status = ZwQueryInformationToken(TokenHandle,
+                                         TokenOwner,
+                                         Buffer,
+                                         sizeof(Buffer),
+                                         &ReturnLength);
+        if (NT_SUCCESS(Status))
+        {
+            Src = ((PTOKEN_OWNER)Buffer)->Owner;
+            NewOwner = ExAllocatePoolWithTag(PagedPool,
+                                             RtlLengthSid(Src),
+                                             TAG_WNF_INSTANCE);
+            if (NewOwner == NULL)
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+            else
+                RtlCopySid(RtlLengthSid(Src), NewOwner, Src);
+        }
+    }
+    if (NT_SUCCESS(Status) && (Group == NULL))
+    {
+        Status = ZwQueryInformationToken(TokenHandle,
+                                         TokenPrimaryGroup,
+                                         Buffer,
+                                         sizeof(Buffer),
+                                         &ReturnLength);
+        if (NT_SUCCESS(Status))
+        {
+            Src = (PSID)((PTOKEN_PRIMARY_GROUP)Buffer)->PrimaryGroup;
+            NewGroup = ExAllocatePoolWithTag(PagedPool,
+                                             RtlLengthSid(Src),
+                                             TAG_WNF_INSTANCE);
+            if (NewGroup == NULL)
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+            else
+                RtlCopySid(RtlLengthSid(Src), NewGroup, Src);
+        }
+    }
+    ZwClose(TokenHandle);
+    if (!NT_SUCCESS(Status))
+        goto Fail;
+
+    RtlGetDaclSecurityDescriptor(CapturedSd, &DaclPresent, &Dacl, &Defaulted);
+    if (DaclPresent && (Dacl != NULL))
+    {
+        NewDacl = ExAllocatePoolWithTag(PagedPool, Dacl->AclSize, TAG_WNF_INSTANCE);
+        if (NewDacl == NULL)
+        {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Fail;
+        }
+        RtlCopyMemory(NewDacl, Dacl, Dacl->AclSize);
+    }
+    RtlGetSaclSecurityDescriptor(CapturedSd, &SaclPresent, &Sacl, &Defaulted);
+    if (SaclPresent && (Sacl != NULL))
+    {
+        NewSacl = ExAllocatePoolWithTag(PagedPool, Sacl->AclSize, TAG_WNF_INSTANCE);
+        if (NewSacl == NULL)
+        {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Fail;
+        }
+        RtlCopyMemory(NewSacl, Sacl, Sacl->AclSize);
+    }
+
+    NewSd = ExAllocatePoolWithTag(PagedPool, sizeof(SECURITY_DESCRIPTOR), TAG_WNF_INSTANCE);
+    if (NewSd == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Fail;
+    }
+    RtlCreateSecurityDescriptor(NewSd, SECURITY_DESCRIPTOR_REVISION);
+    RtlSetDaclSecurityDescriptor(NewSd, DaclPresent, NewDacl, FALSE);
+    RtlSetSaclSecurityDescriptor(NewSd, SaclPresent, NewSacl, FALSE);
+    RtlSetOwnerSecurityDescriptor(NewSd, NewOwner, FALSE);
+    RtlSetGroupSecurityDescriptor(NewSd, NewGroup, FALSE);
+
+    SeReleaseSecurityDescriptor(CapturedSd, KernelMode, TRUE);
+    *SdInOut = NewSd;
+    return STATUS_SUCCESS;
+
+Fail:
+    if (NewOwner != NULL) ExFreePoolWithTag(NewOwner, TAG_WNF_INSTANCE);
+    if (NewGroup != NULL) ExFreePoolWithTag(NewGroup, TAG_WNF_INSTANCE);
+    if (NewDacl != NULL) ExFreePoolWithTag(NewDacl, TAG_WNF_INSTANCE);
+    if (NewSacl != NULL) ExFreePoolWithTag(NewSacl, TAG_WNF_INSTANCE);
+    return Status;
+}
+
 static
 VOID
 ExpWnfMapAclGenericAccess(PACL Acl)
@@ -876,7 +1013,20 @@ ExpWnfFreeNameInstance(PWNF_NAME_INSTANCE Instance)
     if ((Instance->SecurityDescriptor != NULL) &&
         (Instance->SecurityDescriptor != ExpWnfDefaultSecurityDescriptor))
     {
-        SeReleaseSecurityDescriptor(Instance->SecurityDescriptor, KernelMode, TRUE);
+        if (((PISECURITY_DESCRIPTOR)Instance->SecurityDescriptor)->Control & SE_SELF_RELATIVE)
+        {
+            SeReleaseSecurityDescriptor(Instance->SecurityDescriptor, KernelMode, TRUE);
+        }
+        else
+        {
+            /* Completed at create: owner, group and ACLs are our copies. */
+            PISECURITY_DESCRIPTOR Sd = (PISECURITY_DESCRIPTOR)Instance->SecurityDescriptor;
+            if (Sd->Owner != NULL) ExFreePoolWithTag(Sd->Owner, TAG_WNF_INSTANCE);
+            if (Sd->Group != NULL) ExFreePoolWithTag(Sd->Group, TAG_WNF_INSTANCE);
+            if (Sd->Dacl != NULL) ExFreePoolWithTag(Sd->Dacl, TAG_WNF_INSTANCE);
+            if (Sd->Sacl != NULL) ExFreePoolWithTag(Sd->Sacl, TAG_WNF_INSTANCE);
+            ExFreePoolWithTag(Sd, TAG_WNF_INSTANCE);
+        }
     }
 
     ExFreePoolWithTag(Instance, TAG_WNF_INSTANCE);
@@ -1110,6 +1260,15 @@ NtCreateWnfStateName(PWNF_STATE_NAME StateName,
                                              &CapturedSd);
         if (!NT_SUCCESS(Status))
             return Status;
+
+        /* Never let an owner-less descriptor reach the access check. */
+        Status = ExpWnfCompleteCapturedSecurityDescriptor(&CapturedSd);
+        if (!NT_SUCCESS(Status))
+        {
+            if (CapturedSd != NULL)
+                SeReleaseSecurityDescriptor(CapturedSd, KernelMode, TRUE);
+            return Status;
+        }
 
         /* Our SeAccessCheck consumes specific ACE masks: translate the
            caller's GENERIC_* masks once, at capture. */

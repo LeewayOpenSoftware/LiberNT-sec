@@ -373,6 +373,20 @@ TestSecurityDescriptorEnforcement(VOID)
         Status = pNtDeleteWnfStateName(&StateName);
         ok(Status == STATUS_SUCCESS, "Delete name with caller allow ACE returned 0x%08lx\n", Status);
     }
+
+    /* An owner-less descriptor is completed from the creator's token and
+       must reach the access check without tripping the owner assert. */
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Buffer), BuildSecurityDescriptor());
+    ok(Status == STATUS_SUCCESS, "Create with an owner-less DACL returned 0x%08lx\n", Status);
+    if (NT_SUCCESS(Status))
+    {
+        Size = sizeof(Buffer);
+        Status = pNtQueryWnfStateData(&StateName, NULL, NULL, &Stamp, Buffer, &Size);
+        ok(Status == STATUS_SUCCESS, "Query with an owner-less DACL returned 0x%08lx\n", Status);
+        Status = pNtDeleteWnfStateName(&StateName);
+        ok(Status == STATUS_SUCCESS, "Delete with an owner-less DACL returned 0x%08lx\n", Status);
+    }
 }
 
 static VOID
