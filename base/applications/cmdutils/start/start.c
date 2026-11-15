@@ -611,7 +611,11 @@ int __cdecl wmain (int argc, WCHAR *argv[])
                                          opts.creation_flags, NULL, opts.sei.lpDirectory,
                                          &si.StartupInfo, &process_information ))
                     {
-			fatal_string_error(STRING_EXECFAIL, GetLastError(), opts.sei.lpFile);
+                        /* A program that asks for administrator rights is started by the shell, which asks the user */
+                        if (GetLastError() != ERROR_ELEVATION_REQUIRED)
+                            fatal_string_error(STRING_EXECFAIL, GetLastError(), opts.sei.lpFile);
+                        free(commandline);
+                        goto shell;
                     }
                     if (opts.has_affinity)
                     {
@@ -633,6 +637,7 @@ int __cdecl wmain (int argc, WCHAR *argv[])
                     goto done;
         }
 
+shell:
         if (!ShellExecuteExW(&opts.sei))
         {
             const WCHAR *filename = opts.sei.lpFile;
