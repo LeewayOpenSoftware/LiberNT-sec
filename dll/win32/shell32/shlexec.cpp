@@ -633,6 +633,7 @@ PromptAndRunProcessAs(
     RUNASDLGDATA data;
     UINT error;
     INT_PTR dlgret;
+    HRESULT hr;
     hwnd = SHELL_GetUsableDialogOwner(hwnd);
 
     // A limited administrator asks the elevation broker, which prompts for consent and starts
@@ -689,8 +690,10 @@ again:
             case ERROR_INVALID_LOGON_HOURS:
             case ERROR_PASSWORD_EXPIRED:
                 SHELL_ErrorBox(hwnd, error);
+                SecureZeroMemory(data.Password, sizeof(data.Password));
                 goto again;
         }
+        hr = HRESULT_FROM_WIN32(error);
     }
     else if (dlgret == IDOK)
     {
@@ -699,21 +702,27 @@ again:
             error = ERROR_SUCCESS;
         else
             error = GetLastError();
+        hr = HRESULT_FROM_WIN32(error);
     }
     else if (dlgret == IDCANCEL)
     {
         SetLastError(ERROR_CANCELLED);
         pPI->hProcess = NULL;
-        return S_FALSE;
+        hr = S_FALSE;
     }
     else
     {
-        ERR("The credentials dialog could not be shown (%d), Error %lu\n", (int)dlgret, GetLastError());
+        error = GetLastError();
+        if (error == ERROR_SUCCESS)
+            error = ERROR_GEN_FAILURE;
+        ERR("The credentials dialog could not be shown (%d), Error %lu\n", (int)dlgret, error);
+        SHELL_ErrorBox(hwnd, error);
+        SetLastError(error);
         pPI->hProcess = NULL;
-        return E_FAIL;
+        hr = E_FAIL;
     }
     SecureZeroMemory(&data, sizeof(data));
-    return HRESULT_FROM_WIN32(error);
+    return hr;
 }
 
 /*************************************************************************

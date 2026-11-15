@@ -13,6 +13,8 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(seclogon);
 
+static BOOL IsUserElevationDenied(VOID);
+
 /* GLOBALS *******************************************************************/
 
 CRITICAL_SECTION DesktopAccessLock;
@@ -718,9 +720,10 @@ SeclCreateProcessWithLogonW(
         goto done;
     }
 
-    /* The shell's elevation path: a logon that was split runs with its full token */
+    /* The shell's elevation path: a logon that was split runs with its full token,
+     * unless the policy refuses standard users an elevation (then nobody gets it this way) */
     if ((pRequest->dwLogonFlags & SECL_LOGON_ELEVATE) && pRequest->hToken == 0 &&
-        !(pRequest->dwLogonFlags & LOGON_NETCREDENTIALS_ONLY))
+        !(pRequest->dwLogonFlags & LOGON_NETCREDENTIALS_ONLY) && !IsUserElevationDenied())
     {
         TOKEN_LINKED_TOKEN Linked = { NULL };
         DWORD Type = 0, LinkedLength;
@@ -944,6 +947,14 @@ ReadPolicyDword(
     }
     RegCloseKey(hKey);
     return Value;
+}
+
+/* ConsentPromptBehaviorUser 0: a standard user gets no elevation at all */
+static
+BOOL
+IsUserElevationDenied(VOID)
+{
+    return ReadPolicyDword(L"EnableLUA", 0) != 0 && ReadPolicyDword(L"ConsentPromptBehaviorUser", 3) == 0;
 }
 
 static
