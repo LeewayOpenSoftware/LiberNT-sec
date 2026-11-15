@@ -146,6 +146,8 @@ QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoC
 #define WNF_RACE_SUBSCRIBERS    2
 #define WNF_RACE_ITERATIONS     1000
 #define WNF_FAULT_ITERATIONS    400
+#define WNF_TEMPORARY_CHILD_COUNT 8
+#define WNF_CHILD_FLAG          L"--wnf-child"
 
 typedef struct _WNF_FAULT_CONTEXT
 {
@@ -373,6 +375,123 @@ TestSecurityDescriptorEnforcement(VOID)
     }
 }
 
+static VOID
+TestTemporaryNamesDieWithProcess(VOID)
+{
+    WCHAR CommandLine[MAX_PATH + 32];
+    STARTUPINFOW StartupInfo;
+    PROCESS_INFORMATION ProcessInformation;
+    SECURITY_ATTRIBUTES SecurityAttributes;
+    HANDLE ReadPipe, WritePipe;
+    UCHAR Buffer[512];
+    DWORD Total, Code;
+    ULONG Line, Count, Value;
+    NTSTATUS Status;
+
+    if (!GetModuleFileNameW(NULL, CommandLine, MAX_PATH))
+    {
+        skip("GetModuleFileNameW failed with %lu\n", GetLastError());
+        return;
+    }
+    wcscat(CommandLine, L" --wnf-child");
+
+    SecurityAttributes.nLength = sizeof(SecurityAttributes);
+    SecurityAttributes.lpSecurityDescriptor = NULL;
+    SecurityAttributes.bInheritHandle = TRUE;
+    if (!CreatePipe(&ReadPipe, &WritePipe, &SecurityAttributes, 0))
+    {
+        skip("CreatePipe failed with %lu\n", GetLastError());
+        return;
+    }
+
+    ZeroMemory(&StartupInfo, sizeof(StartupInfo));
+    StartupInfo.cb = sizeof(StartupInfo);
+    StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    StartupInfo.hStdOutput = WritePipe;
+    StartupInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    StartupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    if (!CreateProcessW(NULL, CommandLine, NULL, NULL, TRUE, 0, NULL, NULL,
+                        &StartupInfo, &ProcessInformation))
+    {
+        skip("CreateProcessW failed with %lu\n", GetLastError());
+        CloseHandle(ReadPipe);
+        CloseHandle(WritePipe);
+        return;
+    }
+    CloseHandle(WritePipe);
+
+    Total = 0;
+    for (;;)
+    {
+        DWORD Read;
+        if (!ReadFile(ReadPipe, Buffer + Total, sizeof(Buffer) - Total, &Read, NULL) || Read == 0)
+            break;
+        Total += Read;
+        if (Total >= sizeof(Buffer))
+            break;
+    }
+    CloseHandle(ReadPipe);
+    ok(WaitForSingleObject(ProcessInformation.hProcess, 30000) == WAIT_OBJECT_0,
+       "Child did not exit\n");
+    ok(GetExitCodeProcess(ProcessInformation.hProcess, &Code) && (Code == 0),
+       "Child exit code %lu\n", Code);
+    CloseHandle(ProcessInformation.hProcess);
+    CloseHandle(ProcessInformation.hThread);
+
+    /* Each line the child printed is one temporary name it created; all of
+       them must be gone now that its creator exited. */
+    Count = 0;
+    Line = 0;
+    while (Line < Total)
+    {
+        TEST_WNF_STATE_NAME StateName;
+        ULONG High, Low;
+        int End;
+
+        if (sscanf((PSTR)Buffer + Line, "%8lx%8lx%n", &High, &Low, &End) != 2)
+            break;
+        StateName.Data[0] = Low;
+        StateName.Data[1] = High;
+
+        Value = QueryNameInformation(&StateName, WNF_INFO_STATE_NAME_EXIST, &Status);
+        ok(Status == STATUS_SUCCESS && Value == 0,
+           "Temporary name %08lx%08lx still exists after creator exit: 0x%08lx, %lu\n",
+           High, Low, Status, Value);
+        Count++;
+
+        while ((Line < Total) && (((PSTR)Buffer)[Line] != '\n'))
+            Line++;
+        Line++;
+    }
+    ok(Count == WNF_TEMPORARY_CHILD_COUNT,
+       "Expected %u temporary names from the child, got %lu\n",
+       WNF_TEMPORARY_CHILD_COUNT, Count);
+}
+
+static VOID
+WnfTemporaryChildMain(VOID)
+{
+    ULONG Index;
+
+    for (Index = 0; Index < WNF_TEMPORARY_CHILD_COUNT; Index++)
+    {
+        TEST_WNF_STATE_NAME StateName = {{0, 0}};
+        NTSTATUS Status;
+
+        Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE,
+                                       FALSE, NULL, 0, BuildSecurityDescriptor());
+        if (!NT_SUCCESS(Status))
+        {
+            printf("child create failed 0x%08lx\n", Status);
+            ExitProcess(1);
+        }
+        printf("%08lx%08lx\n", StateName.Data[1], StateName.Data[0]);
+    }
+    fflush(stdout);
+    ExitProcess(0);
+}
+
 static DWORD WINAPI
 WriterThread(_In_ PVOID Parameter)
 {
@@ -448,6 +567,12 @@ START_TEST(NtWnfState)
         return;
     }
 
+    if (wcsstr(GetCommandLineW(), WNF_CHILD_FLAG))
+    {
+        WnfTemporaryChildMain();
+        return;
+    }
+
     Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
                                    sizeof(Buffer), BuildSecurityDescriptor());
     ok(Status == STATUS_SUCCESS, "NtCreateWnfStateName returned 0x%08lx\n", Status);
@@ -505,4 +630,5 @@ START_TEST(NtWnfState)
     TestSecurityDescriptorEnforcement();
     TestSubscribeUnsubscribeRace();
     TestSubscribeIdWriteFault();
+    TestTemporaryNamesDieWithProcess();
 }

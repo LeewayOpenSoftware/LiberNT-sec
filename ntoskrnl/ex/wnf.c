@@ -325,7 +325,7 @@ ExpWnfAllocateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
 {
     PWNF_NAME_INSTANCE Instance;
 
-    Instance = ExAllocatePoolWithTag(PagedPool, sizeof(*Instance), TAG_WNF_INSTANCE);
+    Instance = ExAllocatePoolWithQuotaTag(PagedPool, sizeof(*Instance), TAG_WNF_INSTANCE);
     if (Instance == NULL)
         return NULL;
 
@@ -411,6 +411,52 @@ ExpWnfReferenceOrCreateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
 
     *OutInstance = Instance;
     return STATUS_SUCCESS;
+}
+
+static
+VOID
+ExpWnfDestroyNameInstance(PWNF_NAME_INSTANCE Instance);
+
+VOID
+NTAPI
+ExpWnfCleanupProcess(IN PEPROCESS Process)
+{
+    ULONG Index;
+    PWNF_NAME_BUCKET Bucket;
+    PLIST_ENTRY Entry, NextEntry;
+    PWNF_NAME_INSTANCE Instance;
+    LIST_ENTRY DeadList;
+
+    PAGED_CODE();
+
+    InitializeListHead(&DeadList);
+
+    for (Index = 0; Index < WNF_NAME_BUCKET_COUNT; Index++)
+    {
+        Bucket = &ExpWnfNameBuckets[Index];
+        ExpWnfLockBucketExclusive(Bucket);
+        Entry = Bucket->ListHead.Flink;
+        while (Entry != &Bucket->ListHead)
+        {
+            NextEntry = Entry->Flink;
+            Instance = CONTAINING_RECORD(Entry, WNF_NAME_INSTANCE, NameListEntry);
+            if ((Instance->Lifetime == WnfTemporaryStateName) &&
+                (Instance->CreatorProcess == Process))
+            {
+                RemoveEntryList(&Instance->NameListEntry);
+                InsertTailList(&DeadList, &Instance->NameListEntry);
+            }
+            Entry = NextEntry;
+        }
+        ExpWnfUnlockBucketExclusive(Bucket);
+    }
+
+    while (!IsListEmpty(&DeadList))
+    {
+        Entry = RemoveHeadList(&DeadList);
+        Instance = CONTAINING_RECORD(Entry, WNF_NAME_INSTANCE, NameListEntry);
+        ExpWnfDestroyNameInstance(Instance);
+    }
 }
 
 static
@@ -1061,7 +1107,7 @@ NtUpdateWnfStateData(PCWNF_STATE_NAME StateName,
 
     if (Length != 0)
     {
-        NewData = ExAllocatePoolWithTag(PagedPool, Length, TAG_WNF_DATA);
+        NewData = ExAllocatePoolWithQuotaTag(PagedPool, Length, TAG_WNF_DATA);
         if (NewData == NULL)
             return STATUS_INSUFFICIENT_RESOURCES;
 

@@ -398,6 +398,9 @@ PspDeleteProcess(IN PVOID ObjectBody)
     /* Cleanup security information */
     PspDeleteProcessSecurity(Process);
 
+    /* Free any temporary WNF state names the process created */
+    ExpWnfCleanupProcess(Process);
+
     /* Check if we have kept information on the Working Set */
     if (Process->WorkingSetWatch)
     {
