@@ -3395,6 +3395,35 @@ BasepIsTokenElevated(
     return Elevation.TokenIsElevated != 0;
 }
 
+/* A token of the limited type has a full token to ask for */
+static
+BOOLEAN
+BasepIsTokenLimited(
+    _In_opt_ HANDLE hUserToken)
+{
+    TOKEN_ELEVATION_TYPE Type;
+    HANDLE TokenHandle = hUserToken;
+    ULONG Length;
+    NTSTATUS Status;
+
+    if (!TokenHandle)
+    {
+        Status = NtOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, &TokenHandle);
+        if (!NT_SUCCESS(Status))
+            return FALSE;
+    }
+
+    Status = NtQueryInformationToken(TokenHandle,
+                                     TokenElevationType,
+                                     &Type,
+                                     sizeof(Type),
+                                     &Length);
+    if (TokenHandle != hUserToken)
+        NtClose(TokenHandle);
+
+    return NT_SUCCESS(Status) && Type == TokenElevationTypeLimited;
+}
+
 static
 BOOLEAN
 BasepImageRequiresElevation(
@@ -3437,8 +3466,13 @@ BasepImageRequiresElevation(
     ReleaseActCtx(ActCtxHandle);
     SetLastError(LastError);
 
-    if (!Queried || RunLevel.RunLevel != ACTCTX_RUN_LEVEL_REQUIRE_ADMIN)
+    /* highestAvailable asks only when there is a higher level to be had */
+    if (!Queried ||
+        (RunLevel.RunLevel != ACTCTX_RUN_LEVEL_REQUIRE_ADMIN &&
+         (RunLevel.RunLevel != ACTCTX_RUN_LEVEL_HIGHEST_AVAILABLE || !BasepIsTokenLimited(hUserToken))))
+    {
         return FALSE;
+    }
 
     return !BasepEnvironmentHasRunAsInvoker(lpEnvironment, dwCreationFlags);
 }
