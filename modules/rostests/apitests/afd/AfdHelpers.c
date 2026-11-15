@@ -506,11 +506,12 @@ AfdGetSockName(
     NTSTATUS Status;
     IO_STATUS_BLOCK IoStatus;
     HANDLE Event;
-    /* the driver answers with a TRANSPORT_ADDRESS, like the one msafd
-     * gives it room for, not with a sockaddr */
-    UCHAR TdiBuffer[FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
+    /* the driver answers TDI_QUERY_ADDRESS_INFO: an ActivityCount followed
+     * by a TRANSPORT_ADDRESS, not a sockaddr */
+    UCHAR TdiBuffer[FIELD_OFFSET(TDI_ADDRESS_INFO, Address) +
+                    FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
                     FIELD_OFFSET(TA_ADDRESS, Address) + 32];
-    PTRANSPORT_ADDRESS TdiAddress = (PTRANSPORT_ADDRESS)TdiBuffer;
+    PTRANSPORT_ADDRESS TdiAddress = (PTRANSPORT_ADDRESS)&((PTDI_ADDRESS_INFO)TdiBuffer)->Address;
 
     Status = NtCreateEvent(&Event,
                            EVENT_ALL_ACCESS,
@@ -531,7 +532,7 @@ AfdGetSockName(
                                    IOCTL_AFD_GET_SOCK_NAME,
                                    NULL,
                                    0,
-                                   TdiAddress,
+                                   TdiBuffer,
                                    sizeof(TdiBuffer));
     if (Status == STATUS_PENDING)
     {
