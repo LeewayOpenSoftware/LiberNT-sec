@@ -374,6 +374,7 @@ ExpWnfInsertNameInstance(PWNF_NAME_INSTANCE Instance)
 static
 NTSTATUS
 ExpWnfReferenceOrCreateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
+                                    KPROCESSOR_MODE AccessMode,
                                     PWNF_NAME_INSTANCE *OutInstance)
 {
     PWNF_NAME_INSTANCE Instance;
@@ -386,8 +387,13 @@ ExpWnfReferenceOrCreateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
         return STATUS_SUCCESS;
     }
 
-    /* Well-known names spring into existence on first use */
+    /* Well-known names would spring into existence on first use. Restrict
+       that to kernel callers: with no well-known table to validate against,
+       user-mode auto-creation of arbitrary name values is unbounded,
+       never-freed paged pool (S1). */
     if (InternalName->NameLifetime != WnfWellKnownStateName)
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    if (AccessMode != KernelMode)
         return STATUS_OBJECT_NAME_NOT_FOUND;
 
     Created = ExpWnfAllocateNameInstance(InternalName,
@@ -1073,7 +1079,9 @@ NtUpdateWnfStateData(PCWNF_STATE_NAME StateName,
         _SEH2_END;
     }
 
-    Status = ExpWnfReferenceOrCreateNameInstance(&InternalName, &Instance);
+    Status = ExpWnfReferenceOrCreateNameInstance(&InternalName,
+                                                   PreviousMode,
+                                                   &Instance);
     if (NT_SUCCESS(Status))
     {
         Status = ExpWnfCheckAccess(Instance, WNF_UPDATE_ACCESS, PreviousMode);
@@ -1371,7 +1379,9 @@ NtSubscribeWnfStateChange(PCWNF_STATE_NAME StateName,
     Subscription->Process = PsGetCurrentProcess();
     Subscription->Thread = PsGetCurrentThread();
 
-    Status = ExpWnfReferenceOrCreateNameInstance(&InternalName, &Instance);
+    Status = ExpWnfReferenceOrCreateNameInstance(&InternalName,
+                                                   PreviousMode,
+                                                   &Instance);
     if (!NT_SUCCESS(Status))
     {
         ExFreePoolWithTag(Subscription, TAG_WNF_SUB);
@@ -1570,7 +1580,9 @@ ExSubscribeWnfStateChange(PVOID *SubscriptionHandle,
     if (Subscription == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
 
-    Status = ExpWnfReferenceOrCreateNameInstance(&InternalName, &Instance);
+    Status = ExpWnfReferenceOrCreateNameInstance(&InternalName,
+                                                   KernelMode,
+                                                   &Instance);
     if (!NT_SUCCESS(Status))
     {
         ExFreePoolWithTag(Subscription, TAG_WNF_SUB);

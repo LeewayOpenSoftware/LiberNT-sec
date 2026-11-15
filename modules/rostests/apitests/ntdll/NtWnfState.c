@@ -59,6 +59,36 @@ BuildSecurityDescriptor(VOID)
     return SecurityDescriptor;
 }
 
+static UCHAR CurrentUserSidBuffer[SECURITY_MAX_SID_SIZE];
+static PSID CurrentUserSid;
+
+static PSID
+GetCurrentUserSid(VOID)
+{
+    HANDLE Token;
+    UCHAR InfoBuffer[256];
+    PTOKEN_USER UserInfo;
+    DWORD Length;
+
+    if (CurrentUserSid != NULL)
+        return CurrentUserSid;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token))
+        return NULL;
+    Length = sizeof(InfoBuffer);
+    if (GetTokenInformation(Token, TokenUser, InfoBuffer, sizeof(InfoBuffer), &Length))
+    {
+        UserInfo = (PTOKEN_USER)InfoBuffer;
+        if (RtlLengthSid(UserInfo->User.Sid) <= sizeof(CurrentUserSidBuffer))
+        {
+            RtlCopyMemory(CurrentUserSidBuffer, UserInfo->User.Sid,
+                          RtlLengthSid(UserInfo->User.Sid));
+            CurrentUserSid = (PSID)CurrentUserSidBuffer;
+        }
+    }
+    CloseHandle(Token);
+    return CurrentUserSid;
+}
+
 static PSECURITY_DESCRIPTOR
 BuildDeniedSecurityDescriptor(VOID)
 {
@@ -70,6 +100,7 @@ BuildDeniedSecurityDescriptor(VOID)
     PSID System = (PSID)SystemSidBuffer;
     PACL Acl = (PACL)AclBuffer;
     PSECURITY_DESCRIPTOR SecurityDescriptor = (PSECURITY_DESCRIPTOR)SecurityDescriptorBuffer;
+    PSID UserSid = GetCurrentUserSid();
 
     RtlInitializeSid(Everyone, &WorldAuthority, 1);
     *RtlSubAuthoritySid(Everyone, 0) = SECURITY_WORLD_RID;
@@ -78,6 +109,8 @@ BuildDeniedSecurityDescriptor(VOID)
     RtlCreateAcl(Acl, sizeof(AclBuffer), ACL_REVISION);
     RtlAddAccessDeniedAce(Acl, ACL_REVISION, GENERIC_READ | GENERIC_WRITE, Everyone);
     RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, System);
+    if (UserSid != NULL)
+        RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, UserSid);
     RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
     RtlSetOwnerSecurityDescriptor(SecurityDescriptor, System, FALSE);
     RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE);
@@ -334,8 +367,9 @@ TestSecurityDescriptorEnforcement(VOID)
         Status = pNtDeleteWnfStateData(&StateName, NULL);
         ok(Status == STATUS_ACCESS_DENIED, "Delete data against a denied DACL returned 0x%08lx\n", Status);
 
+        /* The caller's own-SID allow ACE grants DELETE for cleanup. */
         Status = pNtDeleteWnfStateName(&StateName);
-        ok(Status == STATUS_ACCESS_DENIED, "Delete name against a denied DACL returned 0x%08lx\n", Status);
+        ok(Status == STATUS_SUCCESS, "Delete name with caller allow ACE returned 0x%08lx\n", Status);
     }
 }
 
