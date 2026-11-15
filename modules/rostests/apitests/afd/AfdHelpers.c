@@ -506,6 +506,11 @@ AfdGetSockName(
     NTSTATUS Status;
     IO_STATUS_BLOCK IoStatus;
     HANDLE Event;
+    /* the driver answers with a TRANSPORT_ADDRESS, like the one msafd
+     * gives it room for, not with a sockaddr */
+    UCHAR TdiBuffer[FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
+                    FIELD_OFFSET(TA_ADDRESS, Address) + 32];
+    PTRANSPORT_ADDRESS TdiAddress = (PTRANSPORT_ADDRESS)TdiBuffer;
 
     Status = NtCreateEvent(&Event,
                            EVENT_ALL_ACCESS,
@@ -517,6 +522,7 @@ AfdGetSockName(
         return Status;
     }
 
+    RtlZeroMemory(TdiBuffer, sizeof(TdiBuffer));
     Status = NtDeviceIoControlFile(SocketHandle,
                                    Event,
                                    NULL,
@@ -525,12 +531,28 @@ AfdGetSockName(
                                    IOCTL_AFD_GET_SOCK_NAME,
                                    NULL,
                                    0,
-                                   Address,
-                                   *AddressLength);
+                                   TdiAddress,
+                                   sizeof(TdiBuffer));
     if (Status == STATUS_PENDING)
     {
         NtWaitForSingleObject(Event, FALSE, NULL);
         Status = IoStatus.Status;
+    }
+
+    if (NT_SUCCESS(Status))
+    {
+        if (*AddressLength < (INT)(FIELD_OFFSET(struct sockaddr, sa_data) +
+                                   TdiAddress->Address[0].AddressLength))
+        {
+            NtClose(Event);
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        Address->sa_family = (ADDRESS_FAMILY)TdiAddress->Address[0].AddressType;
+        RtlCopyMemory(Address->sa_data,
+                      TdiAddress->Address[0].Address,
+                      TdiAddress->Address[0].AddressLength);
+        *AddressLength = (INT)(FIELD_OFFSET(struct sockaddr, sa_data) +
+                               TdiAddress->Address[0].AddressLength);
     }
 
     NtClose(Event);
