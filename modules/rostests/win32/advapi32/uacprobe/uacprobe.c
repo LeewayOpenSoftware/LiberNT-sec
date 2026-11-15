@@ -7,7 +7,7 @@
  * Run it as the limited side of a split administrator logon, with EnableLUA=1 and a
  * consent mode of ConsentPromptBehaviorAdmin. It needs no administrator rights.
  *
- *   uacprobe n     the broker refuses a desktop other than the caller's default one
+ *   uacprobe n     the broker refuses a desktop other than the caller's default one (error 740 or 5)
  *   uacprobe p     messages, input, hooks and window calls do not reach the prompt
  *   uacprobe       both
  *
@@ -236,8 +236,10 @@ static void ProbeDesktop(PCWSTR Desktop, const char *Name)
 
     if (WaitForSingleObject(Thread, 5000) == WAIT_OBJECT_0)
     {
-        Report(Call.Error == ERROR_ACCESS_DENIED && Call.Response.dwProcessId == 0,
-               "N %s: broker answered %lu without a prompt (expected 5), process id %lu",
+        /* 740 sends the shell to its credentials dialog; 5 was the answer of earlier builds */
+        Report((Call.Error == ERROR_ELEVATION_REQUIRED || Call.Error == ERROR_ACCESS_DENIED) &&
+               Call.Response.dwProcessId == 0,
+               "N %s: broker answered %lu without a prompt (expected 740 or 5), process id %lu",
                Name, Call.Error, Call.Response.dwProcessId);
     }
     else
