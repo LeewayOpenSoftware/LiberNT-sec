@@ -378,7 +378,7 @@ TestSecurityDescriptorEnforcement(VOID)
 static VOID
 TestTemporaryNamesDieWithProcess(VOID)
 {
-    WCHAR CommandLine[MAX_PATH + 32];
+    WCHAR CommandLine[MAX_PATH + 96];
     STARTUPINFOW StartupInfo;
     PROCESS_INFORMATION ProcessInformation;
     SECURITY_ATTRIBUTES SecurityAttributes;
@@ -387,13 +387,24 @@ TestTemporaryNamesDieWithProcess(VOID)
     DWORD Total, Code;
     ULONG Line, Count, Value;
     NTSTATUS Status;
+    TEST_WNF_STATE_NAME ParentName = {{0, 0}};
+
+    Status = pNtCreateWnfStateName(&ParentName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE,
+                                   FALSE, NULL, 0, BuildSecurityDescriptor());
+    ok(Status == STATUS_SUCCESS, "Parent NtCreateWnfStateName returned 0x%08lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
 
     if (!GetModuleFileNameW(NULL, CommandLine, MAX_PATH))
     {
         skip("GetModuleFileNameW failed with %lu\n", GetLastError());
+        pNtDeleteWnfStateName(&ParentName);
         return;
     }
-    wcscat(CommandLine, L" --wnf-child");
+    swprintf(CommandLine + wcslen(CommandLine),
+             ARRAYSIZE(CommandLine) - wcslen(CommandLine),
+             L" --wnf-child --wnf-sub:%08lx%08lx",
+             ParentName.Data[1], ParentName.Data[0]);
 
     SecurityAttributes.nLength = sizeof(SecurityAttributes);
     SecurityAttributes.lpSecurityDescriptor = NULL;
@@ -467,12 +478,51 @@ TestTemporaryNamesDieWithProcess(VOID)
     ok(Count == WNF_TEMPORARY_CHILD_COUNT,
        "Expected %u temporary names from the child, got %lu\n",
        WNF_TEMPORARY_CHILD_COUNT, Count);
+
+    /* The parent's own name must still exist - but the child's
+       subscriptions to it must have been reaped at child exit. */
+    Value = QueryNameInformation(&ParentName, WNF_INFO_STATE_NAME_EXIST, &Status);
+    ok(Status == STATUS_SUCCESS && Value == 1,
+       "Parent name missing after child exit: 0x%08lx, %lu\n", Status, Value);
+    Value = QueryNameInformation(&ParentName, WNF_INFO_SUBSCRIBERS, &Status);
+    ok(Status == STATUS_SUCCESS && Value == 0,
+       "Child subscriptions survived exit: 0x%08lx, %lu\n", Status, Value);
+
+    Status = pNtDeleteWnfStateName(&ParentName);
+    ok(Status == STATUS_SUCCESS, "Parent delete returned 0x%08lx\n", Status);
 }
 
 static VOID
 WnfTemporaryChildMain(VOID)
 {
+    PWCHAR SubArg;
     ULONG Index;
+
+    /* When the parent passes a name, subscribe to it several times first;
+       those subscriptions must not survive this process. */
+    SubArg = wcsstr(GetCommandLineW(), L"--wnf-sub:");
+    if (SubArg != NULL)
+    {
+        TEST_WNF_STATE_NAME StateName;
+        ULONG High, Low;
+
+        if (swscanf(SubArg + 10, L"%8lx%8lx", &High, &Low) == 2)
+        {
+            StateName.Data[0] = Low;
+            StateName.Data[1] = High;
+            for (Index = 0; Index < WNF_TEMPORARY_CHILD_COUNT * 2; Index++)
+            {
+                NTSTATUS Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, NULL);
+                if (!NT_SUCCESS(Status) &&
+                    (Status != STATUS_ACCESS_DENIED) &&
+                    (Status != STATUS_OBJECT_NAME_NOT_FOUND))
+                {
+                    printf("child subscribe failed 0x%08lx\n", Status);
+                    ExitProcess(1);
+                }
+            }
+        }
+    }
 
     for (Index = 0; Index < WNF_TEMPORARY_CHILD_COUNT; Index++)
     {

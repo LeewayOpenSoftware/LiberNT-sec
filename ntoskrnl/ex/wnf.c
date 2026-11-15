@@ -30,9 +30,12 @@ static LONG64 ExpWnfNextSubscriptionId;
 static BOOLEAN ExpWnfInitialized;
 static PSECURITY_DESCRIPTOR ExpWnfDefaultSecurityDescriptor;
 
+extern PEPROCESS PsInitialSystemProcess;
+
 #define WNF_QUERY_ACCESS  0x0001
 #define WNF_UPDATE_ACCESS 0x0002
 #define WNF_MAX_TEMPORARY_NAMES_PER_PROCESS 1024
+#define WNF_MAX_SUBSCRIPTIONS_PER_PROCESS   1024
 
 static GENERIC_MAPPING ExpWnfGenericMapping =
 {
@@ -325,6 +328,44 @@ ExpWnfCountProcessTemporaryNames(PEPROCESS Process)
 }
 
 static
+ULONG
+ExpWnfCountProcessSubscriptions(PEPROCESS Process)
+{
+    ULONG Index, Count;
+    PWNF_NAME_BUCKET Bucket;
+    PLIST_ENTRY Entry, SubEntry;
+    PWNF_NAME_INSTANCE Instance;
+    PWNF_SUBSCRIPTION Subscription;
+
+    Count = 0;
+    for (Index = 0; Index < WNF_NAME_BUCKET_COUNT; Index++)
+    {
+        Bucket = &ExpWnfNameBuckets[Index];
+        ExpWnfLockBucketShared(Bucket);
+        for (Entry = Bucket->ListHead.Flink;
+             Entry != &Bucket->ListHead;
+             Entry = Entry->Flink)
+        {
+            Instance = CONTAINING_RECORD(Entry, WNF_NAME_INSTANCE, NameListEntry);
+            ExpWnfLockShared(&Instance->SubscriptionListLock);
+            for (SubEntry = Instance->SubscriptionListHead.Flink;
+                 SubEntry != &Instance->SubscriptionListHead;
+                 SubEntry = SubEntry->Flink)
+            {
+                Subscription = CONTAINING_RECORD(SubEntry,
+                                                 WNF_SUBSCRIPTION,
+                                                 SubscriptionListEntry);
+                if (Subscription->Process == Process)
+                    Count++;
+            }
+            ExpWnfUnlockShared(&Instance->SubscriptionListLock);
+        }
+        ExpWnfUnlockBucketShared(Bucket);
+    }
+    return Count;
+}
+
+static
 PWNF_NAME_INSTANCE
 ExpWnfReferenceNameInstance(ULONG64 InternalName)
 {
@@ -386,7 +427,7 @@ ExpWnfAllocateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
     Instance->MaximumStateSize = MaximumStateSize ? MaximumStateSize
                                                   : WNF_MAX_STATE_SIZE;
     Instance->SecurityDescriptor = CapturedSd;
-    Instance->CreatorProcess = PsGetCurrentProcess();
+    Instance->CreatorProcess = ChargeQuota ? PsGetCurrentProcess() : PsInitialSystemProcess;
     InitializeListHead(&Instance->SubscriptionListHead);
     return Instance;
 }
@@ -459,6 +500,15 @@ static
 VOID
 ExpWnfDestroyNameInstance(PWNF_NAME_INSTANCE Instance);
 
+static
+VOID
+ExpWnfDetachSubscription(PWNF_SUBSCRIPTION Subscription,
+                         PLIST_ENTRY ReapList);
+
+static
+VOID
+ExpWnfReapSubscription(PWNF_SUBSCRIPTION Subscription);
+
 VOID
 NTAPI
 ExpWnfCleanupProcess(IN PEPROCESS Process)
@@ -466,12 +516,16 @@ ExpWnfCleanupProcess(IN PEPROCESS Process)
     ULONG Index;
     PWNF_NAME_BUCKET Bucket;
     PLIST_ENTRY Entry, NextEntry;
+    PLIST_ENTRY SubEntry, NextSubEntry, SubListEntry;
     PWNF_NAME_INSTANCE Instance;
-    LIST_ENTRY DeadList;
+    PWNF_SUBSCRIPTION Subscription;
+    LIST_ENTRY DeadNames, DeadSubs;
+    BOOLEAN Removing;
 
     PAGED_CODE();
 
-    InitializeListHead(&DeadList);
+    InitializeListHead(&DeadNames);
+    InitializeListHead(&DeadSubs);
 
     for (Index = 0; Index < WNF_NAME_BUCKET_COUNT; Index++)
     {
@@ -482,20 +536,49 @@ ExpWnfCleanupProcess(IN PEPROCESS Process)
         {
             NextEntry = Entry->Flink;
             Instance = CONTAINING_RECORD(Entry, WNF_NAME_INSTANCE, NameListEntry);
-            if ((Instance->Lifetime == WnfTemporaryStateName) &&
-                (Instance->CreatorProcess == Process))
+            Removing = (Instance->Lifetime == WnfTemporaryStateName) &&
+                       (Instance->CreatorProcess == Process);
+            if (Removing)
             {
+                /* DestroyNameInstance reaps its subscriptions wholesale. */
                 RemoveEntryList(&Instance->NameListEntry);
-                InsertTailList(&DeadList, &Instance->NameListEntry);
+                InsertTailList(&DeadNames, &Instance->NameListEntry);
+            }
+            else
+            {
+                /* Detach this process's subscriptions from surviving names. */
+                ExpWnfLockExclusive(&Instance->SubscriptionListLock);
+                SubEntry = Instance->SubscriptionListHead.Flink;
+                while (SubEntry != &Instance->SubscriptionListHead)
+                {
+                    NextSubEntry = SubEntry->Flink;
+                    Subscription = CONTAINING_RECORD(SubEntry,
+                                                     WNF_SUBSCRIPTION,
+                                                     SubscriptionListEntry);
+                    if (Subscription->Process == Process)
+                    {
+                        ExpWnfDetachSubscription(Subscription, &DeadSubs);
+                    }
+                    SubEntry = NextSubEntry;
+                }
+                ExpWnfUnlockExclusive(&Instance->SubscriptionListLock);
             }
             Entry = NextEntry;
         }
         ExpWnfUnlockBucketExclusive(Bucket);
     }
 
-    while (!IsListEmpty(&DeadList))
+    while (!IsListEmpty(&DeadSubs))
     {
-        Entry = RemoveHeadList(&DeadList);
+        SubListEntry = RemoveHeadList(&DeadSubs);
+        ExpWnfReapSubscription(CONTAINING_RECORD(SubListEntry,
+                                                 WNF_SUBSCRIPTION,
+                                                 SubscriptionListEntry));
+    }
+
+    while (!IsListEmpty(&DeadNames))
+    {
+        Entry = RemoveHeadList(&DeadNames);
         Instance = CONTAINING_RECORD(Entry, WNF_NAME_INSTANCE, NameListEntry);
         ExpWnfDestroyNameInstance(Instance);
     }
@@ -1465,6 +1548,13 @@ NtSubscribeWnfStateChange(PCWNF_STATE_NAME StateName,
             _SEH2_YIELD(return _SEH2_GetExceptionCode());
         }
         _SEH2_END;
+    }
+
+    if ((PreviousMode != KernelMode) &&
+        (ExpWnfCountProcessSubscriptions(PsGetCurrentProcess()) >=
+         WNF_MAX_SUBSCRIPTIONS_PER_PROCESS))
+    {
+        return STATUS_QUOTA_EXCEEDED;
     }
 
     Subscription = ExpWnfAllocateSubscription(ChangeStamp, EventMask, NULL, NULL);
