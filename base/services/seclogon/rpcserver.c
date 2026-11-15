@@ -718,6 +718,23 @@ SeclCreateProcessWithLogonW(
         goto done;
     }
 
+    /* The shell's elevation path: a logon that was split runs with its full token */
+    if ((pRequest->dwLogonFlags & SECL_LOGON_ELEVATE) && pRequest->hToken == 0 &&
+        !(pRequest->dwLogonFlags & LOGON_NETCREDENTIALS_ONLY))
+    {
+        TOKEN_LINKED_TOKEN Linked = { NULL };
+        DWORD Type = 0, LinkedLength;
+
+        if (GetTokenInformation(hToken, TokenElevationType, &Type, sizeof(Type), &LinkedLength) &&
+            Type == TokenElevationTypeLimited &&
+            GetTokenInformation(hToken, TokenLinkedToken, &Linked, sizeof(Linked), &LinkedLength) &&
+            Linked.LinkedToken != NULL)
+        {
+            CloseHandle(hToken);
+            hToken = Linked.LinkedToken;
+        }
+    }
+
     if (!SetTokenInformation(hToken, TokenSessionId, &SessionId, sizeof(SessionId)))
     {
         dwError = GetLastError();

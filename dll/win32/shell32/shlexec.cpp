@@ -23,6 +23,7 @@
 #include "precomp.h"
 #include <winbase_undoc.h>
 #include <undocshell.h>
+#include <seclogon_c.h>
 
 extern "C" DWORD SHELL_ElevateProcess(HWND hwnd, LPCWSTR ApplicationName, LPCWSTR CommandLine,
                                       LPCWSTR CurrentDirectory, DWORD CreationFlags,
@@ -651,7 +652,8 @@ again:
                              hwnd, RunAsDlgProc, (LPARAM)&data);
     if (dlgret == IDOK && data.Name)
     {
-        if (CreateProcessWithLogonW(data.Name, data.Domain, data.Password, data.LogonFlags,
+        // The elevation path: a split administrator's logon runs with its full token
+        if (CreateProcessWithLogonW(data.Name, data.Domain, data.Password, data.LogonFlags | SECL_LOGON_ELEVATE,
                                     NULL, Cmd, CreationFlags, Env, Dir, pSI, pPI))
             error = ERROR_SUCCESS;
         else
