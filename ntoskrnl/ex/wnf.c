@@ -32,6 +32,7 @@ static PSECURITY_DESCRIPTOR ExpWnfDefaultSecurityDescriptor;
 
 #define WNF_QUERY_ACCESS  0x0001
 #define WNF_UPDATE_ACCESS 0x0002
+#define WNF_MAX_TEMPORARY_NAMES_PER_PROCESS 1024
 
 static GENERIC_MAPPING ExpWnfGenericMapping =
 {
@@ -294,6 +295,36 @@ ExpWnfFindNameInstance(PWNF_NAME_BUCKET Bucket,
 }
 
 static
+ULONG
+ExpWnfCountProcessTemporaryNames(PEPROCESS Process)
+{
+    ULONG Index, Count;
+    PWNF_NAME_BUCKET Bucket;
+    PLIST_ENTRY Entry;
+    PWNF_NAME_INSTANCE Instance;
+
+    Count = 0;
+    for (Index = 0; Index < WNF_NAME_BUCKET_COUNT; Index++)
+    {
+        Bucket = &ExpWnfNameBuckets[Index];
+        ExpWnfLockBucketShared(Bucket);
+        for (Entry = Bucket->ListHead.Flink;
+             Entry != &Bucket->ListHead;
+             Entry = Entry->Flink)
+        {
+            Instance = CONTAINING_RECORD(Entry, WNF_NAME_INSTANCE, NameListEntry);
+            if ((Instance->Lifetime == WnfTemporaryStateName) &&
+                (Instance->CreatorProcess == Process))
+            {
+                Count++;
+            }
+        }
+        ExpWnfUnlockBucketShared(Bucket);
+    }
+    return Count;
+}
+
+static
 PWNF_NAME_INSTANCE
 ExpWnfReferenceNameInstance(ULONG64 InternalName)
 {
@@ -321,11 +352,21 @@ PWNF_NAME_INSTANCE
 ExpWnfAllocateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
                            PCWNF_TYPE_ID TypeId,
                            ULONG MaximumStateSize,
-                           PSECURITY_DESCRIPTOR CapturedSd)
+                           PSECURITY_DESCRIPTOR CapturedSd,
+                           BOOLEAN ChargeQuota)
 {
     PWNF_NAME_INSTANCE Instance;
 
-    Instance = ExAllocatePoolWithQuotaTag(PagedPool, sizeof(*Instance), TAG_WNF_INSTANCE);
+    if (ChargeQuota)
+    {
+        Instance = ExAllocatePoolWithQuotaTag(PagedPool | POOL_QUOTA_FAIL_INSTEAD_OF_RAISE,
+                                              sizeof(*Instance),
+                                              TAG_WNF_INSTANCE);
+    }
+    else
+    {
+        Instance = ExAllocatePoolWithTag(PagedPool, sizeof(*Instance), TAG_WNF_INSTANCE);
+    }
     if (Instance == NULL)
         return NULL;
 
@@ -399,7 +440,8 @@ ExpWnfReferenceOrCreateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
     Created = ExpWnfAllocateNameInstance(InternalName,
                                          NULL,
                                          0,
-                                         ExpWnfDefaultSecurityDescriptor);
+                                         ExpWnfDefaultSecurityDescriptor,
+                                         FALSE);
     if (Created == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
 
@@ -1005,11 +1047,22 @@ NtCreateWnfStateName(PWNF_STATE_NAME StateName,
     InternalName.DataScope = DataScope;
     InternalName.PermanentData = PersistData ? 1 : 0;
 
+    if ((NameLifetime == WnfTemporaryStateName) &&
+        (PreviousMode != KernelMode) &&
+        (ExpWnfCountProcessTemporaryNames(PsGetCurrentProcess()) >=
+         WNF_MAX_TEMPORARY_NAMES_PER_PROCESS))
+    {
+        if (CapturedSd != NULL)
+            SeReleaseSecurityDescriptor(CapturedSd, KernelMode, TRUE);
+        return STATUS_QUOTA_EXCEEDED;
+    }
+
     InternalName.Unique = InterlockedIncrement64(&ExpWnfNextUnique);
     Instance = ExpWnfAllocateNameInstance(&InternalName,
                                           HasTypeId ? &CapturedTypeId : NULL,
                                           MaximumStateSize,
-                                          CapturedSd);
+                                          CapturedSd,
+                                          (PreviousMode != KernelMode));
     if (Instance == NULL)
     {
         if (CapturedSd != NULL)
@@ -1107,7 +1160,7 @@ NtUpdateWnfStateData(PCWNF_STATE_NAME StateName,
 
     if (Length != 0)
     {
-        NewData = ExAllocatePoolWithQuotaTag(PagedPool, Length, TAG_WNF_DATA);
+        NewData = ExAllocatePoolWithTag(PagedPool, Length, TAG_WNF_DATA);
         if (NewData == NULL)
             return STATUS_INSUFFICIENT_RESOURCES;
 
