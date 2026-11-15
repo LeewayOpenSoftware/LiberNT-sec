@@ -581,22 +581,49 @@ WnfTemporaryChildMain(VOID)
 static VOID
 WnfCapChildMain(VOID)
 {
-    TEST_WNF_STATE_NAME StateName = {{0, 0}};
+    TEST_WNF_STATE_NAME FirstName = {{0, 0}};
+    TEST_WNF_STATE_NAME StateName;
     NTSTATUS Status;
     ULONG Index, Successes;
+    BOOLEAN HaveFirst;
 
-    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE,
-                                   FALSE, NULL, 0, BuildSecurityDescriptor());
-    if (!NT_SUCCESS(Status))
+    /* Fill the temporary-name quota with owner-less descriptors; the cap
+       must trip after exactly the limit, without leaking. */
+    Successes = 0;
+    HaveFirst = FALSE;
+    for (Index = 0; Index < WNF_MAX_SUBSCRIPTIONS_PER_PROCESS + 1; Index++)
     {
-        printf("cap child create failed 0x%08lx\n", Status);
+        RtlZeroMemory(&StateName, sizeof(StateName));
+        Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE,
+                                       FALSE, NULL, 0, BuildSecurityDescriptor());
+        if (NT_SUCCESS(Status))
+        {
+            if (!HaveFirst)
+            {
+                FirstName = StateName;
+                HaveFirst = TRUE;
+            }
+            Successes++;
+            continue;
+        }
+        if (Status != STATUS_QUOTA_EXCEEDED)
+        {
+            printf("cap child create returned 0x%08lx\n", Status);
+            ExitProcess(1);
+        }
+        break;
+    }
+    if (Successes != WNF_MAX_SUBSCRIPTIONS_PER_PROCESS)
+    {
+        printf("cap child expected %d name successes, got %lu\n",
+               WNF_MAX_SUBSCRIPTIONS_PER_PROCESS, Successes);
         ExitProcess(1);
     }
 
     Successes = 0;
     for (Index = 0; Index < WNF_MAX_SUBSCRIPTIONS_PER_PROCESS + 1; Index++)
     {
-        Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, NULL);
+        Status = pNtSubscribeWnfStateChange(&FirstName, 0, 1, NULL);
         if (NT_SUCCESS(Status))
         {
             Successes++;
@@ -612,7 +639,7 @@ WnfCapChildMain(VOID)
 
     if (Successes != WNF_MAX_SUBSCRIPTIONS_PER_PROCESS)
     {
-        printf("cap child expected %d successes, got %lu\n",
+        printf("cap child expected %d subscribe successes, got %lu\n",
                WNF_MAX_SUBSCRIPTIONS_PER_PROCESS, Successes);
         ExitProcess(1);
     }
