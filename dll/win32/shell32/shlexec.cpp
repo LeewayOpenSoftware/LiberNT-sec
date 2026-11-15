@@ -801,7 +801,9 @@ static UINT_PTR SHELL_ExecuteW(const WCHAR *lpCmd, WCHAR *env, BOOL shWait,
         createdProcess = hr == S_OK;
         if (hr == S_FALSE)
         {
-            retval = 33; // Pretend cancel is success.
+            // The user declined: no process, and the caller sees ERROR_CANCELLED
+            retval = SE_ERR_ACCESSDENIED;
+            lasterror = ERROR_CANCELLED;
             goto done;
         }
     }
@@ -835,9 +837,9 @@ done:
     {
         if (!SetCurrentDirectoryW(curdir))
             ERR("cannot return to directory %s\n", debugstr_w(curdir));
-        if (lasterror)
-            RestoreLastError(lasterror);
     }
+    if (lasterror)
+        RestoreLastError(lasterror);
     return retval;
 }
 
@@ -2392,7 +2394,10 @@ static void do_error_dialog(UINT_PTR retval, HWND hwnd, PCWSTR filename)
 
 static UINT_PTR ExecuteFailed(UINT_PTR retval, SHELLEXECUTEINFOW &sei, LPCWSTR lpFile, BOOL AllowOpenWith = TRUE)
 {
-    if (retval <= 32 && !(sei.fMask & SEE_MASK_FLAG_NO_UI))
+    // A start the user declined is no error to report
+    BOOL declined = (retval == SE_ERR_ACCESSDENIED && GetLastError() == ERROR_CANCELLED);
+
+    if (retval <= 32 && !(sei.fMask & SEE_MASK_FLAG_NO_UI) && !declined)
     {
         if (retval == SE_ERR_NOASSOC && !(sei.fMask & SEE_MASK_CLASSALL) && AllowOpenWith)
             retval = InvokeOpenWith(sei.hwnd, sei);
