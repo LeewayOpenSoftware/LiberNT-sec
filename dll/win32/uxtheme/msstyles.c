@@ -96,6 +96,38 @@ static PTHEME_FILE MSSTYLES_ReferenceActiveTheme(void)
  * If one/both are provided, they are validated against valid color/sizes and if
  * a match is not found, the function fails.
  */
+#ifdef __REACTOS__
+/* The longest name list a style may carry, in characters */
+#define MSSTYLES_MAX_NAME_LIST 0x4000
+
+/***********************************************************************
+ *      MSSTYLES_LoadNameList
+ *
+ * Copy a name list resource (COLORNAMES, SIZENAMES, FILERESNAMES) of a
+ * theme. The copy always ends with two NULs, so a walk over the list
+ * stays inside it whatever the resource holds.
+ *
+ * RETURNS
+ *     The list, to be released with free, or NULL
+ */
+static LPWSTR MSSTYLES_LoadNameList(HMODULE hTheme, HRSRC hrsc)
+{
+    LPCWSTR src = LoadResource(hTheme, hrsc);
+    DWORD cch = SizeofResource(hTheme, hrsc) / sizeof(WCHAR);
+    LPWSTR list;
+
+    if(!src || cch > MSSTYLES_MAX_NAME_LIST)
+        return NULL;
+
+    list = calloc(cch + 2, sizeof(WCHAR));
+    if(!list)
+        return NULL;
+
+    memcpy(list, src, cch * sizeof(WCHAR));
+    return list;
+}
+#endif
+
 HRESULT MSSTYLES_OpenThemeFile(LPCWSTR lpThemeFile, LPCWSTR pszColorName, LPCWSTR pszSizeName, PTHEME_FILE *tf)
 {
     HMODULE hTheme;
@@ -107,9 +139,15 @@ HRESULT MSSTYLES_OpenThemeFile(LPCWSTR lpThemeFile, LPCWSTR pszColorName, LPCWST
 #ifdef __REACTOS__
     WORD *pVersion;
 #endif
+#ifdef __REACTOS__
+    LPWSTR pszColors = NULL;
+    LPWSTR pszSelectedColor = NULL;
+    LPWSTR pszSizes = NULL;
+#else
     LPWSTR pszColors;
     LPWSTR pszSelectedColor = NULL;
     LPWSTR pszSizes;
+#endif
     LPWSTR pszSelectedSize = NULL;
     LPWSTR tmp;
 
@@ -157,14 +195,30 @@ HRESULT MSSTYLES_OpenThemeFile(LPCWSTR lpThemeFile, LPCWSTR pszColorName, LPCWST
         hr = HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
         goto invalid_theme;
     }
+#ifdef __REACTOS__
+    pszColors = MSSTYLES_LoadNameList(hTheme, hrsc);
+    if(!pszColors) {
+        hr = HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
+        goto invalid_theme;
+    }
+#else
     pszColors = LoadResource(hTheme, hrsc);
+#endif
 
     if(!(hrsc = FindResourceW(hTheme, MAKEINTRESOURCEW(1), L"SIZENAMES"))) {
         TRACE("Size names resource not found\n");
         hr = HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
         goto invalid_theme;
     }
+#ifdef __REACTOS__
+    pszSizes = MSSTYLES_LoadNameList(hTheme, hrsc);
+    if(!pszSizes) {
+        hr = HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
+        goto invalid_theme;
+    }
+#else
     pszSizes = LoadResource(hTheme, hrsc);
+#endif
 
     /* Validate requested color against what's available from the theme */
     if(pszColorName) {
@@ -219,6 +273,10 @@ HRESULT MSSTYLES_OpenThemeFile(LPCWSTR lpThemeFile, LPCWSTR pszColorName, LPCWST
 
 invalid_theme:
     *tf = NULL;
+#ifdef __REACTOS__
+    free(pszColors);
+    free(pszSizes);
+#endif
     if(hTheme) FreeLibrary(hTheme);
     return hr;
 }
@@ -264,6 +322,11 @@ void MSSTYLES_CloseThemeFile(PTHEME_FILE tf)
                 DeleteObject (img->image);
                 free(img);
             }
+#ifdef __REACTOS__
+            /* The name lists are copies, see MSSTYLES_LoadNameList */
+            free(tf->pszAvailColors);
+            free(tf->pszAvailSizes);
+#endif
             free(tf);
         }
     }
@@ -346,6 +409,10 @@ static PUXINI_FILE MSSTYLES_GetActiveThemeIni(PTHEME_FILE tf)
     DWORD dwResourceIndex;
     LPWSTR tmp;
     HRSRC hrsc;
+#ifdef __REACTOS__
+    LPWSTR pszFileNames;
+    PUXINI_FILE ini;
+#endif
 
     /* Count the number of available colors & styles, and determine the index number
        of the color/style we are interested in
@@ -369,12 +436,28 @@ static PUXINI_FILE MSSTYLES_GetActiveThemeIni(PTHEME_FILE tf)
         TRACE("FILERESNAMES map not found\n");
         return NULL;
     }
+#ifdef __REACTOS__
+    pszFileNames = MSSTYLES_LoadNameList(tf->hTheme, hrsc);
+    if(!pszFileNames)
+        return NULL;
+
+    /* The list may hold fewer names than the colors and sizes ask for */
+    tmp = pszFileNames;
+    dwResourceIndex = (dwSizeCount * dwColorNum) + dwSizeNum;
+    for(i=0; i < dwResourceIndex && *tmp; i++) {
+        tmp += lstrlenW(tmp)+1;
+    }
+    ini = *tmp ? UXINI_LoadINI(tf->hTheme, tmp) : NULL;
+    free(pszFileNames);
+    return ini;
+#else
     tmp = LoadResource(tf->hTheme, hrsc);
     dwResourceIndex = (dwSizeCount * dwColorNum) + dwSizeNum;
     for(i=0; i < dwResourceIndex; i++) {
         tmp += lstrlenW(tmp)+1;
     }
     return UXINI_LoadINI(tf->hTheme, tmp);
+#endif
 }
 
 
@@ -1087,6 +1170,13 @@ static void MSSTYLES_ParseThemeIni(PTHEME_FILE tf, BOOL setMetrics)
     LPCWSTR lpValue;
 
     ini = MSSTYLES_GetActiveThemeIni(tf);
+#ifdef __REACTOS__
+    /* A style with no ini text for the selected color and size has no classes */
+    if(!ini) {
+        ERR("Failed to load the theme ini\n");
+        return;
+    }
+#endif
 
     while((lpName=UXINI_GetNextSection(ini, &dwLen))) {
         if(CompareStringW(LOCALE_SYSTEM_DEFAULT, NORM_IGNORECASE, lpName, dwLen, L"SysMetrics", -1) == CSTR_EQUAL) {
