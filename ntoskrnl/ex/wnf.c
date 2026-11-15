@@ -28,6 +28,18 @@ static WNF_NAME_BUCKET ExpWnfNameBuckets[WNF_NAME_BUCKET_COUNT];
 static LONG64 ExpWnfNextUnique;
 static LONG64 ExpWnfNextSubscriptionId;
 static BOOLEAN ExpWnfInitialized;
+static PSECURITY_DESCRIPTOR ExpWnfDefaultSecurityDescriptor;
+
+#define WNF_QUERY_ACCESS  0x0001
+#define WNF_UPDATE_ACCESS 0x0002
+
+static GENERIC_MAPPING ExpWnfGenericMapping =
+{
+    WNF_QUERY_ACCESS,
+    WNF_UPDATE_ACCESS,
+    WNF_QUERY_ACCESS,
+    WNF_QUERY_ACCESS | WNF_UPDATE_ACCESS | DELETE
+};
 
 /* PRIVATE FUNCTIONS *********************************************************/
 
@@ -37,12 +49,52 @@ NTAPI
 ExpWnfInitialization(VOID)
 {
     ULONG Index;
+    PACL Acl;
+    ULONG AclSize;
+    PSECURITY_DESCRIPTOR SecurityDescriptor;
 
     for (Index = 0; Index < WNF_NAME_BUCKET_COUNT; Index++)
     {
         ExInitializePushLock(&ExpWnfNameBuckets[Index].Lock);
         InitializeListHead(&ExpWnfNameBuckets[Index].ListHead);
     }
+
+    AclSize = sizeof(ACL) +
+              3 * (sizeof(ACCESS_ALLOWED_ACE) - sizeof(ULONG)) +
+              RtlLengthSid(SeWorldSid) +
+              RtlLengthSid(SeLocalSystemSid) +
+              RtlLengthSid(SeAliasAdminsSid);
+    Acl = ExAllocatePoolWithTag(PagedPool, AclSize, TAG_WNF_INSTANCE);
+    SecurityDescriptor = ExAllocatePoolWithTag(PagedPool,
+                                               sizeof(SECURITY_DESCRIPTOR),
+                                               TAG_WNF_INSTANCE);
+    if ((Acl != NULL) && (SecurityDescriptor != NULL))
+    {
+        if (NT_SUCCESS(RtlCreateAcl(Acl, AclSize, ACL_REVISION)) &&
+            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_READ, SeWorldSid)) &&
+            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, SeLocalSystemSid)) &&
+            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, SeAliasAdminsSid)) &&
+            RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION) &&
+            NT_SUCCESS(RtlSetOwnerSecurityDescriptor(SecurityDescriptor, SeLocalSystemSid, FALSE)) &&
+            NT_SUCCESS(RtlSetGroupSecurityDescriptor(SecurityDescriptor, SeAliasAdminsSid, FALSE)) &&
+            NT_SUCCESS(RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE)))
+        {
+            ExpWnfDefaultSecurityDescriptor = SecurityDescriptor;
+        }
+        else
+        {
+            ExFreePoolWithTag(Acl, TAG_WNF_INSTANCE);
+            ExFreePoolWithTag(SecurityDescriptor, TAG_WNF_INSTANCE);
+        }
+    }
+    else
+    {
+        if (Acl != NULL)
+            ExFreePoolWithTag(Acl, TAG_WNF_INSTANCE);
+        if (SecurityDescriptor != NULL)
+            ExFreePoolWithTag(SecurityDescriptor, TAG_WNF_INSTANCE);
+    }
+
     ExpWnfInitialized = TRUE;
     return TRUE;
 }
@@ -331,7 +383,10 @@ ExpWnfReferenceOrCreateNameInstance(PWNF_STATE_NAME_INTERNAL InternalName,
     if (InternalName->NameLifetime != WnfWellKnownStateName)
         return STATUS_OBJECT_NAME_NOT_FOUND;
 
-    Created = ExpWnfAllocateNameInstance(InternalName, NULL, 0, NULL);
+    Created = ExpWnfAllocateNameInstance(InternalName,
+                                         NULL,
+                                         0,
+                                         ExpWnfDefaultSecurityDescriptor);
     if (Created == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
 
@@ -356,6 +411,44 @@ ExpWnfMatchTypeId(PWNF_NAME_INSTANCE Instance,
 
     return RtlCompareMemory(&Instance->TypeId, TypeId, sizeof(WNF_TYPE_ID)) ==
            sizeof(WNF_TYPE_ID);
+}
+
+static
+NTSTATUS
+ExpWnfCheckAccess(PWNF_NAME_INSTANCE Instance,
+                  ACCESS_MASK DesiredAccess,
+                  KPROCESSOR_MODE AccessMode)
+{
+    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    ACCESS_MASK GrantedAccess = 0;
+    PPRIVILEGE_SET Privileges = NULL;
+    NTSTATUS AccessStatus = STATUS_ACCESS_DENIED;
+    BOOLEAN Granted;
+
+    if (AccessMode == KernelMode)
+        return STATUS_SUCCESS;
+
+    if (Instance->SecurityDescriptor == NULL)
+        return STATUS_ACCESS_DENIED;
+
+    SeCaptureSubjectContext(&SubjectContext);
+    SeLockSubjectContext(&SubjectContext);
+    Granted = SeAccessCheck(Instance->SecurityDescriptor,
+                            &SubjectContext,
+                            TRUE,
+                            DesiredAccess,
+                            0,
+                            &Privileges,
+                            &ExpWnfGenericMapping,
+                            AccessMode,
+                            &GrantedAccess,
+                            &AccessStatus);
+    SeUnlockSubjectContext(&SubjectContext);
+    SeReleaseSubjectContext(&SubjectContext);
+    if (Privileges != NULL)
+        SeFreePrivileges(Privileges);
+
+    return Granted ? STATUS_SUCCESS : AccessStatus;
 }
 
 static
@@ -560,8 +653,11 @@ ExpWnfFreeNameInstance(PWNF_NAME_INSTANCE Instance)
     if (Instance->DataBuffer != NULL)
         ExFreePoolWithTag(Instance->DataBuffer, TAG_WNF_DATA);
 
-    if (Instance->SecurityDescriptor != NULL)
+    if ((Instance->SecurityDescriptor != NULL) &&
+        (Instance->SecurityDescriptor != ExpWnfDefaultSecurityDescriptor))
+    {
         SeReleaseSecurityDescriptor(Instance->SecurityDescriptor, KernelMode, TRUE);
+    }
 
     ExFreePoolWithTag(Instance, TAG_WNF_INSTANCE);
 }
@@ -595,6 +691,7 @@ ExpWnfDestroyNameInstance(PWNF_NAME_INSTANCE Instance)
 static
 NTSTATUS
 ExpWnfQuerySnapshot(ULONG64 InternalName,
+                    KPROCESSOR_MODE AccessMode,
                     BOOLEAN HasTypeId,
                     PCWNF_TYPE_ID TypeId,
                     PWNF_CHANGE_STAMP ChangeStamp,
@@ -610,29 +707,32 @@ ExpWnfQuerySnapshot(ULONG64 InternalName,
     {
         Status = STATUS_OBJECT_NAME_NOT_FOUND;
     }
-    else if (!ExpWnfMatchTypeId(Instance, HasTypeId, TypeId))
-    {
-        Status = STATUS_INVALID_PARAMETER;
-    }
     else
     {
-        ExpWnfLockShared(&Instance->StateDataLock);
-        *ChangeStamp = Instance->ChangeStamp;
-        *DataSize = Instance->DataSize;
-        if (Instance->DataSize != 0)
+        Status = ExpWnfCheckAccess(Instance, WNF_QUERY_ACCESS, AccessMode);
+        if (NT_SUCCESS(Status) && !ExpWnfMatchTypeId(Instance, HasTypeId, TypeId))
+            Status = STATUS_INVALID_PARAMETER;
+
+        if (NT_SUCCESS(Status))
         {
-            Snapshot = ExAllocatePoolWithTag(PagedPool,
-                                             Instance->DataSize,
-                                             TAG_WNF_DATA);
-            if (Snapshot != NULL)
-                RtlCopyMemory(Snapshot, Instance->DataBuffer, Instance->DataSize);
-            else
-                Status = STATUS_INSUFFICIENT_RESOURCES;
+            ExpWnfLockShared(&Instance->StateDataLock);
+            *ChangeStamp = Instance->ChangeStamp;
+            *DataSize = Instance->DataSize;
+            if (Instance->DataSize != 0)
+            {
+                Snapshot = ExAllocatePoolWithTag(PagedPool,
+                                                 Instance->DataSize,
+                                                 TAG_WNF_DATA);
+                if (Snapshot != NULL)
+                    RtlCopyMemory(Snapshot, Instance->DataBuffer, Instance->DataSize);
+                else
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+            ExpWnfUnlockShared(&Instance->StateDataLock);
         }
-        ExpWnfUnlockShared(&Instance->StateDataLock);
-    }
-    if (Instance != NULL)
+
         ExpWnfDereferenceNameInstance(Instance);
+    }
 
     *Data = Snapshot;
     return Status;
@@ -734,6 +834,9 @@ NtCreateWnfStateName(PWNF_STATE_NAME StateName,
 
     if (StateName == NULL)
         return STATUS_INVALID_PARAMETER;
+
+    if (SecurityDescriptor == NULL)
+        return STATUS_ACCESS_VIOLATION;
 
     if ((NameLifetime != WnfPermanentStateName) &&
         (NameLifetime != WnfPersistentStateName) &&
@@ -842,16 +945,14 @@ NtDeleteWnfStateName(PCWNF_STATE_NAME StateName)
     if (Instance == NULL)
         return STATUS_OBJECT_NAME_NOT_FOUND;
 
-    if ((Instance->CreatorProcess != PsGetCurrentProcess()) &&
-        !SeSinglePrivilegeCheck(SeDebugPrivilege, PreviousMode))
-    {
-        ExpWnfDereferenceNameInstance(Instance);
-        return STATUS_ACCESS_DENIED;
-    }
+    Status = ExpWnfCheckAccess(Instance, DELETE, PreviousMode);
+    if (NT_SUCCESS(Status) && !ExpWnfRemoveNameInstance(InternalName.Value, Instance))
+        Status = STATUS_OBJECT_NAME_NOT_FOUND;
 
     ExpWnfDereferenceNameInstance(Instance);
-    if (!ExpWnfRemoveNameInstance(InternalName.Value, Instance))
-        return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    if (!NT_SUCCESS(Status))
+        return Status;
 
     ExpWnfDestroyNameInstance(Instance);
     return STATUS_SUCCESS;
@@ -916,13 +1017,17 @@ NtUpdateWnfStateData(PCWNF_STATE_NAME StateName,
     Status = ExpWnfReferenceOrCreateNameInstance(&InternalName, &Instance);
     if (NT_SUCCESS(Status))
     {
-        Status = ExpWnfStoreStateData(Instance,
-                                      &NewData,
-                                      Length,
-                                      HasTypeId,
-                                      &CapturedTypeId,
-                                      MatchingChangeStamp,
-                                      CheckStamp);
+        Status = ExpWnfCheckAccess(Instance, WNF_UPDATE_ACCESS, PreviousMode);
+        if (NT_SUCCESS(Status))
+        {
+            Status = ExpWnfStoreStateData(Instance,
+                                          &NewData,
+                                          Length,
+                                          HasTypeId,
+                                          &CapturedTypeId,
+                                          MatchingChangeStamp,
+                                          CheckStamp);
+        }
         ExpWnfDereferenceNameInstance(Instance);
     }
 
@@ -954,6 +1059,13 @@ NtDeleteWnfStateData(PCWNF_STATE_NAME StateName,
     Instance = ExpWnfReferenceNameInstance(InternalName.Value);
     if (Instance == NULL)
         return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    Status = ExpWnfCheckAccess(Instance, WNF_UPDATE_ACCESS, PreviousMode);
+    if (!NT_SUCCESS(Status))
+    {
+        ExpWnfDereferenceNameInstance(Instance);
+        return Status;
+    }
 
     ExpWnfLockExclusive(&Instance->StateDataLock);
     OldData = Instance->DataBuffer;
@@ -1026,6 +1138,7 @@ NtQueryWnfStateData(PCWNF_STATE_NAME StateName,
         CallerSize = 0;
 
     Status = ExpWnfQuerySnapshot(InternalName.Value,
+                                 PreviousMode,
                                  HasTypeId,
                                  &CapturedTypeId,
                                  &Stamp,
@@ -1192,12 +1305,24 @@ NtSubscribeWnfStateChange(PCWNF_STATE_NAME StateName,
     if (Subscription == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
 
+    /* Call-local reference: a concurrent unsubscribe must not free the
+       subscription while this call is initialising it. */
+    InterlockedIncrement(&Subscription->RefCount);
+
     Subscription->Process = PsGetCurrentProcess();
     Subscription->Thread = PsGetCurrentThread();
 
     Status = ExpWnfReferenceOrCreateNameInstance(&InternalName, &Instance);
     if (!NT_SUCCESS(Status))
     {
+        ExFreePoolWithTag(Subscription, TAG_WNF_SUB);
+        return Status;
+    }
+
+    Status = ExpWnfCheckAccess(Instance, WNF_QUERY_ACCESS, PreviousMode);
+    if (!NT_SUCCESS(Status))
+    {
+        ExpWnfDereferenceNameInstance(Instance);
         ExFreePoolWithTag(Subscription, TAG_WNF_SUB);
         return Status;
     }
@@ -1227,7 +1352,12 @@ NtSubscribeWnfStateChange(PCWNF_STATE_NAME StateName,
         ExpWnfLockExclusive(&Instance->SubscriptionListLock);
         ExpWnfDetachSubscription(Subscription, &ReapList);
         ExpWnfUnlockExclusive(&Instance->SubscriptionListLock);
+        ExpWnfDereferenceSubscription(Subscription);
         ExpWnfReapSubscriptionList(&ReapList);
+    }
+    else
+    {
+        ExpWnfDereferenceSubscription(Subscription);
     }
 
     ExpWnfDereferenceNameInstance(Instance);
@@ -1309,6 +1439,7 @@ ExQueryWnfStateData(PCWNF_STATE_NAME StateName,
         return Status;
 
     Status = ExpWnfQuerySnapshot(InternalName.Value,
+                                 KernelMode,
                                  FALSE,
                                  NULL,
                                  &Stamp,
