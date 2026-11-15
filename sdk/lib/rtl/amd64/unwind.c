@@ -1363,9 +1363,13 @@ RtlpCaptureNonVolatileContextPointers(
     ULONG64 ImageBase;
     PVOID HandlerData;
     ULONG64 EstablisherFrame;
+    ULONG_PTR StackLow, StackHigh;
 
     /* Zero out the nonvolatile context pointers */
     RtlZeroMemory(NonvolatileContextPointers, sizeof(*NonvolatileContextPointers));
+
+    /* The walk covers this thread's kernel stack, up to the trap frame */
+    RtlpGetStackLimits(&StackLow, &StackHigh);
 
     /* Capture the current context */
     RtlCaptureContext(&Context);
@@ -1398,8 +1402,13 @@ RtlpCaptureNonVolatileContextPointers(
             Context.Rsp += 8;
         }
 
-        /* Continue until we reach user mode */
-    } while ((LONG64)Context.Rip < 0);
+        /* Continue until we reach user mode. The unwind of the trap frame
+         * gives the user context, whose instruction pointer the caller may
+         * have set to any value (a kernel or non-canonical address faults
+         * only at the trap exit), so it is the stack pointer leaving the
+         * kernel stack that marks the end of the kernel frames. */
+    } while (((LONG64)Context.Rip < 0) &&
+             (Context.Rsp >= StackLow) && (Context.Rsp < StackHigh));
 
     /* If the caller did the right thing, we should get past the target frame */
     ASSERT(EstablisherFrame >= TargetFrame);
