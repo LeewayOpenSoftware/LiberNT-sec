@@ -229,6 +229,9 @@ RunChild(PCSTR Mode, HANDLE Inherited, PCWSTR Extra)
     return Failures;
 }
 
+/* CREATE_NO_WINDOW gives the child a hidden console; DETACHED_PROCESS gives it none */
+static DWORD ChildCreationFlags = CREATE_NO_WINDOW;
+
 static
 BOOL
 StartChildAsync(HANDLE Token, PCSTR Mode, HANDLE Inherited, PCWSTR Extra, HANDLE *phChild)
@@ -247,7 +250,7 @@ StartChildAsync(HANDLE Token, PCSTR Mode, HANDLE Inherited, PCWSTR Extra, HANDLE
         return FALSE;
     StringCchPrintfW(CommandLine, _countof(CommandLine), L"\"%ls\" Elevation child %hs %p \"%ls\"", Exe, Mode, Dup,
                      Extra ? Extra : L"");
-    Ret = CreateProcessAsUserW(Token, Exe, CommandLine, NULL, NULL, Dup != NULL, CREATE_NO_WINDOW, NULL, NULL,
+    Ret = CreateProcessAsUserW(Token, Exe, CommandLine, NULL, NULL, Dup != NULL, ChildCreationFlags, NULL, NULL,
                                &StartupInfo, &ProcessInfo);
     if (Ret)
     {
@@ -600,6 +603,17 @@ START_TEST(Elevation)
         if (CreateRestrictedToken(Process, DISABLE_MAX_PRIVILEGE, 0, NULL, 0, NULL, RestrictingCount, Restricting, &Restricted))
         {
             Ret = StartChild(Restricted, "call", NULL, &ExitCode);
+            if (Ret && ExitCode == 0xC0000142) /* STATUS_DLL_INIT_FAILED: the child never ran */
+            {
+                DWORD Detached;
+                BOOL RetDetached;
+
+                /* Without a console: the answer says whether the console is what it could not reach */
+                ChildCreationFlags = DETACHED_PROCESS;
+                RetDetached = StartChild(Restricted, "call", NULL, &Detached);
+                ChildCreationFlags = CREATE_NO_WINDOW;
+                trace("Restricted child without a console: ret %d, exit %lu\n", RetDetached, Detached);
+            }
             ok(Ret && ExitCode == ERROR_ACCESS_DENIED, "Restricted caller: ret %d, error %lu\n", Ret, ExitCode);
             CloseHandle(Restricted);
         }
