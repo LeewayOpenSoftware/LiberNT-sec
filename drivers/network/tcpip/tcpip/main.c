@@ -635,31 +635,6 @@ TiSignalChange(VOID)
     }
 }
 
-/* The control codes that change the stack's state; Windows defines them with
- * FILE_WRITE_ACCESS, so a handle without write access does not reach them */
-static BOOLEAN
-TiControlCodeWrites(
-    ULONG IoControlCode)
-{
-    switch (IoControlCode)
-    {
-        case IOCTL_TCP_SET_INFORMATION_EX:
-        case IOCTL_SET_IP_ADDRESS:
-        case IOCTL_DELETE_IP_ADDRESS:
-        case IOCTL_IP6_SET_ADDRESS:
-        case IOCTL_IP6_SET_ROUTE:
-        case IOCTL_IP6_SET_INTERFACE:
-        case IOCTL_IP6_SET_NEIGHBOR:
-        case IOCTL_IP_SET_INTERFACE:
-        case IOCTL_IP_FLUSH_PATHS:
-        case IOCTL_IP_SET_ROUTE:
-        case IOCTL_IP_SET_ADDRESS:
-            return TRUE;
-        default:
-            return FALSE;
-    }
-}
-
 NTSTATUS NTAPI
 TiDispatch(
     PDEVICE_OBJECT DeviceObject,
@@ -682,12 +657,8 @@ TiDispatch(
         return IRPFinish(Irp, STATUS_ACCESS_DENIED);
     }
 
-    if (Irp->RequestorMode == UserMode &&
-        TiControlCodeWrites(IrpSp->Parameters.DeviceIoControl.IoControlCode) &&
-        !IrpSp->FileObject->WriteAccess)
-    {
-        return IRPFinish(Irp, STATUS_ACCESS_DENIED);
-    }
+    /* The set codes carry FILE_WRITE_ACCESS: the I/O manager refuses them on a
+     * handle without write access before the request reaches this driver */
 
 #if 0
     Status = TdiMapUserRequest(DeviceObject, Irp, IrpSp);

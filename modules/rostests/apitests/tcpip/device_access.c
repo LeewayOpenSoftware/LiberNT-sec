@@ -21,7 +21,8 @@ OpenDevice(
     return CreateFileW(Name, Access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
 }
 
-/* The write-class codes are refused on a handle without write access, before the driver looks at the data */
+/* The write-class codes are refused by the I/O manager on a handle without write access, before the driver looks
+ * at the data */
 static
 VOID
 TestWriteCodesOnReadHandle(
@@ -50,6 +51,60 @@ TestWriteCodesOnReadHandle(
     Result = DeviceIoControl(Device, IOCTL_IP_QUERY_ROUTE, Buffer, sizeof(Buffer), Buffer, sizeof(Buffer), &Returned, NULL);
     Error = Result ? NO_ERROR : GetLastError();
     ok(Error != ERROR_ACCESS_DENIED, "IP_QUERY_ROUTE on a read handle: access denied\n");
+}
+
+/* An administrator's handle opened for writing reaches the set codes: the driver answers the request itself (an
+ * interface or context that does not exist), never with access denied. This is the path the DHCP client and
+ * iphlpapi take; a device open sets no access flags on the file object, so the driver cannot judge this itself. */
+static
+VOID
+TestWriteCodesOnWriteHandle(VOID)
+{
+    /* The address request of the TCP device, as iphlpapi lays it out */
+    struct
+    {
+        ULONG NteContext;
+        ULONG NewAddress;
+        ULONG NewNetmask;
+    } Address;
+    IP4_INTERFACE_INFO Interface;
+    HANDLE Device;
+    DWORD Returned = 0;
+    DWORD Error;
+    BOOL Result;
+
+    Device = OpenDevice(L"\\\\.\\Ip", GENERIC_WRITE);
+    if (Device == INVALID_HANDLE_VALUE)
+    {
+        Error = GetLastError();
+        if (Error == ERROR_ACCESS_DENIED)
+            skip("Not an administrator: the IP device does not open for writing\n");
+        else
+            ok(FALSE, "IP device for writing failed with %lu\n", Error);
+        return;
+    }
+
+    RtlZeroMemory(&Interface, sizeof(Interface));
+    Interface.Index = 0xFFFFFFFF;
+    Result = DeviceIoControl(Device, IOCTL_IP_SET_INTERFACE, &Interface, sizeof(Interface), NULL, 0, &Returned, NULL);
+    Error = Result ? NO_ERROR : GetLastError();
+    ok(Error != ERROR_ACCESS_DENIED, "IP_SET_INTERFACE on a write handle: access denied\n");
+    CloseHandle(Device);
+
+    /* iphlpapi opens the TCP device this way to add and delete addresses */
+    Device = OpenDevice(L"\\\\.\\Tcp", FILE_READ_DATA | FILE_WRITE_DATA);
+    ok(Device != INVALID_HANDLE_VALUE, "TCP device for reading and writing failed with %lu\n", GetLastError());
+    if (Device == INVALID_HANDLE_VALUE)
+        return;
+
+    RtlZeroMemory(&Address, sizeof(Address));
+    Address.NteContext = 0xFFFFFFFF;
+    Result = DeviceIoControl(Device, IOCTL_SET_IP_ADDRESS, &Address, sizeof(Address), &Address, sizeof(Address),
+                             &Returned, NULL);
+    Error = Result ? NO_ERROR : GetLastError();
+    ok(Error != ERROR_ACCESS_DENIED, "SET_IP_ADDRESS on a write handle: access denied\n");
+    ok(!Result, "SET_IP_ADDRESS for an unknown context succeeded\n");
+    CloseHandle(Device);
 }
 
 /* Without the administrators group the devices open for reading only */
@@ -138,5 +193,6 @@ START_TEST(device_access)
     TestWriteCodesOnReadHandle(Device);
     CloseHandle(Device);
 
+    TestWriteCodesOnWriteHandle();
     TestRestrictedOpens();
 }
