@@ -315,6 +315,7 @@ MiFaultWorker(
     KIRQL OldIrql;
     BOOLEAN ManagedWrite;
     BOOLEAN WasValid = FALSE;
+    BOOLEAN CopyCharged = FALSE;
 
     if (VirtualAddress < Space->LowestVa || VirtualAddress > Space->HighestVa ||
         MiArchIsSelfMapAddress(VirtualAddress))
@@ -397,7 +398,29 @@ RetryPage:
         if (Status == STATUS_PENDING_COPY)
         {
             WasValid = FALSE;
+
+            /* The owner-commit callback runs at the caller's IRQL, so charge the
+             * private copy with the PFN lock dropped and re-validate the PTE. */
+            MiPfnUnlock(&System->Pfn, TableFrame, OldIrql);
+            CopyCharged = MiChargeCommit(Space, 1);
+            OldIrql = MiPfnLock(&System->Pfn, TableFrame);
+            if (!CopyCharged)
+            {
+                Status = STATUS_COMMITMENT_LIMIT;
+                goto Complete;
+            }
+            if (MiArchPteRead(Slot) != RawPte)
+            {
+                MiPfnUnlock(&System->Pfn, TableFrame, OldIrql);
+                MiReturnCommit(Space, 1);
+                OldIrql = MiPfnLock(&System->Pfn, TableFrame);
+                CopyCharged = FALSE;
+                goto RetryPage;
+            }
+
             Status = MiCopyOnWrite(Space, Vad, PageVa, Slot, TableFrame, Pte);
+            if (NT_SUCCESS(Status))
+                CopyCharged = FALSE;
         }
         goto Complete;
     }
@@ -653,6 +676,8 @@ Complete:
         }
     }
     MiPfnUnlock(&System->Pfn, TableFrame, OldIrql);
+    if (CopyCharged)
+        MiReturnCommit(Space, 1);
     MI_RW_RELEASE_SHARED(&Space->Lock);
     if (NT_SUCCESS(Status) || Status == STATUS_GUARD_PAGE_VIOLATION ||
         Status == STATUS_EXECUTABLE_MEMORY_WRITE)

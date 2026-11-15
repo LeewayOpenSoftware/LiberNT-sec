@@ -1913,15 +1913,10 @@ MiCopyOnWrite(
     if (Vad->Type == MiVadPrivate || !(MI_PFN_FLAGS(&System->Pfn.Pfn[OldFrame]) & MI_PFN_FLAG_PROTOTYPE))
         return STATUS_ACCESS_VIOLATION;
 
-    if (!MiChargeCommit(Space, 1))
-        return STATUS_COMMITMENT_LIMIT;
-
+    /* The caller holds the commit charge for the copy and returns it on failure. */
     Frame = MiPfnAllocatePage(&System->Pfn, Space->IsSystem ? 0 : MI_ALLOCATE_HIGH);
     if (Frame == MI_FRAME_INVALID)
-    {
-        MiReturnCommit(Space, 1);
         return STATUS_NO_MEMORY;
-    }
 
     Source = MiPfnMapFrame(&System->Pfn, OldFrame);
     Target = MiPfnMapFrame(&System->Pfn, Frame);
@@ -1937,7 +1932,6 @@ MiCopyOnWrite(
         if (!NT_SUCCESS(Status))
         {
             MiPfnShareDecrement(&System->Pfn, Frame, TRUE);
-            MiReturnCommit(Space, 1);
             return Status;
         }
         Protection |= Cache;
