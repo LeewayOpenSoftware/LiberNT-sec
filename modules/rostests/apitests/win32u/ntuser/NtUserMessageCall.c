@@ -51,9 +51,9 @@ TestKernelProcedures(HWND hWnd)
     ok(TextA[5] == 0x55, "TextA[5] = 0x%x, written past the terminator\n", TextA[5]);
 
     /* A window rectangle in and out */
-    SetRect(&Rect, 10, 10, 60, 40);
+    SetRect(&Rect, 10, 10, 310, 210);
     NtUserMessageCall(hWnd, WM_NCCALCSIZE, FALSE, (LPARAM)&Rect, 0, FNID_DEFWINDOWPROC, FALSE);
-    ok(Rect.left >= 10 && Rect.top >= 10 && Rect.right <= 60 && Rect.bottom <= 40,
+    ok(Rect.left >= 10 && Rect.top >= 10 && Rect.right <= 310 && Rect.bottom <= 210,
        "Rect = %ld,%ld,%ld,%ld\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
 
     /* The same messages with an address in kernel space. An unfixed kernel
