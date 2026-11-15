@@ -494,7 +494,7 @@ TestTemporaryNamesDieWithProcess(VOID)
     }
     swprintf(CommandLine + wcslen(CommandLine),
              ARRAYSIZE(CommandLine) - wcslen(CommandLine),
-             L" --wnf-child --wnf-sub:%08lx%08lx",
+             L" NtWnfState --wnf-child --wnf-sub:%08lx%08lx",
              ParentName.Data[1], ParentName.Data[0]);
 
     SecurityAttributes.nLength = sizeof(SecurityAttributes);
@@ -735,7 +735,7 @@ TestSubscriptionCap(VOID)
         skip("GetModuleFileNameW failed with %lu\n", GetLastError());
         return;
     }
-    wcscat(CommandLine, L" --wnf-cap");
+    wcscat(CommandLine, L" NtWnfState --wnf-cap");
 
     ZeroMemory(&StartupInfo, sizeof(StartupInfo));
     StartupInfo.cb = sizeof(StartupInfo);
