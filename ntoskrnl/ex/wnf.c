@@ -71,10 +71,17 @@ ExpWnfInitialization(VOID)
     if ((Acl != NULL) && (SecurityDescriptor != NULL))
     {
         if (NT_SUCCESS(RtlCreateAcl(Acl, AclSize, ACL_REVISION)) &&
-            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_READ, SeWorldSid)) &&
-            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, SeLocalSystemSid)) &&
-            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, SeAliasAdminsSid)) &&
-            RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION) &&
+            NT_SUCCESS(RtlAddAccessAllowedAce(Acl, ACL_REVISION, WNF_QUERY_ACCESS, SeWorldSid)) &&
+            NT_SUCCESS(RtlAddAccessAllowedAce(Acl,
+                                              ACL_REVISION,
+                                              WNF_QUERY_ACCESS | WNF_UPDATE_ACCESS | DELETE,
+                                              SeLocalSystemSid)) &&
+            NT_SUCCESS(RtlAddAccessAllowedAce(Acl,
+                                              ACL_REVISION,
+                                              WNF_QUERY_ACCESS | WNF_UPDATE_ACCESS | DELETE,
+                                              SeAliasAdminsSid)) &&
+            NT_SUCCESS(RtlCreateSecurityDescriptor(SecurityDescriptor,
+                                                   SECURITY_DESCRIPTOR_REVISION)) &&
             NT_SUCCESS(RtlSetOwnerSecurityDescriptor(SecurityDescriptor, SeLocalSystemSid, FALSE)) &&
             NT_SUCCESS(RtlSetGroupSecurityDescriptor(SecurityDescriptor, SeAliasAdminsSid, FALSE)) &&
             NT_SUCCESS(RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE)))
@@ -449,6 +456,42 @@ ExpWnfCheckAccess(PWNF_NAME_INSTANCE Instance,
         SeFreePrivileges(Privileges);
 
     return Granted ? STATUS_SUCCESS : AccessStatus;
+}
+
+static
+VOID
+ExpWnfMapAclGenericAccess(PACL Acl)
+{
+    ULONG Index;
+    PACE_HEADER Ace;
+
+    if (Acl == NULL)
+        return;
+
+    for (Index = 0; Index < Acl->AceCount; Index++)
+    {
+        if (!NT_SUCCESS(RtlGetAce(Acl, Index, (PVOID*)&Ace)))
+            break;
+        if (Ace->AceFlags & INHERIT_ONLY_ACE)
+            continue;
+        if (Ace->AceSize < FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart))
+            continue;
+
+        switch (Ace->AceType)
+        {
+            case ACCESS_ALLOWED_ACE_TYPE:
+            case ACCESS_DENIED_ACE_TYPE:
+            case SYSTEM_AUDIT_ACE_TYPE:
+            case SYSTEM_ALARM_ACE_TYPE:
+            case ACCESS_ALLOWED_OBJECT_ACE_TYPE:
+            case ACCESS_DENIED_OBJECT_ACE_TYPE:
+            case SYSTEM_AUDIT_OBJECT_ACE_TYPE:
+            case SYSTEM_ALARM_OBJECT_ACE_TYPE:
+                RtlMapGenericMask(&((PACCESS_ALLOWED_ACE)Ace)->Mask,
+                                  &ExpWnfGenericMapping);
+                break;
+        }
+    }
 }
 
 static
@@ -879,6 +922,10 @@ NtCreateWnfStateName(PWNF_STATE_NAME StateName,
 
     if (SecurityDescriptor != NULL)
     {
+        BOOLEAN DaclPresent;
+        PACL Dacl;
+        BOOLEAN DaclDefaulted;
+
         Status = SeCaptureSecurityDescriptor(SecurityDescriptor,
                                              PreviousMode,
                                              PagedPool,
@@ -886,6 +933,17 @@ NtCreateWnfStateName(PWNF_STATE_NAME StateName,
                                              &CapturedSd);
         if (!NT_SUCCESS(Status))
             return Status;
+
+        /* Our SeAccessCheck consumes specific ACE masks: translate the
+           caller's GENERIC_* masks once, at capture. */
+        if (NT_SUCCESS(RtlGetDaclSecurityDescriptor(CapturedSd,
+                                                    &DaclPresent,
+                                                    &Dacl,
+                                                    &DaclDefaulted)) &&
+            DaclPresent)
+        {
+            ExpWnfMapAclGenericAccess(Dacl);
+        }
     }
 
     InternalName.Value = 0;
@@ -1350,10 +1408,18 @@ NtSubscribeWnfStateChange(PCWNF_STATE_NAME StateName,
     {
         InitializeListHead(&ReapList);
         ExpWnfLockExclusive(&Instance->SubscriptionListLock);
-        ExpWnfDetachSubscription(Subscription, &ReapList);
-        ExpWnfUnlockExclusive(&Instance->SubscriptionListLock);
-        ExpWnfDereferenceSubscription(Subscription);
-        ExpWnfReapSubscriptionList(&ReapList);
+        if (!InterlockedCompareExchange(&Subscription->Removed, 0, 0))
+        {
+            ExpWnfDetachSubscription(Subscription, &ReapList);
+            ExpWnfUnlockExclusive(&Instance->SubscriptionListLock);
+            ExpWnfDereferenceSubscription(Subscription);
+            ExpWnfReapSubscriptionList(&ReapList);
+        }
+        else
+        {
+            ExpWnfUnlockExclusive(&Instance->SubscriptionListLock);
+            ExpWnfReapSubscription(Subscription);
+        }
     }
     else
     {
