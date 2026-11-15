@@ -112,7 +112,8 @@ BuildDeniedSecurityDescriptor(VOID)
     if (UserSid != NULL)
         RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, UserSid);
     RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
-    RtlSetOwnerSecurityDescriptor(SecurityDescriptor, System, FALSE);
+    if (UserSid != NULL)
+        RtlSetOwnerSecurityDescriptor(SecurityDescriptor, UserSid, FALSE);
     RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE);
     return SecurityDescriptor;
 }
@@ -129,7 +130,8 @@ BuildEmptySecurityDescriptor(VOID)
     *RtlSubAuthoritySid(System, 0) = SECURITY_LOCAL_SYSTEM_RID;
     RtlCreateAcl((PACL)AclBuffer, sizeof(ACL), ACL_REVISION);
     RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
-    RtlSetOwnerSecurityDescriptor(SecurityDescriptor, System, FALSE);
+    if (CurrentUserSid != NULL)
+        RtlSetOwnerSecurityDescriptor(SecurityDescriptor, CurrentUserSid, FALSE);
     RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, (PACL)AclBuffer, FALSE);
     return SecurityDescriptor;
 }
@@ -556,7 +558,7 @@ TestTemporaryNamesDieWithProcess(VOID)
     ok(WaitForSingleObject(ProcessInformation.hProcess, 30000) == WAIT_OBJECT_0,
        "Child did not exit\n");
     ok(GetExitCodeProcess(ProcessInformation.hProcess, &Code) && (Code == 0),
-       "Child exit code %lu\n", Code);
+       "Child exit code 0x%08lx output: %.*s\n", Code, (int)Total, Buffer);
     CloseHandle(ProcessInformation.hProcess);
     CloseHandle(ProcessInformation.hThread);
 
@@ -626,7 +628,7 @@ WnfTemporaryChildMain(VOID)
                 if (!NT_SUCCESS(Status))
                 {
                     printf("child subscribe failed 0x%08lx\n", Status);
-                    ExitProcess(1);
+                    ExitProcess((ULONG)Status);
                 }
             }
             /* Stay alive briefly so the parent can observe the subscriptions. */
@@ -644,7 +646,7 @@ WnfTemporaryChildMain(VOID)
         if (!NT_SUCCESS(Status))
         {
             printf("child create failed 0x%08lx\n", Status);
-            ExitProcess(1);
+            ExitProcess((ULONG)Status);
         }
         printf("%08lx%08lx\n", StateName.Data[1], StateName.Data[0]);
     }
@@ -683,7 +685,7 @@ WnfCapChildMain(VOID)
         if (Status != STATUS_QUOTA_EXCEEDED)
         {
             printf("cap child create returned 0x%08lx\n", Status);
-            ExitProcess(1);
+            ExitProcess((ULONG)Status);
         }
         break;
     }
@@ -691,7 +693,7 @@ WnfCapChildMain(VOID)
     {
         printf("cap child expected %d name successes, got %lu\n",
                WNF_MAX_SUBSCRIPTIONS_PER_PROCESS, Successes);
-        ExitProcess(1);
+        ExitProcess((ULONG)Status);
     }
 
     Successes = 0;
@@ -706,7 +708,7 @@ WnfCapChildMain(VOID)
         if (Status != STATUS_QUOTA_EXCEEDED)
         {
             printf("cap child subscribe returned 0x%08lx\n", Status);
-            ExitProcess(1);
+            ExitProcess((ULONG)Status);
         }
         break;
     }
@@ -715,7 +717,7 @@ WnfCapChildMain(VOID)
     {
         printf("cap child expected %d subscribe successes, got %lu\n",
                WNF_MAX_SUBSCRIPTIONS_PER_PROCESS, Successes);
-        ExitProcess(1);
+        ExitProcess((ULONG)Status);
     }
     ExitProcess(0);
 }
@@ -747,7 +749,7 @@ TestSubscriptionCap(VOID)
     ok(WaitForSingleObject(ProcessInformation.hProcess, 60000) == WAIT_OBJECT_0,
        "Cap child did not exit\n");
     ok(GetExitCodeProcess(ProcessInformation.hProcess, &Code) && (Code == 0),
-       "Cap child exit code %lu\n", Code);
+       "Cap child exit code 0x%08lx\n", Code);
     CloseHandle(ProcessInformation.hProcess);
     CloseHandle(ProcessInformation.hThread);
 }
