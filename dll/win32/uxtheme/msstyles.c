@@ -104,6 +104,9 @@ HRESULT MSSTYLES_OpenThemeFile(LPCWSTR lpThemeFile, LPCWSTR pszColorName, LPCWST
 
     WORD version;
     DWORD versize;
+#ifdef __REACTOS__
+    WORD *pVersion;
+#endif
     LPWSTR pszColors;
     LPWSTR pszSelectedColor = NULL;
     LPWSTR pszSizes;
@@ -130,7 +133,18 @@ HRESULT MSSTYLES_OpenThemeFile(LPCWSTR lpThemeFile, LPCWSTR pszColorName, LPCWST
         hr = HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
         goto invalid_theme;
     }
+#ifdef __REACTOS__
+    /* The directory entry may name data that cannot be loaded */
+    pVersion = LoadResource(hTheme, hrsc);
+    if(!pVersion)
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_BAD_FORMAT);
+        goto invalid_theme;
+    }
+    version = *pVersion;
+#else
     version = *(WORD*)LoadResource(hTheme, hrsc);
+#endif
     if(version != MSSTYLES_VERSION)
     {
         TRACE("Version of theme file is unsupported: 0x%04x\n", version);
