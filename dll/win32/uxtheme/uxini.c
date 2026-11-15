@@ -237,18 +237,22 @@ static LPCWSTR UXINI_GetNextLine(PUXINI_FILE uf, DWORD *dwLen)
         if(UXINI_eof(uf)) return NULL;
         /* Skip whitespace and empty lines */
         while(!UXINI_eof(uf) && (UXINI_isspace(*uf->lpCurLoc) || *uf->lpCurLoc == '\n')) uf->lpCurLoc++;
+#ifdef __REACTOS__
+        /* Only whitespace was left: there is no character to look at */
+        if(UXINI_eof(uf)) return NULL;
+#endif
         lpLineStart = uf->lpCurLoc;
         lpLineEnd = uf->lpCurLoc;
         while(!UXINI_eof(uf) && *uf->lpCurLoc != '\n' && *uf->lpCurLoc != ';') lpLineEnd = ++uf->lpCurLoc;
         /* If comment was found, skip the rest of the line */
-        if(*uf->lpCurLoc == ';')
+        if(!UXINI_eof(uf) && *uf->lpCurLoc == ';')
             while(!UXINI_eof(uf) && *uf->lpCurLoc != '\n') uf->lpCurLoc++;
         len = (lpLineEnd - lpLineStart);
         if(*lpLineStart != ';' && len == 0)
             return NULL;
     } while(*lpLineStart == ';');
     /* Remove whitespace from end of line */
-    while(UXINI_isspace(lpLineStart[len-1])) len--;
+    while(len > 0 && UXINI_isspace(lpLineStart[len-1])) len--;
     *dwLen = len;
 
     return lpLineStart;
