@@ -972,7 +972,7 @@ CowLimitOwnerCharge(_In_ PVOID Owner, _In_ LONG64 Pages)
         Budget->ChargeIrql = MiHostIrql;
     if (Budget->Refuse)
     {
-        /* The kernel's owner takes the job lock on a refusal; that needs IRQL <= APC_LEVEL. */
+        /* The owner may block when it refuses, so this must run below DISPATCH_LEVEL. */
         if (MiHostIrql > Budget->RefuseIrql)
             Budget->RefuseIrql = MiHostIrql;
         Budget->Refusals++;

@@ -398,9 +398,15 @@ RetryPage:
         if (Status == STATUS_PENDING_COPY)
         {
             WasValid = FALSE;
+            if (Vad->Type == MiVadPrivate)
+            {
+                Status = STATUS_ACCESS_VIOLATION;
+                goto Complete;
+            }
 
             /* The owner-commit callback runs at the caller's IRQL, so charge the
-             * private copy with the PFN lock dropped and re-validate the PTE. */
+             * private copy with the PFN lock dropped and re-validate the PTE. A
+             * concurrent accessed-bit update costs one extra return and retry. */
             MiPfnUnlock(&System->Pfn, TableFrame, OldIrql);
             CopyCharged = MiChargeCommit(Space, 1);
             OldIrql = MiPfnLock(&System->Pfn, TableFrame);
