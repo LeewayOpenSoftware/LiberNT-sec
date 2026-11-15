@@ -22,6 +22,7 @@ typedef struct _TEST_WNF_STATE_NAME
 
 typedef NTSTATUS (NTAPI *PNT_CREATE_WNF_STATE_NAME)(TEST_WNF_STATE_NAME *, ULONG, ULONG, BOOLEAN, PVOID, ULONG, PSECURITY_DESCRIPTOR);
 typedef NTSTATUS (NTAPI *PNT_DELETE_WNF_STATE_NAME)(const TEST_WNF_STATE_NAME *);
+typedef NTSTATUS (NTAPI *PNT_DELETE_WNF_STATE_DATA)(const TEST_WNF_STATE_NAME *, const VOID *);
 typedef NTSTATUS (NTAPI *PNT_UPDATE_WNF_STATE_DATA)(const TEST_WNF_STATE_NAME *, const VOID *, ULONG, PVOID, const VOID *, ULONG, LOGICAL);
 typedef NTSTATUS (NTAPI *PNT_QUERY_WNF_STATE_DATA)(const TEST_WNF_STATE_NAME *, PVOID, const VOID *, PULONG, PVOID, PULONG);
 typedef NTSTATUS (NTAPI *PNT_QUERY_WNF_STATE_NAME_INFORMATION)(const TEST_WNF_STATE_NAME *, ULONG, const VOID *, PVOID, ULONG);
@@ -30,6 +31,7 @@ typedef NTSTATUS (NTAPI *PNT_UNSUBSCRIBE_WNF_STATE_CHANGE)(const TEST_WNF_STATE_
 
 static PNT_CREATE_WNF_STATE_NAME pNtCreateWnfStateName;
 static PNT_DELETE_WNF_STATE_NAME pNtDeleteWnfStateName;
+static PNT_DELETE_WNF_STATE_DATA pNtDeleteWnfStateData;
 static PNT_UPDATE_WNF_STATE_DATA pNtUpdateWnfStateData;
 static PNT_QUERY_WNF_STATE_DATA pNtQueryWnfStateData;
 static PNT_QUERY_WNF_STATE_NAME_INFORMATION pNtQueryWnfStateNameInformation;
@@ -57,6 +59,48 @@ BuildSecurityDescriptor(VOID)
     return SecurityDescriptor;
 }
 
+static PSECURITY_DESCRIPTOR
+BuildDeniedSecurityDescriptor(VOID)
+{
+    SID_IDENTIFIER_AUTHORITY WorldAuthority = {SECURITY_WORLD_SID_AUTHORITY};
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    UCHAR WorldSidBuffer[SECURITY_MAX_SID_SIZE];
+    UCHAR SystemSidBuffer[SECURITY_MAX_SID_SIZE];
+    PSID Everyone = (PSID)WorldSidBuffer;
+    PSID System = (PSID)SystemSidBuffer;
+    PACL Acl = (PACL)AclBuffer;
+    PSECURITY_DESCRIPTOR SecurityDescriptor = (PSECURITY_DESCRIPTOR)SecurityDescriptorBuffer;
+
+    RtlInitializeSid(Everyone, &WorldAuthority, 1);
+    *RtlSubAuthoritySid(Everyone, 0) = SECURITY_WORLD_RID;
+    RtlInitializeSid(System, &NtAuthority, 1);
+    *RtlSubAuthoritySid(System, 0) = SECURITY_LOCAL_SYSTEM_RID;
+    RtlCreateAcl(Acl, sizeof(AclBuffer), ACL_REVISION);
+    RtlAddAccessDeniedAce(Acl, ACL_REVISION, GENERIC_READ | GENERIC_WRITE, Everyone);
+    RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, System);
+    RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+    RtlSetOwnerSecurityDescriptor(SecurityDescriptor, System, FALSE);
+    RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE);
+    return SecurityDescriptor;
+}
+
+static PSECURITY_DESCRIPTOR
+BuildEmptySecurityDescriptor(VOID)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    UCHAR SidBuffer[SECURITY_MAX_SID_SIZE];
+    PSID System = (PSID)SidBuffer;
+    PSECURITY_DESCRIPTOR SecurityDescriptor = (PSECURITY_DESCRIPTOR)SecurityDescriptorBuffer;
+
+    RtlInitializeSid(System, &NtAuthority, 1);
+    *RtlSubAuthoritySid(System, 0) = SECURITY_LOCAL_SYSTEM_RID;
+    RtlCreateAcl((PACL)AclBuffer, sizeof(ACL), ACL_REVISION);
+    RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+    RtlSetOwnerSecurityDescriptor(SecurityDescriptor, System, FALSE);
+    RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, (PACL)AclBuffer, FALSE);
+    return SecurityDescriptor;
+}
+
 static ULONG
 QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoClass, _Out_ NTSTATUS *Status)
 {
@@ -64,6 +108,142 @@ QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoC
 
     *Status = pNtQueryWnfStateNameInformation(StateName, InfoClass, NULL, &Value, sizeof(Value));
     return Value;
+}
+
+#define WNF_RACE_SUBSCRIBERS    2
+#define WNF_RACE_ITERATIONS     1000
+
+static DWORD WINAPI
+SubscribeThread(_In_ PVOID Parameter)
+{
+    TEST_WNF_STATE_NAME *StateName = Parameter;
+    ULONG Index;
+    ULONG64 SubscriptionId;
+
+    for (Index = 0; Index < WNF_RACE_ITERATIONS; Index++)
+    {
+        if (!NT_SUCCESS(pNtSubscribeWnfStateChange(StateName, 0, 1, &SubscriptionId)))
+            return 1;
+    }
+
+    return 0;
+}
+
+static DWORD WINAPI
+UnsubscribeThread(_In_ PVOID Parameter)
+{
+    TEST_WNF_STATE_NAME *StateName = Parameter;
+    ULONG Index;
+    NTSTATUS Status;
+
+    for (Index = 0; Index < WNF_RACE_ITERATIONS; Index++)
+    {
+        Status = pNtUnsubscribeWnfStateChange(StateName);
+        if (!NT_SUCCESS(Status) && (Status != STATUS_NOT_FOUND) &&
+            (Status != STATUS_OBJECT_NAME_NOT_FOUND))
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static VOID
+TestSubscribeUnsubscribeRace(VOID)
+{
+    TEST_WNF_STATE_NAME StateName = {{0, 0}};
+    HANDLE Threads[WNF_RACE_SUBSCRIBERS];
+    ULONG Index = 0, Value = 0;
+    DWORD ExitCode;
+    NTSTATUS Status;
+
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Value), BuildSecurityDescriptor());
+    ok(Status == STATUS_SUCCESS, "NtCreateWnfStateName returned 0x%08lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    for (Index = 0; Index < WNF_RACE_SUBSCRIBERS; Index++)
+    {
+        Threads[Index] = CreateThread(NULL, 0, Index == 0 ? SubscribeThread : UnsubscribeThread,
+                                      (PVOID)&StateName, 0, NULL);
+        ok(Threads[Index] != NULL, "CreateThread failed with %lu\n", GetLastError());
+        if (Threads[Index] == NULL)
+            break;
+    }
+
+    if (Index == WNF_RACE_SUBSCRIBERS)
+    {
+        ok(WaitForMultipleObjects(WNF_RACE_SUBSCRIBERS, Threads, TRUE, 30000) == WAIT_OBJECT_0,
+           "Subscribe/unsubscribe race threads did not finish\n");
+    }
+
+    for (Index = 0; Index < WNF_RACE_SUBSCRIBERS; Index++)
+    {
+        if (Threads[Index] == NULL)
+            break;
+        ok(GetExitCodeThread(Threads[Index], &ExitCode) && (ExitCode == 0), "Race thread %lu failed\n", Index);
+        CloseHandle(Threads[Index]);
+    }
+
+    Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, NULL);
+    ok(Status == STATUS_SUCCESS, "Subscribe after race returned 0x%08lx\n", Status);
+    Status = pNtUnsubscribeWnfStateChange(&StateName);
+    ok(Status == STATUS_SUCCESS, "Unsubscribe after race returned 0x%08lx\n", Status);
+    Status = pNtDeleteWnfStateName(&StateName);
+    ok(Status == STATUS_SUCCESS, "Delete after race returned 0x%08lx\n", Status);
+}
+
+static VOID
+TestSecurityDescriptorEnforcement(VOID)
+{
+    TEST_WNF_STATE_NAME StateName = {{0, 0}};
+    UCHAR Buffer[16];
+    ULONG64 SubscriptionId = 0;
+    ULONG Stamp, Size;
+    ULONG Data = 0x12345678;
+    NTSTATUS Status;
+
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Buffer), NULL);
+    ok(Status == STATUS_ACCESS_VIOLATION, "Create with a NULL descriptor returned 0x%08lx\n", Status);
+
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Buffer), BuildEmptySecurityDescriptor());
+    ok(Status == STATUS_SUCCESS, "Create with an empty DACL returned 0x%08lx\n", Status);
+    if (NT_SUCCESS(Status))
+    {
+        Size = sizeof(Buffer);
+        Status = pNtQueryWnfStateData(&StateName, NULL, NULL, &Stamp, Buffer, &Size);
+        ok(Status == STATUS_ACCESS_DENIED, "Query against an empty DACL returned 0x%08lx\n", Status);
+        Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, &SubscriptionId);
+        ok(Status == STATUS_ACCESS_DENIED, "Subscribe against an empty DACL returned 0x%08lx\n", Status);
+        Status = pNtDeleteWnfStateName(&StateName);
+        ok(Status == STATUS_ACCESS_DENIED, "Delete against an empty DACL returned 0x%08lx\n", Status);
+    }
+
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Buffer), BuildDeniedSecurityDescriptor());
+    ok(Status == STATUS_SUCCESS, "Create with a denied DACL returned 0x%08lx\n", Status);
+    if (NT_SUCCESS(Status))
+    {
+        Size = sizeof(Buffer);
+        Status = pNtQueryWnfStateData(&StateName, NULL, NULL, &Stamp, Buffer, &Size);
+        ok(Status == STATUS_ACCESS_DENIED, "Query against a denied DACL returned 0x%08lx\n", Status);
+
+        Status = pNtUpdateWnfStateData(&StateName, &Data, sizeof(Data), NULL, NULL, 0, FALSE);
+        ok(Status == STATUS_ACCESS_DENIED, "Update against a denied DACL returned 0x%08lx\n", Status);
+
+        Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, &SubscriptionId);
+        ok(Status == STATUS_ACCESS_DENIED, "Subscribe against a denied DACL returned 0x%08lx\n", Status);
+
+        Status = pNtDeleteWnfStateData(&StateName, NULL);
+        ok(Status == STATUS_ACCESS_DENIED, "Delete data against a denied DACL returned 0x%08lx\n", Status);
+
+        Status = pNtDeleteWnfStateName(&StateName);
+        ok(Status == STATUS_ACCESS_DENIED, "Delete name against a denied DACL returned 0x%08lx\n", Status);
+    }
 }
 
 static DWORD WINAPI
@@ -128,13 +308,14 @@ START_TEST(NtWnfState)
 
     pNtCreateWnfStateName = (PNT_CREATE_WNF_STATE_NAME)GetProcAddress(Ntdll, "NtCreateWnfStateName");
     pNtDeleteWnfStateName = (PNT_DELETE_WNF_STATE_NAME)GetProcAddress(Ntdll, "NtDeleteWnfStateName");
+    pNtDeleteWnfStateData = (PNT_DELETE_WNF_STATE_DATA)GetProcAddress(Ntdll, "NtDeleteWnfStateData");
     pNtUpdateWnfStateData = (PNT_UPDATE_WNF_STATE_DATA)GetProcAddress(Ntdll, "NtUpdateWnfStateData");
     pNtQueryWnfStateData = (PNT_QUERY_WNF_STATE_DATA)GetProcAddress(Ntdll, "NtQueryWnfStateData");
     pNtQueryWnfStateNameInformation = (PNT_QUERY_WNF_STATE_NAME_INFORMATION)GetProcAddress(Ntdll, "NtQueryWnfStateNameInformation");
     pNtSubscribeWnfStateChange = (PNT_SUBSCRIBE_WNF_STATE_CHANGE)GetProcAddress(Ntdll, "NtSubscribeWnfStateChange");
     pNtUnsubscribeWnfStateChange = (PNT_UNSUBSCRIBE_WNF_STATE_CHANGE)GetProcAddress(Ntdll, "NtUnsubscribeWnfStateChange");
-    if (!pNtCreateWnfStateName || !pNtDeleteWnfStateName || !pNtUpdateWnfStateData || !pNtQueryWnfStateData ||
-        !pNtQueryWnfStateNameInformation || !pNtSubscribeWnfStateChange || !pNtUnsubscribeWnfStateChange)
+    if (!pNtCreateWnfStateName || !pNtDeleteWnfStateName || !pNtDeleteWnfStateData || !pNtUpdateWnfStateData ||
+        !pNtQueryWnfStateData || !pNtQueryWnfStateNameInformation || !pNtSubscribeWnfStateChange || !pNtUnsubscribeWnfStateChange)
     {
         skip("WNF system calls are not exported\n");
         return;
@@ -193,4 +374,7 @@ START_TEST(NtWnfState)
     ok(Status == STATUS_OBJECT_NAME_NOT_FOUND, "Query of a deleted name returned 0x%08lx\n", Status);
     Status = pNtDeleteWnfStateName(&StateName);
     ok(Status == STATUS_OBJECT_NAME_NOT_FOUND, "Second delete returned 0x%08lx\n", Status);
+
+    TestSecurityDescriptorEnforcement();
+    TestSubscribeUnsubscribeRace();
 }
