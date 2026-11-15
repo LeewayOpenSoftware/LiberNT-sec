@@ -1377,7 +1377,7 @@ SeclCreateProcessElevatedW(
         LeaveCriticalSection(&DesktopAccessLock);
         if (dwError != ERROR_SUCCESS)
         {
-            ERR("Desktop %S is not usable by the caller: Error %lu\n", Desktop, dwError);
+            ERR("Desktop %.64S is not usable by the caller: Error %lu\n", Desktop, dwError);
             dwError = ERROR_ACCESS_DENIED;
             goto done;
         }

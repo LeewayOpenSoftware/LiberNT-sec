@@ -634,7 +634,7 @@ PromptAndRunProcessAs(
             pPI->hProcess = NULL;
             return S_FALSE;
         }
-        ERR("Elevation of '%S' through the broker failed with Error %lu\n", Cmd, dwElevate);
+        ERR("Elevation through the broker failed with Error %lu\n", dwElevate);
         if (dwElevate != ERROR_ELEVATION_REQUIRED && dwElevate != ERROR_SERVICE_NOT_ACTIVE)
         {
             SHELL_ErrorBox(hwnd, dwElevate);
@@ -644,7 +644,7 @@ PromptAndRunProcessAs(
     }
     else
     {
-        ERR("'%S' needs an administrator and the caller is no limited administrator: asking for credentials\n", Cmd);
+        TRACE("The caller is no limited administrator: asking for credentials\n");
     }
 again:
     dlgret = DialogBoxParamW(shell32_hInstance, MAKEINTRESOURCEW(IDD_RUN_AS),
@@ -2392,10 +2392,23 @@ static void do_error_dialog(UINT_PTR retval, HWND hwnd, PCWSTR filename)
     SetLastError(error_code); // Restore
 }
 
+// A start the user declined: read right after the attempt, before anything else touches the last error
+static BOOL SHELL_Declined(UINT_PTR retval)
+{
+    return retval == SE_ERR_ACCESSDENIED && GetLastError() == ERROR_CANCELLED;
+}
+
+// No other way of starting is tried and no error is shown; the caller sees ERROR_CANCELLED
+static BOOL SHELL_ReturnDeclined(LPSHELLEXECUTEINFOW sei)
+{
+    sei->hInstApp = (HINSTANCE)UlongToHandle(SE_ERR_ACCESSDENIED);
+    SetLastError(ERROR_CANCELLED);
+    return FALSE;
+}
+
 static UINT_PTR ExecuteFailed(UINT_PTR retval, SHELLEXECUTEINFOW &sei, LPCWSTR lpFile, BOOL AllowOpenWith = TRUE)
 {
-    // A start the user declined is no error to report
-    BOOL declined = (retval == SE_ERR_ACCESSDENIED && GetLastError() == ERROR_CANCELLED);
+    BOOL declined = SHELL_Declined(retval);
 
     if (retval <= 32 && !(sei.fMask & SEE_MASK_FLAG_NO_UI) && !declined)
     {
@@ -2666,6 +2679,8 @@ static BOOL SHELL_execute(LPSHELLEXECUTEINFOW sei, SHELL_ExecuteW32 execfunc)
     if (sei_tmp.fMask & SEE_MASK_CLASSALL)
     {
         retval = SHELL_execute_class(wszApplicationName, &sei_tmp, sei, execfunc);
+        if (SHELL_Declined(retval))
+            return SHELL_ReturnDeclined(sei);
         if (retval <= 32 && !(sei_tmp.fMask & SEE_MASK_FLAG_NO_UI))
         {
             OPENASINFO Info;
@@ -2837,6 +2852,8 @@ static BOOL SHELL_execute(LPSHELLEXECUTEINFOW sei, SHELL_ExecuteW32 execfunc)
         retval = bExeFound ? execfunc(wcmd, NULL, FALSE, &sei_tmp, sei) : SE_ERR_FNF;
         if (retval > 32)
             return TRUE;
+        if (SHELL_Declined(retval))
+            return SHELL_ReturnDeclined(sei);
     }
 
     /* Else, try to find the executable */
@@ -2927,6 +2944,8 @@ static BOOL SHELL_execute(LPSHELLEXECUTEINFOW sei, SHELL_ExecuteW32 execfunc)
 
     TRACE("retval %lu\n", retval);
 
+    if (SHELL_Declined(retval))
+        return SHELL_ReturnDeclined(sei);
     if (retval <= 32)
     {
         if (retval == SE_ERR_NOASSOC)
