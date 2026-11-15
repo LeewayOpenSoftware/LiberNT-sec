@@ -1811,7 +1811,12 @@ static BOOL MSSTYLES_GetNextToken(LPCWSTR lpStringStart, LPCWSTR lpStringEnd, LP
     start = cur;
     while(cur < lpStringEnd && *cur != ',') cur++;
     end = cur;
+#ifdef __REACTOS__
+    /* end is one past the token: trim the spaces before it, not the character at it */
+    while(end > start && isSpace(end[-1])) end--;
+#else
     while(isSpace(*end)) end--;
+#endif
 
     lstrcpynW(lpBuff, start, min(buffSize, end-start+1));
 
