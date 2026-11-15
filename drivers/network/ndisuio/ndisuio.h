@@ -10,6 +10,7 @@
 
 #include <ndis.h>
 #include <nuiouser.h>
+#include <wdmsec.h>
 
 extern PDEVICE_OBJECT GlobalDeviceObject;
 extern NDIS_HANDLE GlobalProtocolHandle;

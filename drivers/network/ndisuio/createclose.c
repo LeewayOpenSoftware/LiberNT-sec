@@ -22,6 +22,16 @@ NduDispatchCreate(PDEVICE_OBJECT DeviceObject,
 
     DPRINT("Created file object 0x%x\n", IrpSp->FileObject);
 
+    /* Reject requests with trailing names - ndisuio has no namespace */
+    if (IrpSp->FileObject->FileName.Length > 0)
+    {
+        DPRINT1("Rejected create with trailing name\n");
+        Irp->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+        Irp->IoStatus.Information = 0;
+        IoCompleteRequest(Irp, IO_NO_INCREMENT);
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
     /* This is associated with an adapter during IOCTL_NDISUIO_OPEN_(WRITE_)DEVICE */
     IrpSp->FileObject->FsContext = NULL;
     IrpSp->FileObject->FsContext2 = NULL;
