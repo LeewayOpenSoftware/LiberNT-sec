@@ -45,7 +45,7 @@ SetupListeningPair(
                                    NULL,
                                    NULL,
                                    &IoStatus,
-                                   IOCTL_AFD_LISTEN,
+                                   IOCTL_AFD_START_LISTEN,
                                    &ListenData,
                                    sizeof(ListenData),
                                    NULL,
@@ -55,7 +55,7 @@ SetupListeningPair(
         NtWaitForSingleObject(Server, FALSE, NULL);
         Status = IoStatus.Status;
     }
-    ok(Status == STATUS_SUCCESS, "IOCTL_AFD_LISTEN failed with %lx\n", Status);
+    ok(Status == STATUS_SUCCESS, "IOCTL_AFD_START_LISTEN failed with %lx\n", Status);
     if (!NT_SUCCESS(Status)) goto Cleanup;
 
     Status = AfdCreateSocket(&Peer, AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -352,7 +352,7 @@ TestMinimumLengths(void)
                                    NULL,
                                    NULL,
                                    &IoStatus,
-                                   IOCTL_AFD_LISTEN,
+                                   IOCTL_AFD_START_LISTEN,
                                    &ListenData,
                                    sizeof(ULONG),
                                    NULL,
@@ -429,7 +429,7 @@ TestSelect(void)
     RtlZeroMemory(Buffer, sizeof(Buffer));
     ((PAFD_POLL_INFO)Buffer)->Timeout.QuadPart = 0;
     ((PAFD_POLL_INFO)Buffer)->HandleCount = 1;
-    ((PAFD_POLL_INFO)Buffer)->Handles[0].Handle = (HANDLE)SocketHandle;
+    ((PAFD_POLL_INFO)Buffer)->Handles[0].Handle = (SOCKET)(ULONG_PTR)SocketHandle;
     ((PAFD_POLL_INFO)Buffer)->Handles[0].Events = AFD_EVENT_SEND;
 
     Status = NtDeviceIoControlFile(SocketHandle,
@@ -510,7 +510,6 @@ TestShortAddress(void)
     AfdBuffer.len = sizeof(Payload);
     SendInfo.BufferArray = &AfdBuffer;
     SendInfo.BufferCount = 1;
-    SendInfo.TdiFlags = 0;
     SendInfo.AfdFlags = 0;
     SendInfo.TdiConnection.RemoteAddress = (PVOID)ShortAddress;
     SendInfo.TdiConnection.RemoteAddressLength = sizeof(ShortAddress);
@@ -705,7 +704,7 @@ TestConnectExWithData(void)
                                        NULL,
                                        NULL,
                                        &ListenIosb,
-                                       IOCTL_AFD_LISTEN,
+                                       IOCTL_AFD_START_LISTEN,
                                        &ListenData,
                                        sizeof(ListenData),
                                        NULL,
@@ -715,7 +714,7 @@ TestConnectExWithData(void)
             NtWaitForSingleObject(Listener, FALSE, NULL);
             Status = ListenIosb.Status;
         }
-        ok(Status == STATUS_SUCCESS, "IOCTL_AFD_LISTEN failed with %lx\n", Status);
+        ok(Status == STATUS_SUCCESS, "IOCTL_AFD_START_LISTEN failed with %lx\n", Status);
         if (!NT_SUCCESS(Status)) goto Cleanup;
 
         Status = AfdGetSockName(Listener, (struct sockaddr *)&Addr, &NameLength);
@@ -833,7 +832,6 @@ TestUnixZeroLength(void)
     AfdBuffer.len = sizeof(Payload);
     SendInfo.BufferArray = &AfdBuffer;
     SendInfo.BufferCount = 1;
-    SendInfo.TdiFlags = 0;
     SendInfo.AfdFlags = 0;
     SendInfo.TdiConnection.RemoteAddress = (PVOID)UnixAddress;
     SendInfo.TdiConnection.RemoteAddressLength = sizeof(UnixAddress);
