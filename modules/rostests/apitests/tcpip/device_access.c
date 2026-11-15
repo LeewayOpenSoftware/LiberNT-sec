@@ -21,6 +21,23 @@ OpenDevice(
     return CreateFileW(Name, Access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
 }
 
+static
+BOOL
+IsAdministrator(VOID)
+{
+    static SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    PSID Admins;
+    BOOL Member = FALSE;
+
+    if (!AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+                                  0, 0, 0, 0, 0, 0, &Admins))
+        return FALSE;
+    if (!CheckTokenMembership(NULL, Admins, &Member))
+        Member = FALSE;
+    FreeSid(Admins);
+    return Member;
+}
+
 /* The write-class codes are refused by the I/O manager on a handle without write access, before the driver looks
  * at the data */
 static
@@ -77,12 +94,19 @@ TestWriteCodesOnWriteHandle(VOID)
     if (Device == INVALID_HANDLE_VALUE)
     {
         Error = GetLastError();
-        if (Error == ERROR_ACCESS_DENIED)
-            skip("Not an administrator: the IP device does not open for writing\n");
+        if (IsAdministrator())
+        {
+            ok(FALSE, "Administrator: IP device for writing failed with %lu\n", Error);
+        }
         else
-            ok(FALSE, "IP device for writing failed with %lu\n", Error);
+        {
+            /* The refusal is the expected answer for a standard user */
+            ok(Error == ERROR_ACCESS_DENIED, "Standard user: IP device for writing: error %lu\n", Error);
+            skip("Not an administrator: the write handle cases need one\n");
+        }
         return;
     }
+    ok(IsAdministrator(), "Standard user: the IP device opened for writing\n");
 
     RtlZeroMemory(&Interface, sizeof(Interface));
     Interface.Index = 0xFFFFFFFF;
