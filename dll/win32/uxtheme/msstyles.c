@@ -1780,6 +1780,12 @@ static BOOL MSSTYLES_GetNextLong(LPCWSTR lpStringStart, LPCWSTR lpStringEnd, LPC
         gotNeg = TRUE;
     }
     while(cur < lpStringEnd && (*cur >= '0' && *cur <= '9')) {
+#ifdef __REACTOS__
+        /* The digits come from the style: hold the value at the largest LONG instead of overflowing */
+        if(total > (MAXLONG - (*cur - '0')) / 10)
+            total = MAXLONG;
+        else
+#endif
         total = total * 10 + (*cur - '0');
         cur++;
     }
