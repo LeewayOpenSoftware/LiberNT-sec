@@ -112,6 +112,99 @@ QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoC
 
 #define WNF_RACE_SUBSCRIBERS    2
 #define WNF_RACE_ITERATIONS     1000
+#define WNF_FAULT_ITERATIONS    400
+
+typedef struct _WNF_FAULT_CONTEXT
+{
+    TEST_WNF_STATE_NAME *StateName;
+    PVOID SlotPage;
+    volatile LONG Stop;
+} WNF_FAULT_CONTEXT, *PWNF_FAULT_CONTEXT;
+
+static DWORD WINAPI
+IdWriteFaultThread(_In_ PWNF_FAULT_CONTEXT Context)
+{
+    ULONG OldProtect;
+    LONG Index;
+
+    for (Index = 0; Index < 4000; Index++)
+    {
+        VirtualProtect(Context->SlotPage, 0x10000, PAGE_NOACCESS, &OldProtect);
+        VirtualProtect(Context->SlotPage, 0x10000, PAGE_READWRITE, &OldProtect);
+    }
+    return 0;
+}
+
+static DWORD WINAPI
+BackgroundUnsubscribeThread(_In_ PWNF_FAULT_CONTEXT Context)
+{
+    LONG Index;
+
+    for (Index = 0; Index < WNF_FAULT_ITERATIONS; Index++)
+        pNtUnsubscribeWnfStateChange(Context->StateName);
+    return 0;
+}
+
+static VOID
+TestSubscribeIdWriteFault(VOID)
+{
+    WNF_FAULT_CONTEXT Context;
+    TEST_WNF_STATE_NAME StateName = {{0, 0}};
+    HANDLE Threads[2];
+    ULONG Index, Value = 0;
+    DWORD ExitCode;
+    NTSTATUS Status;
+
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Value), BuildSecurityDescriptor());
+    ok(Status == STATUS_SUCCESS, "NtCreateWnfStateName returned 0x%08lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    Context.StateName = &StateName;
+    Context.SlotPage = VirtualAlloc(NULL, 0x10000, MEM_COMMIT, PAGE_READWRITE);
+    ok(Context.SlotPage != NULL, "VirtualAlloc failed with %lu\n", GetLastError());
+    if (Context.SlotPage == NULL)
+        goto Cleanup;
+
+    Threads[0] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)IdWriteFaultThread, &Context, 0, NULL);
+    Threads[1] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)BackgroundUnsubscribeThread, &Context, 0, NULL);
+    ok((Threads[0] != NULL) && (Threads[1] != NULL), "CreateThread failed with %lu\n", GetLastError());
+
+    /* The page toggle faults the SubscriptionId write after the entry probe
+       on some iterations; the background unsubscriber detaches concurrently. */
+    for (Index = 0; Index < WNF_FAULT_ITERATIONS; Index++)
+    {
+        ULONG64 *Slot = (ULONG64*)((PUCHAR)Context.SlotPage + 0x10000 - sizeof(ULONG64));
+
+        Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, Slot);
+        if (!NT_SUCCESS(Status) &&
+            (Status != STATUS_ACCESS_VIOLATION) &&
+            (Status != STATUS_INVALID_PARAMETER) &&
+            (Status != STATUS_NOT_FOUND))
+        {
+            ok(0, "NtSubscribeWnfStateChange returned 0x%08lx\n", Status);
+        }
+        pNtUnsubscribeWnfStateChange(&StateName);
+    }
+
+    WaitForMultipleObjects(2, Threads, TRUE, 60000);
+    for (Index = 0; Index < 2; Index++)
+    {
+        ok(GetExitCodeThread(Threads[Index], &ExitCode) && (ExitCode == 0), "Fault thread %lu failed\n", Index);
+        CloseHandle(Threads[Index]);
+    }
+    VirtualFree(Context.SlotPage, 0, MEM_RELEASE);
+
+    Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, NULL);
+    ok(Status == STATUS_SUCCESS, "Subscribe after id-write-fault storm returned 0x%08lx\n", Status);
+    Status = pNtUnsubscribeWnfStateChange(&StateName);
+    ok(Status == STATUS_SUCCESS, "Unsubscribe after id-write-fault storm returned 0x%08lx\n", Status);
+
+Cleanup:
+    Status = pNtDeleteWnfStateName(&StateName);
+    ok(Status == STATUS_SUCCESS, "Delete after id-write-fault storm returned 0x%08lx\n", Status);
+}
 
 static DWORD WINAPI
 SubscribeThread(_In_ PVOID Parameter)
@@ -377,4 +470,5 @@ START_TEST(NtWnfState)
 
     TestSecurityDescriptorEnforcement();
     TestSubscribeUnsubscribeRace();
+    TestSubscribeIdWriteFault();
 }
