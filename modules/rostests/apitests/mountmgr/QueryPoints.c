@@ -79,6 +79,51 @@ START_TEST(QueryPoints)
         RtlFreeHeap(RtlGetProcessHeap(), 0, AllocatedPoints);
     }
 
+    /* Every name offset must lie inside the input buffer */
+    ZeroMemory(&SinglePoint, sizeof(SinglePoint));
+    SinglePoint.SymbolicLinkNameOffset = 0x1000;
+    SinglePoint.SymbolicLinkNameLength = sizeof(SinglePoint.Buffer);
+    Ret = DeviceIoControl(MountMgrHandle, IOCTL_MOUNTMGR_QUERY_POINTS,
+                          &SinglePoint, sizeof(SinglePoint),
+                          &MountPoints, sizeof(MountPoints),
+                          &BytesReturned, NULL);
+    LastError = GetLastError();
+    ok(Ret == FALSE && LastError == ERROR_INVALID_PARAMETER,
+       "Out-of-bounds symbolic link name not rejected: ret=%d err=%lu\n", Ret, LastError);
+
+    ZeroMemory(&SinglePoint, sizeof(SinglePoint));
+    SinglePoint.UniqueIdOffset = 0x1000;
+    SinglePoint.UniqueIdLength = 8;
+    Ret = DeviceIoControl(MountMgrHandle, IOCTL_MOUNTMGR_QUERY_POINTS,
+                          &SinglePoint, sizeof(SinglePoint),
+                          &MountPoints, sizeof(MountPoints),
+                          &BytesReturned, NULL);
+    LastError = GetLastError();
+    ok(Ret == FALSE && LastError == ERROR_INVALID_PARAMETER,
+       "Out-of-bounds unique id not rejected: ret=%d err=%lu\n", Ret, LastError);
+
+    ZeroMemory(&SinglePoint, sizeof(SinglePoint));
+    SinglePoint.DeviceNameOffset = 0x1000;
+    SinglePoint.DeviceNameLength = sizeof(SinglePoint.Buffer);
+    Ret = DeviceIoControl(MountMgrHandle, IOCTL_MOUNTMGR_QUERY_POINTS,
+                          &SinglePoint, sizeof(SinglePoint),
+                          &MountPoints, sizeof(MountPoints),
+                          &BytesReturned, NULL);
+    LastError = GetLastError();
+    ok(Ret == FALSE && LastError == ERROR_INVALID_PARAMETER,
+       "Out-of-bounds device name not rejected: ret=%d err=%lu\n", Ret, LastError);
+
+    ZeroMemory(&SinglePoint, sizeof(SinglePoint));
+    SinglePoint.SymbolicLinkNameOffset = sizeof(SinglePoint);
+    SinglePoint.SymbolicLinkNameLength = sizeof(WCHAR);
+    Ret = DeviceIoControl(MountMgrHandle, IOCTL_MOUNTMGR_QUERY_POINTS,
+                          &SinglePoint, sizeof(SinglePoint),
+                          &MountPoints, sizeof(MountPoints),
+                          &BytesReturned, NULL);
+    LastError = GetLastError();
+    ok(Ret == FALSE && LastError == ERROR_INVALID_PARAMETER,
+       "Name starting past the input buffer not rejected: ret=%d err=%lu\n", Ret, LastError);
+
     /* Now, find the first unused drive letter */
     Drives = GetLogicalDrives();
     if (Drives == 0)
