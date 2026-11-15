@@ -683,7 +683,7 @@ ExpWnfCompleteCapturedSecurityDescriptor(PSECURITY_DESCRIPTOR *SdInOut,
     PACCESS_TOKEN Token;
     PTOKEN_OWNER TokenOwnerInfo = NULL;
     PTOKEN_PRIMARY_GROUP TokenGroupInfo = NULL;
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     RtlGetOwnerSecurityDescriptor(CapturedSd, &Owner, &Defaulted);
     RtlGetGroupSecurityDescriptor(CapturedSd, &Group, &Defaulted);
