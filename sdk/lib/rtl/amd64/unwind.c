@@ -1356,7 +1356,8 @@ static
 VOID
 RtlpCaptureNonVolatileContextPointers(
     _Out_ PKNONVOLATILE_CONTEXT_POINTERS NonvolatileContextPointers,
-    _In_ ULONG64 TargetFrame)
+    _In_ ULONG64 TargetFrame,
+    _In_ ULONG64 TrapFrameEnd)
 {
     CONTEXT Context;
     PRUNTIME_FUNCTION FunctionEntry;
@@ -1394,12 +1395,12 @@ RtlpCaptureNonVolatileContextPointers(
             ASSERT(EstablisherFrame != 0);
 
             /* The frame that built the trap frame lies on the trap frame itself
-             * (its parameter area included). Its unwind gives the user context,
-             * whose instruction pointer the caller may have set to any value: a
-             * kernel or non-canonical address faults only at the trap exit. No
-             * other frame can lie there, whichever stack the walk started on. */
-            if ((EstablisherFrame >= TargetFrame) &&
-                (EstablisherFrame - TargetFrame <= MAX_SYSCALL_PARAM_SIZE + sizeof(KTRAP_FRAME)))
+             * (its parameter area included), between TargetFrame and the end of
+             * the trap frame. Its unwind gives the user context, whose
+             * instruction pointer the caller may have set to any value: a kernel
+             * or non-canonical address faults only at the trap exit. No other
+             * frame can lie there, whichever stack the walk started on. */
+            if ((EstablisherFrame >= TargetFrame) && (EstablisherFrame < TrapFrameEnd))
             {
                 AtTrapFrame = TRUE;
             }
@@ -1420,13 +1421,14 @@ RtlpCaptureNonVolatileContextPointers(
 VOID
 RtlGetUnwindContext(
     _Out_ PCONTEXT Context,
-    _In_ DWORD64 TargetFrame)
+    _In_ DWORD64 TargetFrame,
+    _In_ DWORD64 TrapFrameEnd)
 {
     KNONVOLATILE_CONTEXT_POINTERS ContextPointers;
     ULONG ContextFlags = Context->ContextFlags & ~CONTEXT_AMD64;
 
     /* Capture pointers to the non-volatiles up to the target frame */
-    RtlpCaptureNonVolatileContextPointers(&ContextPointers, TargetFrame);
+    RtlpCaptureNonVolatileContextPointers(&ContextPointers, TargetFrame, TrapFrameEnd);
 
     /* Copy the nonvolatiles from the captured locations */
     if (ContextFlags & CONTEXT_INTEGER)
@@ -1457,13 +1459,14 @@ RtlGetUnwindContext(
 VOID
 RtlSetUnwindContext(
     _In_ PCONTEXT Context,
-    _In_ DWORD64 TargetFrame)
+    _In_ DWORD64 TargetFrame,
+    _In_ DWORD64 TrapFrameEnd)
 {
     KNONVOLATILE_CONTEXT_POINTERS ContextPointers;
     ULONG ContextFlags = Context->ContextFlags & ~CONTEXT_AMD64;
 
     /* Capture pointers to the non-volatiles up to the target frame */
-    RtlpCaptureNonVolatileContextPointers(&ContextPointers, TargetFrame);
+    RtlpCaptureNonVolatileContextPointers(&ContextPointers, TargetFrame, TrapFrameEnd);
 
     /* Copy the nonvolatiles to the captured locations */
     if (ContextFlags & CONTEXT_INTEGER)

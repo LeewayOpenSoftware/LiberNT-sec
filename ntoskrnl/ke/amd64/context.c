@@ -302,7 +302,8 @@ KeTrapFrameToContext(IN PKTRAP_FRAME TrapFrame,
 VOID
 RtlGetUnwindContext(
     _Out_ PCONTEXT Context,
-    _In_ DWORD64 TargetFrame);
+    _In_ DWORD64 TargetFrame,
+    _In_ DWORD64 TrapFrameEnd);
 
 VOID
 KiGetTrapContextInternal(
@@ -317,14 +318,15 @@ KiGetTrapContextInternal(
     /* The target frame is MAX_SYSCALL_PARAM_SIZE bytes before the trap frame */
     TargetFrame = (ULONG64)TrapFrame - MAX_SYSCALL_PARAM_SIZE;
 
-    /* Get the nonvolatiles on the stack */
-    RtlGetUnwindContext(Context, TargetFrame);
+    /* Get the nonvolatiles on the stack, walking up to the trap frame */
+    RtlGetUnwindContext(Context, TargetFrame, (ULONG64)(TrapFrame + 1));
 }
 
 VOID
 RtlSetUnwindContext(
     _In_ PCONTEXT Context,
-    _In_ DWORD64 TargetFrame);
+    _In_ DWORD64 TargetFrame,
+    _In_ DWORD64 TrapFrameEnd);
 
 VOID
 KiSetTrapContextInternal(
@@ -344,8 +346,8 @@ KiSetTrapContextInternal(
     /* The target frame is MAX_SYSCALL_PARAM_SIZE bytes before the trap frame */
     TargetFrame = (ULONG64)TrapFrame - MAX_SYSCALL_PARAM_SIZE ;
 
-    /* Set the nonvolatiles on the stack */
-    RtlSetUnwindContext(Context, TargetFrame);
+    /* Set the nonvolatiles on the stack, walking up to the trap frame */
+    RtlSetUnwindContext(Context, TargetFrame, (ULONG64)(TrapFrame + 1));
 }
 
 VOID
