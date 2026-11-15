@@ -675,7 +675,6 @@ TestConnectExWithData(void)
     IO_STATUS_BLOCK IoStatus;
     HANDLE Event = NULL;
     UCHAR Request[64];
-    AFD_SUPER_CONNECT_INFO SuperConnect;
     struct sockaddr_in Addr;
     INT NameLength = sizeof(Addr);
     /* a fixed port keeps this test independent of the sock name path */
@@ -748,12 +747,26 @@ TestConnectExWithData(void)
     if (!NT_SUCCESS(Status)) goto Cleanup;
 
     RtlZeroMemory(Request, sizeof(Request));
-    RtlZeroMemory(&SuperConnect, sizeof(SuperConnect));
-    BuildMsafdIpv4Address(&SuperConnect.RemoteAddress,
-                          sizeof(SuperConnect) - FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress),
-                          inet_addr("127.0.0.1"),
-                          htons(ListenerPort));
-    RtlCopyMemory(Request, &SuperConnect, sizeof(SuperConnect));
+    /* the int38 raw-byte run showed the address missing from both the local
+     * struct and the copied request, so build the wire request byte-wise in
+     * the input buffer and prove it survived before the ioctl */
+    {
+        USHORT WirePort = htons(ListenerPort);
+        ULONG WireAddr = inet_addr("127.0.0.1");
+        PTRANSPORT_ADDRESS Wire = (PTRANSPORT_ADDRESS)((PUCHAR)Request +
+                                     FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress));
+        PUCHAR Data;
+
+        Wire->TAAddressCount = 1;
+        Wire->Address[0].AddressType = TDI_ADDRESS_TYPE_IP;
+        Wire->Address[0].AddressLength = TDI_ADDRESS_LENGTH_IP;
+        Data = &Wire->Address[0].Address[0];
+        RtlCopyMemory(Data, &WirePort, sizeof(USHORT));
+        RtlCopyMemory(Data + sizeof(USHORT), &WireAddr, sizeof(ULONG));
+    }
+    ok(((PUCHAR)Request)[14] == 0x7F && ((PUCHAR)Request)[15] == 0,
+       "request lost the address before the ioctl (%02x%02x)\n",
+       ((PUCHAR)Request)[14], ((PUCHAR)Request)[15]);
 
     Status = NtDeviceIoControlFile(SocketHandle,
                                    Event,
@@ -765,7 +778,7 @@ TestConnectExWithData(void)
                                    FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress) +
                                        FIELD_OFFSET(TRANSPORT_ADDRESS, Address) +
                                        FIELD_OFFSET(TA_ADDRESS, Address) +
-                                       SuperConnect.RemoteAddress.Address[0].AddressLength,
+                                       TDI_ADDRESS_LENGTH_IP,
                                    (PVOID)ConnectData,
                                    sizeof(ConnectData));
     if (Status == STATUS_PENDING)
@@ -774,12 +787,11 @@ TestConnectExWithData(void)
         Status = IoStatus.Status;
     }
     ok(Status == STATUS_SUCCESS, "super connect with data failed with %lx "
-       "(tdisize %u inoff %u req %02x%02x%02x%02x sc %02x%02x)\n", Status,
+       "(tdisize %u inoff %u req %02x%02x%02x%02x)\n", Status,
        (unsigned)sizeof(TDI_ADDRESS_IP),
        (unsigned)FIELD_OFFSET(TDI_ADDRESS_IP, in_addr),
        ((PUCHAR)Request)[14], ((PUCHAR)Request)[15],
-       ((PUCHAR)Request)[16], ((PUCHAR)Request)[17],
-       ((PUCHAR)&SuperConnect)[14], ((PUCHAR)&SuperConnect)[15]);
+       ((PUCHAR)Request)[16], ((PUCHAR)Request)[17]);
 
 Cleanup:
     if (Event) NtClose(Event);
