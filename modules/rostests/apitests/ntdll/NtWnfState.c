@@ -134,6 +134,39 @@ BuildEmptySecurityDescriptor(VOID)
     return SecurityDescriptor;
 }
 
+static PSECURITY_DESCRIPTOR
+BuildForeignOwnerSecurityDescriptor(VOID)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    SID_IDENTIFIER_AUTHORITY LocalAuthority = {SECURITY_LOCAL_SID_AUTHORITY};
+    UCHAR WorldSidBuffer[SECURITY_MAX_SID_SIZE];
+    UCHAR OwnerSidBuffer[SECURITY_MAX_SID_SIZE];
+    UCHAR GroupSidBuffer[SECURITY_MAX_SID_SIZE];
+    PSID Everyone = (PSID)WorldSidBuffer;
+    PSID ForeignOwner = (PSID)OwnerSidBuffer;
+    PSID System = (PSID)GroupSidBuffer;
+    PACL Acl = (PACL)AclBuffer;
+    PSECURITY_DESCRIPTOR SecurityDescriptor = (PSECURITY_DESCRIPTOR)SecurityDescriptorBuffer;
+
+    RtlInitializeSid(Everyone, &LocalAuthority, 1);
+    *RtlSubAuthoritySid(Everyone, 0) = SECURITY_WORLD_RID;
+    RtlInitializeSid(ForeignOwner, &NtAuthority, 5);
+    *RtlSubAuthoritySid(ForeignOwner, 0) = 21;
+    *RtlSubAuthoritySid(ForeignOwner, 1) = 1;
+    *RtlSubAuthoritySid(ForeignOwner, 2) = 2;
+    *RtlSubAuthoritySid(ForeignOwner, 3) = 3;
+    *RtlSubAuthoritySid(ForeignOwner, 4) = 4;
+    RtlInitializeSid(System, &NtAuthority, 1);
+    *RtlSubAuthoritySid(System, 0) = SECURITY_LOCAL_SYSTEM_RID;
+    RtlCreateAcl(Acl, sizeof(AclBuffer), ACL_REVISION);
+    RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, Everyone);
+    RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+    RtlSetOwnerSecurityDescriptor(SecurityDescriptor, ForeignOwner, FALSE);
+    RtlSetGroupSecurityDescriptor(SecurityDescriptor, System, FALSE);
+    RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE);
+    return SecurityDescriptor;
+}
+
 static ULONG
 QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoClass, _Out_ NTSTATUS *Status)
 {
@@ -388,6 +421,12 @@ TestSecurityDescriptorEnforcement(VOID)
         Status = pNtDeleteWnfStateName(&StateName);
         ok(Status == STATUS_SUCCESS, "Delete with an owner-less DACL returned 0x%08lx\n", Status);
     }
+
+    /* A supplied owner that is neither the token user nor an owner group
+       is rejected, even when the descriptor is otherwise complete. */
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                   sizeof(Buffer), BuildForeignOwnerSecurityDescriptor());
+    ok(Status == STATUS_INVALID_OWNER, "Create with a foreign owner returned 0x%08lx\n", Status);
 }
 
 static VOID

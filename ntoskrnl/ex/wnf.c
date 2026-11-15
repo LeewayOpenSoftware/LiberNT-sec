@@ -690,24 +690,20 @@ ExpWnfCompleteCapturedSecurityDescriptor(PSECURITY_DESCRIPTOR *SdInOut,
     RtlGetDaclSecurityDescriptor(CapturedSd, &DaclPresent, &Dacl, &Defaulted);
     RtlGetSaclSecurityDescriptor(CapturedSd, &SaclPresent, &Sacl, &Defaulted);
 
-    if ((Owner != NULL) && (Group != NULL) && ((Sacl == NULL) || SeSinglePrivilegeCheck(SeSecurityPrivilege, PreviousMode)))
-        return STATUS_SUCCESS;
+    /* A supplied SACL requires SeSecurityPrivilege, like Windows. */
+    if (SaclPresent && (Sacl != NULL) &&
+        !SeSinglePrivilegeCheck(SeSecurityPrivilege, PreviousMode))
+    {
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
 
+    /* A supplied owner is validated however complete the descriptor is. */
     SeCaptureSubjectContext(&SubjectContext);
     SeLockSubjectContext(&SubjectContext);
     Token = SeQuerySubjectContextToken(&SubjectContext);
 
-    if (Owner == NULL)
+    if (Owner != NULL)
     {
-        Status = SeQueryInformationToken(Token, TokenOwner, (PVOID*)&TokenOwnerInfo);
-        if (NT_SUCCESS(Status))
-            Owner = TokenOwnerInfo->Owner;
-    }
-    else
-    {
-        Status = STATUS_SUCCESS;
-
-        /* Validate a supplied owner against the effective token. */
         if (!SeSinglePrivilegeCheck(SeRestorePrivilege, PreviousMode))
         {
             PTOKEN_USER UserInfo;
@@ -740,11 +736,30 @@ ExpWnfCompleteCapturedSecurityDescriptor(PSECURITY_DESCRIPTOR *SdInOut,
                     ExFreePool(GroupsInfo);
                 }
             }
-            if (NT_SUCCESS(Status) && !ValidOwner)
-                Status = STATUS_INVALID_OWNER;
+            if (!NT_SUCCESS(Status) || !ValidOwner)
+            {
+                SeUnlockSubjectContext(&SubjectContext);
+                SeReleaseSubjectContext(&SubjectContext);
+                if (NT_SUCCESS(Status))
+                    Status = STATUS_INVALID_OWNER;
+                return Status;
+            }
         }
     }
 
+    if ((Owner != NULL) && (Group != NULL))
+    {
+        SeUnlockSubjectContext(&SubjectContext);
+        SeReleaseSubjectContext(&SubjectContext);
+        return STATUS_SUCCESS;
+    }
+
+    if (Owner == NULL)
+    {
+        Status = SeQueryInformationToken(Token, TokenOwner, (PVOID*)&TokenOwnerInfo);
+        if (NT_SUCCESS(Status))
+            Owner = TokenOwnerInfo->Owner;
+    }
     if (NT_SUCCESS(Status) && (Group == NULL))
     {
         Status = SeQueryInformationToken(Token, TokenPrimaryGroup, (PVOID*)&TokenGroupInfo);
