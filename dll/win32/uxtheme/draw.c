@@ -271,6 +271,10 @@ static PTHEME_PROPERTY UXTHEME_SelectImage(HTHEME hTheme, int iPartId, int iStat
 
                 GetThemeEnumValue(hTheme, iPartId, iStateId, TMT_IMAGELAYOUT, &imagelayout);
                 GetThemeInt(hTheme, iPartId, iStateId, TMT_IMAGECOUNT, &imagecount);
+#ifdef __REACTOS__
+                /* The count is a divisor below and comes from the style */
+                if(imagecount < 1) imagecount = 1;
+#endif
 
                 GetObjectW(hBmp, sizeof(bmp), &bmp);
                 if(imagelayout == IL_VERTICAL) {
