@@ -678,6 +678,8 @@ TestConnectExWithData(void)
     AFD_SUPER_CONNECT_INFO SuperConnect;
     struct sockaddr_in Addr;
     INT NameLength = sizeof(Addr);
+    /* a fixed port keeps this test independent of the sock name path */
+    static const USHORT ListenerPort = 0xBEEF;
     static const UCHAR ConnectData[8] = { 'C', 'O', 'N', 'N', 'E', 'C', 'T', 0 };
 
     {
@@ -692,7 +694,7 @@ TestConnectExWithData(void)
         RtlZeroMemory(&Addr, sizeof(Addr));
         Addr.sin_family = AF_INET;
         Addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-        Addr.sin_port = 0;
+        Addr.sin_port = htons(ListenerPort);
         Status = AfdBind(Listener, (const struct sockaddr *)&Addr, sizeof(Addr));
         ok(Status == STATUS_SUCCESS, "AfdBind(listener) failed with %lx\n", Status);
         if (!NT_SUCCESS(Status)) goto Cleanup;
@@ -720,6 +722,10 @@ TestConnectExWithData(void)
         Status = AfdGetSockName(Listener, (struct sockaddr *)&Addr, &NameLength);
         ok(Status == STATUS_SUCCESS, "AfdGetSockName failed with %lx\n", Status);
         if (!NT_SUCCESS(Status)) goto Cleanup;
+        ok(Addr.sin_addr.s_addr == inet_addr("127.0.0.1") &&
+           Addr.sin_port == htons(ListenerPort),
+           "listening sock name came back as %lx:%u\n", Addr.sin_addr.s_addr,
+           Addr.sin_port);
     }
 
     Status = AfdCreateSocket(&SocketHandle, AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -745,8 +751,8 @@ TestConnectExWithData(void)
     RtlZeroMemory(&SuperConnect, sizeof(SuperConnect));
     BuildMsafdIpv4Address(&SuperConnect.RemoteAddress,
                           sizeof(SuperConnect) - FIELD_OFFSET(AFD_SUPER_CONNECT_INFO, RemoteAddress),
-                          Addr.sin_addr.s_addr,
-                          Addr.sin_port);
+                          inet_addr("127.0.0.1"),
+                          htons(ListenerPort));
     RtlCopyMemory(Request, &SuperConnect, sizeof(SuperConnect));
 
     Status = NtDeviceIoControlFile(SocketHandle,
