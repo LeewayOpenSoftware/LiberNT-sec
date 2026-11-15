@@ -352,7 +352,11 @@ LPCWSTR UXINI_GetNextValue(PUXINI_FILE uf, DWORD *dwNameLen, LPCWSTR *lpValue, D
     lpLine++;
 
     /* Remove whitespace from end of name */
-    while(UXINI_isspace(name[namelen-1])) namelen--;
+    while(namelen > 0 && UXINI_isspace(name[namelen-1])) namelen--;
+#ifdef __REACTOS__
+    /* A line that begins with '=' names no value */
+    if(namelen == 0) return NULL;
+#endif
     /* Remove whitespace from beginning of value */
     while(UXINI_isspace(*lpLine) && lpLine < lpLineEnd) lpLine++;
     value = lpLine;

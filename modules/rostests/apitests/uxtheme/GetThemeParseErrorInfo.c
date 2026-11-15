@@ -89,4 +89,15 @@ START_TEST(GetThemeParseErrorInfo)
     ok_wstr(Info.szFile, L"invalid.ini");
     ok_wstr(Info.szLine, L"InvalidValueName=InvalidValue");
     ok_int(Info.nLineNo, 2);
+
+    /* A line with no value name must not be read as a value */
+    fout = _wfopen(L"noname.ini", L"wb");
+    fprintf(fout, "[globals]\n");
+    fprintf(fout, "=NoName\n");
+    fclose(fout);
+
+    hr = ParseThemeIniFile(L"noname.ini", szPath, ParseThemeIniFileProc, NULL);
+    ok_hex(hr, S_OK);
+
+    _wremove(L"noname.ini");
 }
