@@ -1095,8 +1095,9 @@ done:
 }
 
 /* The image is resolved and opened once, as the caller, with no write or delete sharing;
- * the final path of that handle is what is shown and what runs. User-defined drive
- * letters (subst, network) and removable media are refused. */
+ * the final path of that handle is what is shown and what runs. A drive letter of the
+ * user's own making is followed to the file's real place; network drives and removable
+ * media are refused. */
 static
 DWORD
 OpenElevationImage(
@@ -1299,7 +1300,7 @@ SeclCreateProcessElevatedW(
     PWSTR CommandLine = NULL;
     PCWSTR Desktop;
     LUID LogonId;
-    DWORD SessionId = 0, CallerPid = 0, Policy = 0, Length, dwError;
+    DWORD SessionId = 0, OwnSession = 0, CallerPid = 0, Policy = 0, Length, dwError;
     DWORD_PTR hwndOwner = 0;
     BOOL Allowed = FALSE, SameSession = FALSE;
 
@@ -1320,7 +1321,7 @@ SeclCreateProcessElevatedW(
     }
 
     Desktop = (pRequest->Desktop && pRequest->Desktop[0]) ? pRequest->Desktop : L"WinSta0\\Default";
-    SameSession = ProcessIdToSessionId(GetCurrentProcessId(), &Length) && Length == SessionId;
+    SameSession = ProcessIdToSessionId(GetCurrentProcessId(), &OwnSession) && OwnSession == SessionId;
     if (SameSession)
     {
         EnterCriticalSection(&DesktopAccessLock);
