@@ -356,6 +356,10 @@ LPCWSTR UXINI_GetNextValue(PUXINI_FILE uf, DWORD *dwNameLen, LPCWSTR *lpValue, D
         lpLine++;
         namelen++;
     }
+#ifdef __REACTOS__
+    /* No '=' in the line: lpLine is at the end of the line, which may be the end of the text */
+    if(namelen >= dwLen) return NULL;
+#endif
     if(*lpLine != '=') return NULL;
     lpLine++;
 
@@ -366,7 +370,7 @@ LPCWSTR UXINI_GetNextValue(PUXINI_FILE uf, DWORD *dwNameLen, LPCWSTR *lpValue, D
     if(namelen == 0) return NULL;
 #endif
     /* Remove whitespace from beginning of value */
-    while(UXINI_isspace(*lpLine) && lpLine < lpLineEnd) lpLine++;
+    while(lpLine < lpLineEnd && UXINI_isspace(*lpLine)) lpLine++;
     value = lpLine;
     vallen = dwLen-(value-name);
 
