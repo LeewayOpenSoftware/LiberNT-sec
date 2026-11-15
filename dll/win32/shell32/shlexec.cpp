@@ -634,12 +634,17 @@ PromptAndRunProcessAs(
             pPI->hProcess = NULL;
             return S_FALSE;
         }
+        ERR("Elevation of '%S' through the broker failed with Error %lu\n", Cmd, dwElevate);
         if (dwElevate != ERROR_ELEVATION_REQUIRED && dwElevate != ERROR_SERVICE_NOT_ACTIVE)
         {
             SHELL_ErrorBox(hwnd, dwElevate);
             pPI->hProcess = NULL;
             return E_FAIL;
         }
+    }
+    else
+    {
+        ERR("'%S' needs an administrator and the caller is no limited administrator: asking for credentials\n", Cmd);
     }
 again:
     dlgret = DialogBoxParamW(shell32_hInstance, MAKEINTRESOURCEW(IDD_RUN_AS),
@@ -680,6 +685,7 @@ again:
     }
     else
     {
+        ERR("The credentials dialog could not be shown (%d), Error %lu\n", (int)dlgret, GetLastError());
         pPI->hProcess = NULL;
         return E_FAIL;
     }

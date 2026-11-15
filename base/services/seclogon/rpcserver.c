@@ -1299,7 +1299,7 @@ SeclCreateProcessElevatedW(
     PWSTR CommandLine = NULL;
     PCWSTR Desktop;
     LUID LogonId;
-    DWORD SessionId = 0, CallerPid = 0, Policy, Length, dwError;
+    DWORD SessionId = 0, CallerPid = 0, Policy = 0, Length, dwError;
     DWORD_PTR hwndOwner = 0;
     BOOL Allowed = FALSE, SameSession = FALSE;
 
@@ -1328,6 +1328,7 @@ SeclCreateProcessElevatedW(
         LeaveCriticalSection(&DesktopAccessLock);
         if (dwError != ERROR_SUCCESS)
         {
+            ERR("Desktop %S is not usable by the caller: Error %lu\n", Desktop, dwError);
             dwError = ERROR_ACCESS_DENIED;
             goto done;
         }
@@ -1349,6 +1350,7 @@ SeclCreateProcessElevatedW(
     if (!GetTokenInformation(hCallerToken, TokenLinkedToken, &Linked, sizeof(Linked), &Length) ||
         Linked.LinkedToken == NULL)
     {
+        ERR("The caller's logon has no elevated token: Error %lu\n", GetLastError());
         dwError = ERROR_ELEVATION_REQUIRED;
         goto done;
     }
@@ -1444,6 +1446,8 @@ SeclCreateProcessElevatedW(
     CloseHandle(ProcessInfo.hProcess);
 
 done:
+    if (dwError != ERROR_SUCCESS)
+        ERR("Elevation request of process %lu (session %lu, policy %lu) ends with Error %lu\n", CallerPid, SessionId, Policy, dwError);
     if (hImage != NULL)
         CloseHandle(hImage);
     if (CommandLine != NULL)
