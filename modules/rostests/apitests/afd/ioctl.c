@@ -596,7 +596,7 @@ BuildMsafdIpv4Address(
     Address->Address[0].AddressType = TDI_ADDRESS_TYPE_IP;
     Address->Address[0].AddressLength =
         (USHORT)(sizeof(struct sockaddr_in) - FIELD_OFFSET(struct sockaddr, sa_data));
-    ((PTDI_ADDRESS_IP)&Address->Address[0].Address)->sin_port = htons(Port);
+    ((PTDI_ADDRESS_IP)&Address->Address[0].Address)->sin_port = Port;
     ((PTDI_ADDRESS_IP)&Address->Address[0].Address)->in_addr = IpAddress;
 }
 
@@ -767,7 +767,12 @@ TestConnectExWithData(void)
         NtWaitForSingleObject(Event, FALSE, NULL);
         Status = IoStatus.Status;
     }
-    ok(Status == STATUS_SUCCESS, "super connect with data failed with %lx\n", Status);
+    ok(Status == STATUS_SUCCESS, "super connect with data failed with %lx "
+       "(type %u len %u addr %lx port %x)\n", Status,
+       SuperConnect.RemoteAddress.Address[0].AddressType,
+       SuperConnect.RemoteAddress.Address[0].AddressLength,
+       ((PTDI_ADDRESS_IP)&SuperConnect.RemoteAddress.Address[0].Address)->in_addr,
+       ((PTDI_ADDRESS_IP)&SuperConnect.RemoteAddress.Address[0].Address)->sin_port);
 
 Cleanup:
     if (Event) NtClose(Event);
