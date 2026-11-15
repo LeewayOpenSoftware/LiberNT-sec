@@ -23,6 +23,8 @@
 #include <userenv.h>
 #include <winuser.h>
 #include <aclapi.h>
+#include <sddl.h>
+#include <ntsecapi.h>
 #include <strsafe.h>
 
 #define NTOS_MODE_USER

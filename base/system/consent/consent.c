@@ -5,7 +5,7 @@
  * COPYRIGHT:   Copyright 2026 Leeway Open Software
  *
  * Started by the secondary logon service as SYSTEM in the user's session, on the
- * user's desktop. Command line: consent.exe <caller hwnd in hex> "<final path>" <command line>
+ * user's desktop. Command line: consent.exe <caller hwnd in hex> "<account>" "<final path>" <command line>
  * The exit code is IDYES or IDNO.
  */
 
@@ -27,6 +27,7 @@
 typedef struct _CONSENT_ARGS
 {
     HWND hwndCaller;
+    PCWSTR Account;
     PCWSTR ImagePath;
     PCWSTR CommandLine;
 } CONSENT_ARGS, *PCONSENT_ARGS;
@@ -101,6 +102,7 @@ ConsentDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
             if (hIcon)
                 SendDlgItemMessageW(hwnd, IDC_SHIELD, STM_SETICON, (WPARAM)hIcon, 0);
+            SetDlgItemTextW(hwnd, IDC_ACCOUNT, Args->Account);
             SetDlgItemTextW(hwnd, IDC_IMAGE, Args->ImagePath);
             FormatCommandLine(Args->CommandLine, Display, _countof(Display));
             SetDlgItemTextW(hwnd, IDC_COMMAND, Display);
@@ -150,16 +152,24 @@ int
 WINAPI
 wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nShowCmd)
 {
-    CONSENT_ARGS Args = { NULL, L"", L"" };
+    CONSENT_ARGS Args = { NULL, L"", L"", L"" };
     PWSTR p = GetCommandLineW(), q;
     INT_PTR Answer;
 
-    /* consent.exe <caller hwnd> "<path>" <command line> */
+    /* consent.exe <caller hwnd> "<account>" "<path>" <command line> */
     p = SkipArgument(p);
     if (*p == UNICODE_NULL)
         return IDNO;
     Args.hwndCaller = (HWND)(ULONG_PTR)wcstoull(p, &q, 16);
     p = SkipArgument(p);
+    if (*p != L'"')
+        return IDNO;
+    Args.Account = p + 1;
+    q = wcschr(p + 1, L'"');
+    if (q == NULL)
+        return IDNO;
+    *q = UNICODE_NULL;
+    p = SkipArgument(q + 1);
     if (*p != L'"')
         return IDNO;
     Args.ImagePath = p + 1;

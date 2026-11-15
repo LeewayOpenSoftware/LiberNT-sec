@@ -1213,11 +1213,59 @@ fail:
 /* consent.exe runs as SYSTEM in the caller's session on the caller's desktop and
  * answers with its exit code. A prompt nobody answers ends as a refusal. */
 #define CONSENT_TIMEOUT_MS  (2 * 60 * 1000)
+/* The logon LSA knows for this logon id must be an interactive logon of this session */
+static
+BOOL
+IsInteractiveLogonOfSession(
+    _In_ PLUID LogonId,
+    _In_ DWORD SessionId)
+{
+    PSECURITY_LOGON_SESSION_DATA Data = NULL;
+    BOOL Match = FALSE;
+
+    if (LsaGetLogonSessionData(LogonId, &Data) == STATUS_SUCCESS && Data != NULL)
+    {
+        Match = (Data->Session == SessionId && Data->LogonType == Interactive);
+        LsaFreeReturnBuffer(Data);
+    }
+    return Match;
+}
+
+/* DOMAIN\user of the token, or its SID as text when the name is not known */
+static
+VOID
+GetTokenAccountName(
+    _In_ HANDLE hToken,
+    _Out_writes_(Chars) PWSTR Account,
+    _In_ DWORD Chars)
+{
+    UCHAR Buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    PTOKEN_USER User = (PTOKEN_USER)Buffer;
+    WCHAR Name[256], Domain[256];
+    DWORD Length, NameChars = _countof(Name), DomainChars = _countof(Domain);
+    SID_NAME_USE Use;
+    PWSTR SidText = NULL;
+
+    Account[0] = UNICODE_NULL;
+    if (!GetTokenInformation(hToken, TokenUser, Buffer, sizeof(Buffer), &Length))
+        return;
+    if (LookupAccountSidW(NULL, User->User.Sid, Name, &NameChars, Domain, &DomainChars, &Use))
+    {
+        StringCchPrintfW(Account, Chars, L"%ls\\%ls", Domain, Name);
+    }
+    else if (ConvertSidToStringSidW(User->User.Sid, &SidText))
+    {
+        StringCchCopyW(Account, Chars, SidText);
+        LocalFree(SidText);
+    }
+}
+
 static
 DWORD
 AskConsent(
     _In_ DWORD SessionId,
     _In_ PCWSTR DesktopPath,
+    _In_ PCWSTR Account,
     _In_ PCWSTR FinalPath,
     _In_ PCWSTR CommandLine,
     _In_ DWORD_PTR hwndOwner,
@@ -1239,11 +1287,11 @@ AskConsent(
         return ERROR_BAD_PATHNAME;
     }
 
-    CmdChars = wcslen(Exe) + wcslen(FinalPath) + (CommandLine ? wcslen(CommandLine) : 0) + 64;
+    CmdChars = wcslen(Exe) + wcslen(Account) + wcslen(FinalPath) + (CommandLine ? wcslen(CommandLine) : 0) + 64;
     Cmd = HeapAlloc(GetProcessHeap(), 0, CmdChars * sizeof(WCHAR));
     if (Cmd == NULL)
         return ERROR_NOT_ENOUGH_MEMORY;
-    StringCchPrintfW(Cmd, CmdChars, L"\"%ls\" %Ix \"%ls\" %ls", Exe, hwndOwner, FinalPath,
+    StringCchPrintfW(Cmd, CmdChars, L"\"%ls\" %Ix \"%ls\" \"%ls\" %ls", Exe, hwndOwner, Account, FinalPath,
                      CommandLine ? CommandLine : L"");
 
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &hSelf) ||
@@ -1296,7 +1344,7 @@ SeclCreateProcessElevatedW(
     PVOID Environment = NULL;
     STARTUPINFOW StartupInfo = { sizeof(StartupInfo) };
     PROCESS_INFORMATION ProcessInfo = { 0 };
-    WCHAR FinalPath[MAX_PATH];
+    WCHAR FinalPath[MAX_PATH], Account[512];
     PWSTR CommandLine = NULL;
     PCWSTR Desktop;
     LUID LogonId;
@@ -1334,10 +1382,11 @@ SeclCreateProcessElevatedW(
             goto done;
         }
     }
-    else if (_wcsicmp(Desktop, L"WinSta0\\Default") != 0)
+    else if (_wcsicmp(Desktop, L"WinSta0\\Default") != 0 || !IsInteractiveLogonOfSession(&LogonId, SessionId))
     {
-        /* A station name resolves in the opener's session: a caller of another session is
-         * started only on its own default desktop, which its logon SID already admits it to */
+        /* A station name resolves in the opener's session: a caller of another session must
+         * be an interactive logon of that session and is started only on its default
+         * desktop, which its logon SID already admits it to */
         dwError = ERROR_ACCESS_DENIED;
         goto done;
     }
@@ -1371,7 +1420,8 @@ SeclCreateProcessElevatedW(
         {
             hwndOwner = pRequest->hwndOwner;
         }
-        dwError = AskConsent(SessionId, Desktop, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
+        GetTokenAccountName(hCallerToken, Account, _countof(Account));
+        dwError = AskConsent(SessionId, Desktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
         if (dwError != ERROR_SUCCESS)
             goto done;
         if (!Allowed)
