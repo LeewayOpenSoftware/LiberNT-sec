@@ -829,7 +829,7 @@ FstubReadHeaderEFI(IN PDISK_INFORMATION Disk,
 {
     NTSTATUS Status;
     PUCHAR Sector = NULL;
-    ULONGLONG StartingSector;
+    ULONGLONG StartingSector, EntriesSectors;
     PEFI_PARTITION_HEADER EFIHeader;
     ULONG i, HeaderCRC32, PreviousCRC32, SectoredPartitionEntriesSize, LonelyPartitions;
 
@@ -898,6 +898,20 @@ FstubReadHeaderEFI(IN PDISK_INFORMATION Disk,
         return STATUS_DISK_CORRUPT_ERROR;
     }
 
+    /* The entry array is sized from the header: accept only entries of the size we read,
+     * a count whose layout fits 32 bits, and an array that lies inside the disk */
+    EntriesSectors = (((ULONGLONG)EFIHeader->NumberOfEntries * PARTITION_ENTRY_SIZE) +
+                      Disk->SectorSize - 1) / Disk->SectorSize;
+    if (EFIHeader->SizeOfPartitionEntry != PARTITION_ENTRY_SIZE ||
+        EFIHeader->NumberOfEntries > (MAXULONG - FIELD_OFFSET(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry)) /
+                                     sizeof(PARTITION_INFORMATION_EX) ||
+        EntriesSectors > Disk->SectorCount ||
+        EFIHeader->PartitionEntryLBA > Disk->SectorCount - EntriesSectors)
+    {
+        DPRINT("EFI::Wrong partition entry array!\n");
+        return STATUS_DISK_CORRUPT_ERROR;
+    }
+
     /* Allocate a buffer to read a sector on the disk */
     Sector = ExAllocatePoolWithTag(NonPagedPool,
                                    Disk->SectorSize,
@@ -928,7 +942,7 @@ FstubReadHeaderEFI(IN PDISK_INFORMATION Disk,
     }
 
     /* Check whether we have a last sector not full of partitions */
-    LonelyPartitions = (EFIHeader->NumberOfEntries * PARTITION_ENTRY_SIZE) % Disk->SectorSize;
+    LonelyPartitions = ((EFIHeader->NumberOfEntries * PARTITION_ENTRY_SIZE) % Disk->SectorSize) / PARTITION_ENTRY_SIZE;
     /* In such case, we have to complete checksum computation */
     if (LonelyPartitions != 0)
     {
