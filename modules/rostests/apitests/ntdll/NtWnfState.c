@@ -147,6 +147,7 @@ QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoC
 #define WNF_RACE_ITERATIONS     1000
 #define WNF_FAULT_ITERATIONS    400
 #define WNF_TEMPORARY_CHILD_COUNT 8
+#define WNF_MAX_SUBSCRIPTIONS_PER_PROCESS 1024
 #define WNF_CHILD_FLAG          L"--wnf-child"
 
 typedef struct _WNF_FAULT_CONTEXT
@@ -446,6 +447,27 @@ TestTemporaryNamesDieWithProcess(VOID)
     }
     CloseHandle(WritePipe);
 
+    /* Observe the child's subscriptions while it is alive; the test
+       would otherwise pass vacuously if the child never subscribed. */
+    {
+        ULONG Polls;
+        BOOLEAN SawSubscribers;
+
+        SawSubscribers = FALSE;
+        for (Polls = 0; Polls < 200; Polls++)
+        {
+            Value = QueryNameInformation(&ParentName, WNF_INFO_SUBSCRIBERS, &Status);
+            if (NT_SUCCESS(Status) && (Value != 0))
+            {
+                SawSubscribers = TRUE;
+                break;
+            }
+            if (WaitForSingleObject(ProcessInformation.hProcess, 50) != WAIT_TIMEOUT)
+                break;
+        }
+        ok(SawSubscribers, "No subscribers observed while the child was alive\n");
+    }
+
     Total = 0;
     for (;;)
     {
@@ -527,14 +549,14 @@ WnfTemporaryChildMain(VOID)
             for (Index = 0; Index < WNF_TEMPORARY_CHILD_COUNT * 2; Index++)
             {
                 NTSTATUS Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, NULL);
-                if (!NT_SUCCESS(Status) &&
-                    (Status != STATUS_ACCESS_DENIED) &&
-                    (Status != STATUS_OBJECT_NAME_NOT_FOUND))
+                if (!NT_SUCCESS(Status))
                 {
                     printf("child subscribe failed 0x%08lx\n", Status);
                     ExitProcess(1);
                 }
             }
+            /* Stay alive briefly so the parent can observe the subscriptions. */
+            Sleep(500);
         }
     }
 
@@ -554,6 +576,79 @@ WnfTemporaryChildMain(VOID)
     }
     fflush(stdout);
     ExitProcess(0);
+}
+
+static VOID
+WnfCapChildMain(VOID)
+{
+    TEST_WNF_STATE_NAME StateName = {{0, 0}};
+    NTSTATUS Status;
+    ULONG Index, Successes;
+
+    Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE,
+                                   FALSE, NULL, 0, BuildSecurityDescriptor());
+    if (!NT_SUCCESS(Status))
+    {
+        printf("cap child create failed 0x%08lx\n", Status);
+        ExitProcess(1);
+    }
+
+    Successes = 0;
+    for (Index = 0; Index < WNF_MAX_SUBSCRIPTIONS_PER_PROCESS + 1; Index++)
+    {
+        Status = pNtSubscribeWnfStateChange(&StateName, 0, 1, NULL);
+        if (NT_SUCCESS(Status))
+        {
+            Successes++;
+            continue;
+        }
+        if (Status != STATUS_QUOTA_EXCEEDED)
+        {
+            printf("cap child subscribe returned 0x%08lx\n", Status);
+            ExitProcess(1);
+        }
+        break;
+    }
+
+    if (Successes != WNF_MAX_SUBSCRIPTIONS_PER_PROCESS)
+    {
+        printf("cap child expected %d successes, got %lu\n",
+               WNF_MAX_SUBSCRIPTIONS_PER_PROCESS, Successes);
+        ExitProcess(1);
+    }
+    ExitProcess(0);
+}
+
+static VOID
+TestSubscriptionCap(VOID)
+{
+    WCHAR CommandLine[MAX_PATH + 32];
+    STARTUPINFOW StartupInfo;
+    PROCESS_INFORMATION ProcessInformation;
+    DWORD Code;
+
+    if (!GetModuleFileNameW(NULL, CommandLine, MAX_PATH))
+    {
+        skip("GetModuleFileNameW failed with %lu\n", GetLastError());
+        return;
+    }
+    wcscat(CommandLine, L" --wnf-cap");
+
+    ZeroMemory(&StartupInfo, sizeof(StartupInfo));
+    StartupInfo.cb = sizeof(StartupInfo);
+    if (!CreateProcessW(NULL, CommandLine, NULL, NULL, FALSE, 0, NULL, NULL,
+                        &StartupInfo, &ProcessInformation))
+    {
+        skip("CreateProcessW failed with %lu\n", GetLastError());
+        return;
+    }
+
+    ok(WaitForSingleObject(ProcessInformation.hProcess, 60000) == WAIT_OBJECT_0,
+       "Cap child did not exit\n");
+    ok(GetExitCodeProcess(ProcessInformation.hProcess, &Code) && (Code == 0),
+       "Cap child exit code %lu\n", Code);
+    CloseHandle(ProcessInformation.hProcess);
+    CloseHandle(ProcessInformation.hThread);
 }
 
 static DWORD WINAPI
@@ -631,6 +726,12 @@ START_TEST(NtWnfState)
         return;
     }
 
+    if (wcsstr(GetCommandLineW(), L"--wnf-cap"))
+    {
+        WnfCapChildMain();
+        return;
+    }
+
     if (wcsstr(GetCommandLineW(), WNF_CHILD_FLAG))
     {
         WnfTemporaryChildMain();
@@ -695,4 +796,5 @@ START_TEST(NtWnfState)
     TestSubscribeUnsubscribeRace();
     TestSubscribeIdWriteFault();
     TestTemporaryNamesDieWithProcess();
+    TestSubscriptionCap();
 }
