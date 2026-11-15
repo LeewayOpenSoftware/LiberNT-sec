@@ -167,6 +167,27 @@ BuildForeignOwnerSecurityDescriptor(VOID)
     return SecurityDescriptor;
 }
 
+static PSECURITY_DESCRIPTOR
+BuildOwnerOnlySecurityDescriptor(VOID)
+{
+    SID_IDENTIFIER_AUTHORITY LocalAuthority = {SECURITY_LOCAL_SID_AUTHORITY};
+    UCHAR WorldSidBuffer[SECURITY_MAX_SID_SIZE];
+    PSID Everyone = (PSID)WorldSidBuffer;
+    PACL Acl = (PACL)AclBuffer;
+    PSECURITY_DESCRIPTOR SecurityDescriptor = (PSECURITY_DESCRIPTOR)SecurityDescriptorBuffer;
+    PSID UserSid = GetCurrentUserSid();
+
+    RtlInitializeSid(Everyone, &LocalAuthority, 1);
+    *RtlSubAuthoritySid(Everyone, 0) = SECURITY_WORLD_RID;
+    RtlCreateAcl(Acl, sizeof(AclBuffer), ACL_REVISION);
+    RtlAddAccessAllowedAce(Acl, ACL_REVISION, GENERIC_ALL, Everyone);
+    RtlCreateSecurityDescriptor(SecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+    if (UserSid != NULL)
+        RtlSetOwnerSecurityDescriptor(SecurityDescriptor, UserSid, FALSE);
+    RtlSetDaclSecurityDescriptor(SecurityDescriptor, TRUE, Acl, FALSE);
+    return SecurityDescriptor;
+}
+
 static ULONG
 QueryNameInformation(_In_ const TEST_WNF_STATE_NAME *StateName, _In_ ULONG InfoClass, _Out_ NTSTATUS *Status)
 {
@@ -427,6 +448,20 @@ TestSecurityDescriptorEnforcement(VOID)
     Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
                                    sizeof(Buffer), BuildForeignOwnerSecurityDescriptor());
     ok(Status == STATUS_INVALID_OWNER, "Create with a foreign owner returned 0x%08lx\n", Status);
+
+    /* An owner set to the token user with no group is accepted; the group
+       is completed from the token. Skipped when the user SID is unknown. */
+    if (GetCurrentUserSid() != NULL)
+    {
+        Status = pNtCreateWnfStateName(&StateName, WNF_TEMPORARY_STATE_NAME, WNF_DATA_SCOPE_MACHINE, FALSE, NULL,
+                                       sizeof(Buffer), BuildOwnerOnlySecurityDescriptor());
+        ok(Status == STATUS_SUCCESS, "Create with token-user owner and no group returned 0x%08lx\n", Status);
+        if (NT_SUCCESS(Status))
+        {
+            Status = pNtDeleteWnfStateName(&StateName);
+            ok(Status == STATUS_SUCCESS, "Delete after owner-only create returned 0x%08lx\n", Status);
+        }
+    }
 }
 
 static VOID
