@@ -7,18 +7,35 @@
 
 #define WIN32_NO_STATUS
 #include <apitest.h>
+#include <ndk/iofuncs.h>
+#include <ndk/obfuncs.h>
+#include <ndk/rtlfuncs.h>
 #include <winioctl.h>
 #include <tcpioctl.h>
 #include <tcpip_undoc.h>
 #include <tdiinfo.h>
 
+/* The stack's devices have no DOS names; iphlpapi, nsi.dll and the DHCP client open them by their NT names */
+static const WCHAR IpDevice[] = L"\\Device\\Ip";
+static const WCHAR Ip6Device[] = L"\\Device\\Ip6";
+static const WCHAR TcpDevice[] = L"\\Device\\Tcp";
+
 static
-HANDLE
+NTSTATUS
 OpenDevice(
     _In_ PCWSTR Name,
-    _In_ DWORD Access)
+    _In_ ACCESS_MASK Access,
+    _Out_ PHANDLE Handle)
 {
-    return CreateFileW(Name, Access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    UNICODE_STRING DeviceName;
+    OBJECT_ATTRIBUTES Attributes;
+    IO_STATUS_BLOCK Iosb;
+
+    *Handle = NULL;
+    RtlInitUnicodeString(&DeviceName, Name);
+    InitializeObjectAttributes(&Attributes, &DeviceName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    return NtOpenFile(Handle, Access | SYNCHRONIZE, &Attributes, &Iosb, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      FILE_SYNCHRONOUS_IO_NONALERT);
 }
 
 static
@@ -42,13 +59,19 @@ IsAdministrator(VOID)
  * at the data */
 static
 VOID
-TestWriteCodesOnReadHandle(
-    _In_ HANDLE Device)
+TestWriteCodesOnReadHandle(VOID)
 {
     UCHAR Buffer[64];
+    HANDLE Device;
+    NTSTATUS Status;
     DWORD Returned = 0;
     BOOL Result;
     DWORD Error;
+
+    Status = OpenDevice(IpDevice, FILE_READ_DATA, &Device);
+    ok(NT_SUCCESS(Status), "IP device for reading: 0x%lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        return;
 
     RtlZeroMemory(Buffer, sizeof(Buffer));
 
@@ -68,6 +91,8 @@ TestWriteCodesOnReadHandle(
     Result = DeviceIoControl(Device, IOCTL_IP_QUERY_ROUTE, Buffer, sizeof(Buffer), Buffer, sizeof(Buffer), &Returned, NULL);
     Error = Result ? NO_ERROR : GetLastError();
     ok(Error != ERROR_ACCESS_DENIED, "IP_QUERY_ROUTE on a read handle: access denied\n");
+
+    NtClose(Device);
 }
 
 /* An administrator's handle opened for writing reaches the set codes: the driver answers the request itself (an
@@ -86,22 +111,22 @@ TestWriteCodesOnWriteHandle(VOID)
     } Address;
     IP4_INTERFACE_INFO Interface;
     HANDLE Device;
+    NTSTATUS Status;
     DWORD Returned = 0;
     DWORD Error;
     BOOL Result;
 
-    Device = OpenDevice(L"\\\\.\\Ip", GENERIC_WRITE);
-    if (Device == INVALID_HANDLE_VALUE)
+    Status = OpenDevice(IpDevice, FILE_WRITE_DATA, &Device);
+    if (!NT_SUCCESS(Status))
     {
-        Error = GetLastError();
         if (IsAdministrator())
         {
-            ok(FALSE, "Administrator: IP device for writing failed with %lu\n", Error);
+            ok(FALSE, "Administrator: IP device for writing failed with 0x%lx\n", Status);
         }
         else
         {
             /* The refusal is the expected answer for a standard user */
-            ok(Error == ERROR_ACCESS_DENIED, "Standard user: IP device for writing: error %lu\n", Error);
+            ok(Status == STATUS_ACCESS_DENIED, "Standard user: IP device for writing: 0x%lx\n", Status);
             skip("Not an administrator: the write handle cases need one\n");
         }
         return;
@@ -113,12 +138,12 @@ TestWriteCodesOnWriteHandle(VOID)
     Result = DeviceIoControl(Device, IOCTL_IP_SET_INTERFACE, &Interface, sizeof(Interface), NULL, 0, &Returned, NULL);
     Error = Result ? NO_ERROR : GetLastError();
     ok(Error != ERROR_ACCESS_DENIED, "IP_SET_INTERFACE on a write handle: access denied\n");
-    CloseHandle(Device);
+    NtClose(Device);
 
     /* iphlpapi opens the TCP device this way to add and delete addresses */
-    Device = OpenDevice(L"\\\\.\\Tcp", FILE_READ_DATA | FILE_WRITE_DATA);
-    ok(Device != INVALID_HANDLE_VALUE, "TCP device for reading and writing failed with %lu\n", GetLastError());
-    if (Device == INVALID_HANDLE_VALUE)
+    Status = OpenDevice(TcpDevice, FILE_READ_DATA | FILE_WRITE_DATA, &Device);
+    ok(NT_SUCCESS(Status), "TCP device for reading and writing: 0x%lx\n", Status);
+    if (!NT_SUCCESS(Status))
         return;
 
     RtlZeroMemory(&Address, sizeof(Address));
@@ -128,7 +153,7 @@ TestWriteCodesOnWriteHandle(VOID)
     Error = Result ? NO_ERROR : GetLastError();
     ok(Error != ERROR_ACCESS_DENIED, "SET_IP_ADDRESS on a write handle: access denied\n");
     ok(!Result, "SET_IP_ADDRESS for an unknown context succeeded\n");
-    CloseHandle(Device);
+    NtClose(Device);
 }
 
 /* Without the administrators group the devices open for reading only */
@@ -140,17 +165,17 @@ TestRestrictedOpens(VOID)
     HANDLE Token = NULL, Restricted = NULL, Device;
     SID_AND_ATTRIBUTES Disable;
     PSID Admins = NULL;
-    DWORD Error;
+    NTSTATUS Status;
 
     if (!AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
                                   0, 0, 0, 0, 0, 0, &Admins))
     {
-        skip("No administrators SID (%lu)\n", GetLastError());
+        ok(FALSE, "No administrators SID (%lu)\n", GetLastError());
         return;
     }
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_IMPERSONATE, &Token))
     {
-        skip("No process token (%lu)\n", GetLastError());
+        ok(FALSE, "No process token (%lu)\n", GetLastError());
         FreeSid(Admins);
         return;
     }
@@ -158,45 +183,39 @@ TestRestrictedOpens(VOID)
     Disable.Attributes = 0;
     if (!CreateRestrictedToken(Token, DISABLE_MAX_PRIVILEGE, 1, &Disable, 0, NULL, 0, NULL, &Restricted))
     {
-        skip("No restricted token (%lu)\n", GetLastError());
+        ok(FALSE, "No restricted token (%lu)\n", GetLastError());
         CloseHandle(Token);
         FreeSid(Admins);
         return;
     }
     if (!ImpersonateLoggedOnUser(Restricted))
     {
-        skip("Cannot impersonate the restricted token (%lu)\n", GetLastError());
+        ok(FALSE, "Cannot impersonate the restricted token (%lu)\n", GetLastError());
         CloseHandle(Restricted);
         CloseHandle(Token);
         FreeSid(Admins);
         return;
     }
 
-    Device = OpenDevice(L"\\\\.\\Ip", GENERIC_READ);
-    ok(Device != INVALID_HANDLE_VALUE, "Restricted: IP device for reading failed with %lu\n", GetLastError());
-    if (Device != INVALID_HANDLE_VALUE)
-        CloseHandle(Device);
+    Status = OpenDevice(IpDevice, FILE_READ_DATA, &Device);
+    ok(NT_SUCCESS(Status), "Restricted: IP device for reading: 0x%lx\n", Status);
+    if (NT_SUCCESS(Status))
+        NtClose(Device);
 
-    Device = OpenDevice(L"\\\\.\\Ip", GENERIC_WRITE);
-    Error = Device == INVALID_HANDLE_VALUE ? GetLastError() : NO_ERROR;
-    ok(Device == INVALID_HANDLE_VALUE && Error == ERROR_ACCESS_DENIED,
-       "Restricted: IP device for writing: error %lu\n", Error);
-    if (Device != INVALID_HANDLE_VALUE)
-        CloseHandle(Device);
+    Status = OpenDevice(IpDevice, FILE_WRITE_DATA, &Device);
+    ok(Status == STATUS_ACCESS_DENIED, "Restricted: IP device for writing: 0x%lx\n", Status);
+    if (NT_SUCCESS(Status))
+        NtClose(Device);
 
-    Device = OpenDevice(L"\\\\.\\Ip6", GENERIC_WRITE);
-    Error = Device == INVALID_HANDLE_VALUE ? GetLastError() : NO_ERROR;
-    ok(Device == INVALID_HANDLE_VALUE && Error == ERROR_ACCESS_DENIED,
-       "Restricted: IPv6 device for writing: error %lu\n", Error);
-    if (Device != INVALID_HANDLE_VALUE)
-        CloseHandle(Device);
+    Status = OpenDevice(Ip6Device, FILE_WRITE_DATA, &Device);
+    ok(Status == STATUS_ACCESS_DENIED, "Restricted: IPv6 device for writing: 0x%lx\n", Status);
+    if (NT_SUCCESS(Status))
+        NtClose(Device);
 
-    Device = OpenDevice(L"\\\\.\\Tcp", GENERIC_WRITE);
-    Error = Device == INVALID_HANDLE_VALUE ? GetLastError() : NO_ERROR;
-    ok(Device == INVALID_HANDLE_VALUE && Error == ERROR_ACCESS_DENIED,
-       "Restricted: TCP device for writing: error %lu\n", Error);
-    if (Device != INVALID_HANDLE_VALUE)
-        CloseHandle(Device);
+    Status = OpenDevice(TcpDevice, FILE_WRITE_DATA, &Device);
+    ok(Status == STATUS_ACCESS_DENIED, "Restricted: TCP device for writing: 0x%lx\n", Status);
+    if (NT_SUCCESS(Status))
+        NtClose(Device);
 
     RevertToSelf();
     CloseHandle(Restricted);
@@ -206,17 +225,7 @@ TestRestrictedOpens(VOID)
 
 START_TEST(device_access)
 {
-    HANDLE Device;
-
-    Device = OpenDevice(L"\\\\.\\Ip", GENERIC_READ);
-    if (Device == INVALID_HANDLE_VALUE)
-    {
-        skip("The IP device cannot be opened for reading (error %lu)\n", GetLastError());
-        return;
-    }
-    TestWriteCodesOnReadHandle(Device);
-    CloseHandle(Device);
-
+    TestWriteCodesOnReadHandle();
     TestWriteCodesOnWriteHandle();
     TestRestrictedOpens();
 }
