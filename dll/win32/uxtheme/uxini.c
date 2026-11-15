@@ -278,6 +278,10 @@ LPCWSTR UXINI_GetNextSection(PUXINI_FILE uf, DWORD *dwLen)
     while((lpLine = UXINI_GetNextLine(uf, dwLen))) {
         /* Assuming a ']' ending to the section name */
         if(lpLine[0] == '[') {
+#ifdef __REACTOS__
+            /* A lone '[' is no section header: the name length must not wrap */
+            if(*dwLen < 2) continue;
+#endif
             lpLine++;
             *dwLen -= 2;
             break;

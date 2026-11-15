@@ -100,4 +100,16 @@ START_TEST(GetThemeParseErrorInfo)
     ok_hex(hr, S_OK);
 
     _wremove(L"noname.ini");
+
+    /* A lone opening bracket is not a section; the sections after it are still read */
+    fout = _wfopen(L"bracket.ini", L"wb");
+    fprintf(fout, "[\n");
+    fprintf(fout, "[globals]\n");
+    fprintf(fout, "InvalidValueName=InvalidValue\n");
+    fclose(fout);
+
+    hr = ParseThemeIniFile(L"bracket.ini", szPath, ParseThemeIniFileProc, NULL);
+    ok_hex(hr, HRESULT_FROM_WIN32(ERROR_UNKNOWN_PROPERTY));
+
+    _wremove(L"bracket.ini");
 }
