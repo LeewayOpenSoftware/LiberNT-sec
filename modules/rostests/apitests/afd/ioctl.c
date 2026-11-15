@@ -854,8 +854,7 @@ TestUnixZeroLength(void)
     NtClose(SocketHandle);
 }
 
-void
-func_ioctl(void)
+START_TEST(ioctl)
 {
     TestAcceptForeignHandle();
     TestNullBufferSend();
