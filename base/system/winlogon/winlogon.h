@@ -248,6 +248,7 @@ typedef struct _WLSESSION
     DWORD SecurePromptTimeoutMs;
     DWORD SecurePromptStart; /* GetTickCount at Begin */
     DWORD SecurePromptGeneration; /* bumped at every clear */
+    LONG SecurePromptHold; /* non-zero while a SAS, lock or logoff action runs */
     LARGE_INTEGER LastLogon;
 
     /* Screen-saver informations */
@@ -346,6 +347,10 @@ StartSecureDesktopServer(VOID);
 
 VOID
 SecDeskEndPromptAndWait(
+    IN PWLSESSION Session);
+
+VOID
+SecDeskReleaseHold(
     IN PWLSESSION Session);
 
 /* sas.c */

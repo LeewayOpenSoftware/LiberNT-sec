@@ -1727,6 +1727,9 @@ DoGenericAction(
         default:
             WARN("Unknown SAS action 0x%lx\n", wlxAction);
     }
+
+    if (wlxAction != WLX_SAS_ACTION_NONE && wlxAction != WLX_SAS_ACTION_LOGON)
+        SecDeskReleaseHold(Session);
 }
 
 static
@@ -1852,7 +1855,11 @@ DispatchSAS(
     DoGenericAction(Session, wlxAction);
 
     if (dwSasType != WLX_SAS_TYPE_CTRL_ALT_DEL)
+    {
+        if (dwSasType != WLX_SAS_TYPE_SCRNSVR_ACTIVITY)
+            SecDeskReleaseHold(Session);
         return;
+    }
 
     if (Session->LogonState == STATE_LOGGED_ON_SAS)
     {
@@ -1864,6 +1871,8 @@ DispatchSAS(
         Session->LogonState = STATE_LOCKED;
         Session->Gina.Functions.WlxDisplayLockedNotice(Session->Gina.Context);
     }
+
+    SecDeskReleaseHold(Session);
 }
 
 static

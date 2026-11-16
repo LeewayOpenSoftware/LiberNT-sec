@@ -185,9 +185,20 @@ SecDeskReturn(
     _In_ PWLSESSION Session,
     _In_opt_ HWND hwndBackdrop)
 {
+    BOOL SwitchBack;
+
     if (hwndBackdrop)
         DestroyWindow(hwndBackdrop);
-    if (!SwitchDesktop(Session->ApplicationDesktop))
+
+    /* The user's desktop comes back only while the session is still logged on and
+     * unlocked; after a lock, a SAS or a logoff the desktop stays where the SAS code
+     * put it (it switches back itself when its dialog ends) */
+    EnterCriticalSection(&SecDeskLock);
+    SwitchBack = (Session->LogonState == STATE_LOGGED_ON);
+    LeaveCriticalSection(&SecDeskLock);
+    if (!SwitchBack)
+        ERR("Secure-desktop return: the session is no longer logged on and unlocked, the desktop stays\n");
+    else if (!SwitchDesktop(Session->ApplicationDesktop))
         ERR("Secure-desktop return: SwitchDesktop failed (error %lu)\n", GetLastError());
     if (!UnlockWindowStation(Session->InteractiveWindowStation))
         ERR("Secure-desktop return: UnlockWindowStation failed (error %lu)\n", GetLastError());
@@ -319,6 +330,8 @@ SecDeskEndPromptAndWait(
         return;
 
     EnterCriticalSection(&SecDeskLock);
+    /* Held until the caller's action is done (SecDeskReleaseHold): Begin refuses meanwhile */
+    Session->SecurePromptHold++;
     if (Session->SecurePromptBroker)
     {
         ERR("Secure-desktop prompt of %lu ended by the session (SAS, lock or logoff)\n", Session->SecurePromptBrokerPid);
@@ -329,6 +342,19 @@ SecDeskEndPromptAndWait(
     /* The thread returns within the broker's timeout plus slack at the latest */
     if (WaitForSingleObject(SecDeskIdleEvent, SECDESK_MAX_TIMEOUT_MS + 2 * SECDESK_WATCHDOG_SLACK_MS) != WAIT_OBJECT_0)
         ERR("Secure-desktop prompt thread did not return; going on\n");
+}
+
+/* The SAS, lock or logoff action that called SecDeskEndPromptAndWait is done */
+VOID
+SecDeskReleaseHold(
+    _In_ PWLSESSION Session)
+{
+    if (!SecDeskIdleEvent)
+        return;
+    EnterCriticalSection(&SecDeskLock);
+    if (Session->SecurePromptHold > 0)
+        Session->SecurePromptHold--;
+    LeaveCriticalSection(&SecDeskLock);
 }
 
 BOOL
@@ -436,7 +462,7 @@ WlSecureDesktopBegin(
     /* Only a logged-on, unlocked session gets a prompt: the return switches to the
      * user's desktop and unlocks the window station, which must never undo a lock,
      * a logon dialog or the screen saver. Read as the SAS code reads it. */
-    if (Session->LogonState != STATE_LOGGED_ON)
+    if (Session->LogonState != STATE_LOGGED_ON || Session->SecurePromptHold != 0)
     {
         LeaveCriticalSection(&SecDeskLock);
         CloseHandle(hEnd);
