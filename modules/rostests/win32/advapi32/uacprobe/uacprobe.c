@@ -268,8 +268,8 @@ static void ProbeP(void)
     WCHAR Before[128], After[128];
     RECT RectBefore, RectAfter, Button;
     INPUT Keys[4];
-    HWND Yes;
-    BOOL Posted, Open, Foreground;
+    HWND Yes, Cover;
+    BOOL Posted, Open, Foreground, Attached;
     LRESULT Sent;
     DWORD_PTR SendResult = 0;
 
@@ -366,6 +366,42 @@ static void ProbeP(void)
                ThreadHook ? "INSTALLED" : "refused", Error);
         if (ThreadHook)
             UnhookWindowsHookEx(ThreadHook);
+    }
+
+    /* P7: sharing the prompt thread's input state */
+    if (Open)
+    {
+        SetLastError(0);
+        Attached = AttachThreadInput(GetCurrentThreadId(), ConsentThread, TRUE);
+        Error = GetLastError();
+        Report(!Attached, "P7 AttachThreadInput to the prompt's thread: %s, error %lu",
+               Attached ? "ATTACHED" : "refused", Error);
+        if (Attached)
+            AttachThreadInput(GetCurrentThreadId(), ConsentThread, FALSE);
+    }
+
+    /* P8: a click queued to a window of this process that covers the Yes button; the window goes away
+     * before the click is read, so the click would be handed to the window below it */
+    if (Open && (Yes = GetDlgItem(g_Consent, IDYES)) != NULL && GetWindowRect(Yes, &Button))
+    {
+        Cover = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP | WS_VISIBLE | SS_NOTIFY,
+                                Button.left, Button.top, Button.right - Button.left, Button.bottom - Button.top,
+                                NULL, NULL, GetModuleHandleW(NULL), NULL);
+        if (Cover)
+        {
+            Foreground = SetForegroundWindow(Cover) && GetForegroundWindow() == Cover;
+            SetCursorPos((Button.left + Button.right) / 2, (Button.top + Button.bottom) / 2);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            DestroyWindow(Cover);
+            Open = StillAsking(Thread);
+            Report(Open, "P8 click queued to a covering window, then the window removed: cover was %sthe foreground window, prompt %s",
+                   Foreground ? "" : "NOT ", Open ? "still open" : "gone");
+        }
+        else
+        {
+            Info("P8 the covering window could not be created (error %lu); not tried", GetLastError());
+        }
     }
 
     /* P4: window calls: hide, disable, move, rename */
