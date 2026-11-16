@@ -237,10 +237,24 @@ NsiDrainPendingIrps(
     _In_ NTSTATUS Status,
     _In_ ULONG_PTR Information)
 {
+    LIST_ENTRY Drained;
+    PLIST_ENTRY Entry;
     PIRP Irp;
 
+    /* Take the requests that are queued now, then complete them. A requester
+     * that is woken by its completion asks again at once, and on one processor
+     * it runs before this thread does: a loop that looked at the queue again
+     * after every completion found that new request, completed it too, and so
+     * never ended. A request that arrives after this point is for the next
+     * change */
+    InitializeListHead(&Drained);
     while ((Irp = IoCsqRemoveNextIrp(&Provider->Csq, FileObject)) != NULL)
+        InsertTailList(&Drained, &Irp->Tail.Overlay.ListEntry);
+
+    while (!IsListEmpty(&Drained))
     {
+        Entry = RemoveHeadList(&Drained);
+        Irp = CONTAINING_RECORD(Entry, IRP, Tail.Overlay.ListEntry);
         Irp->IoStatus.Status = Status;
         Irp->IoStatus.Information = Information;
         IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
