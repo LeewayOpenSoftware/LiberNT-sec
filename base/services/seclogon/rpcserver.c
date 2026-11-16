@@ -2153,7 +2153,9 @@ SeclCreateProcessElevatedW(
     /* The child took its DOS device map from its parent, and a requester may set its own map
      * without any privilege (a C: of its choosing): the elevated process gets the global map
      * before it runs, as a process of a clean session has */
-    RtlInitUnicodeString(&DosDevices, L"\\??");
+    /* \GLOBAL?? is the global DOS-devices directory by name, not via the broker's own map; if LUID
+     * device maps are ever enabled, the right map becomes the elevated token's logon session (A). */
+    RtlInitUnicodeString(&DosDevices, L"\\GLOBAL??");
     InitializeObjectAttributes(&ObjectAttributes, &DosDevices, OBJ_CASE_INSENSITIVE, NULL, NULL);
     Status = NtOpenDirectoryObject(&hDosDevices, DIRECTORY_TRAVERSE, &ObjectAttributes);
     if (NT_SUCCESS(Status))
