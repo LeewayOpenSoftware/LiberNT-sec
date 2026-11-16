@@ -33,34 +33,14 @@ extern "C" DWORD SHELL_ElevateProcess(HWND hwnd, LPCWSTR ApplicationName, LPCWST
 #define TokenElevationTypeLimited 3
 #endif
 
-/* A limited administrator token has an elevated one linked to it; the broker can use that. */
-// ConsentPromptBehaviorUser 0 under UAC: a standard user may not ask for an administrator
-static BOOL SHELL_IsUserElevationDenied(void)
+// Under UAC every elevation is the broker's; the policy and the caller's token decide there
+static BOOL SHELL_IsLuaEnabled(void)
 {
-    DWORD dwLua = 0, dwUser = 3, cb;
+    DWORD dwLua = 0, cb = sizeof(dwLua);
 
-    cb = sizeof(dwLua);
     SHGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
                 L"EnableLUA", NULL, &dwLua, &cb);
-    cb = sizeof(dwUser);
-    SHGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
-                L"ConsentPromptBehaviorUser", NULL, &dwUser, &cb);
-    return dwLua != 0 && dwUser == 0;
-}
-
-static BOOL SHELL_IsTokenLimited(void)
-{
-    HANDLE hToken;
-    DWORD dwType = 0, cbSize;
-    BOOL bLimited = FALSE;
-
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
-    {
-        if (GetTokenInformation(hToken, TokenElevationType, &dwType, sizeof(dwType), &cbSize))
-            bLimited = (dwType == TokenElevationTypeLimited);
-        CloseHandle(hToken);
-    }
-    return bLimited;
+    return dwLua != 0;
 }
 
 WINE_DEFAULT_DEBUG_CHANNEL(exec);
@@ -636,38 +616,25 @@ PromptAndRunProcessAs(
     HRESULT hr;
     hwnd = SHELL_GetUsableDialogOwner(hwnd);
 
-    // A limited administrator asks the elevation broker, which prompts for consent and starts
-    // the program with the linked token. What the broker will not do falls through to the
-    // credentials dialog below (standard users, credential policy modes, LUA off, no broker).
-    if (SHELL_IsTokenLimited())
+    // Under UAC the elevation broker is the only way up: it prompts for consent or for an
+    // administrator's credentials as the policy and the caller's token say, and starts the
+    // program with the token it approved. No broker answer leads to the dialog below, which
+    // is the run-as-another-user dialog of a system without UAC.
+    if (SHELL_IsLuaEnabled())
     {
         DWORD dwElevate = SHELL_ElevateProcess(hwnd, NULL, Cmd, Dir, CreationFlags, pSI, pPI);
         if (dwElevate == ERROR_SUCCESS)
             return S_OK;
+        pPI->hProcess = NULL;
         if (dwElevate == ERROR_CANCELLED)
         {
             SetLastError(ERROR_CANCELLED);
-            pPI->hProcess = NULL;
             return S_FALSE;
         }
         ERR("Elevation through the broker failed with Error %lu\n", dwElevate);
-        if (dwElevate != ERROR_ELEVATION_REQUIRED && dwElevate != ERROR_SERVICE_NOT_ACTIVE)
-        {
-            SHELL_ErrorBox(hwnd, dwElevate);
-            pPI->hProcess = NULL;
-            return E_FAIL;
-        }
-    }
-    else if (SHELL_IsUserElevationDenied())
-    {
-        SHELL_ErrorBox(hwnd, ERROR_ACCESS_DENIED);
-        SetLastError(ERROR_ACCESS_DENIED);
-        pPI->hProcess = NULL;
+        SHELL_ErrorBox(hwnd, dwElevate);
+        SetLastError(dwElevate);
         return E_FAIL;
-    }
-    else
-    {
-        TRACE("The caller is no limited administrator: asking for credentials\n");
     }
 again:
     dlgret = DialogBoxParamW(shell32_hInstance, MAKEINTRESOURCEW(IDD_RUN_AS),
