@@ -2352,6 +2352,19 @@ SeTokenCanImpersonate(
         goto Quit;
     }
 
+    /* A process without its user's full token does not impersonate one: the client
+     * gets identification at most (elevated = administrator and not filtered, the
+     * TokenElevation test; the integrity of the copy does not matter) */
+    if (!(TokenToImpersonate->TokenFlags & TOKEN_LUA) &&
+        SepSidInToken(TokenToImpersonate, SeAliasAdminsSid) &&
+        ((ProcessToken->TokenFlags & TOKEN_LUA) ||
+         !SepSidInToken(ProcessToken, SeAliasAdminsSid)))
+    {
+        DPRINT1("Cannot impersonate an elevated client without the full token!\n");
+        CanImpersonate = FALSE;
+        goto Quit;
+    }
+
     /*
      * Deny impersonation for the server if it wants to impersonate a client
      * beyond what the impersonation level originally permits.
