@@ -12,6 +12,7 @@
 #include <seclogon_s.h>
 #include <wlsecdesk_c.h>
 #include <consentproto.h>
+#include <ndk/psfuncs.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(seclogon);
 
@@ -1282,7 +1283,8 @@ OpenElevationCaller(
     if (I_RpcBindingInqLocalClientPID(hBinding, &ClientPid) != RPC_S_OK)
         return ERROR_ACCESS_DENIED;
 
-    hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE, FALSE, ClientPid);
+    /* PROCESS_CREATE_PROCESS: the elevated process is created as this process's child */
+    hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE | PROCESS_CREATE_PROCESS, FALSE, ClientPid);
     if (hProcess == NULL)
         return ERROR_ACCESS_DENIED;
 
@@ -1884,8 +1886,11 @@ SeclCreateProcessElevatedW(
     PPENDING_PROMPT Prompt = NULL;
     PDESKTOP_GRANT Grant = NULL;
     PVOID Environment = NULL;
-    STARTUPINFOW StartupInfo = { sizeof(StartupInfo) };
+    STARTUPINFOEXW StartupInfoEx = { { sizeof(StartupInfoEx) } };
     PROCESS_INFORMATION ProcessInfo = { 0 };
+    LPPROC_THREAD_ATTRIBUTE_LIST Attributes = NULL;
+    SIZE_T AttributesSize = 0;
+    DWORD_PTR DebugPort = 0;
     WCHAR FinalPath[MAX_PATH], Account[512], ProfileUser[256];
     PROFILEINFOW ProfileInfo = { sizeof(ProfileInfo) };
     PWSTR CommandLine = NULL;
@@ -2075,25 +2080,72 @@ SeclCreateProcessElevatedW(
         CopyMemory(CommandLine, pRequest->CommandLine, Length * sizeof(WCHAR));
     }
 
-    StartupInfo.lpDesktop = (LPWSTR)Desktop;
-    StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
-    StartupInfo.wShowWindow = (WORD)pRequest->dwShowCmd;
+    /* The elevated process is the requester's child (parent pid, job, device map and priorities as
+     * if the requester had started it) with the requester's handles kept out: inheritance stays
+     * off in this call. A requester under a debugger is not made the parent, because the parent's
+     * debug port travels to the child at creation and the debugger would hold the elevated process. */
+    if (NT_SUCCESS(NtQueryInformationProcess(hCallerProcess, ProcessDebugPort, &DebugPort, sizeof(DebugPort), NULL)) &&
+        DebugPort == 0)
+    {
+        InitializeProcThreadAttributeList(NULL, 1, 0, &AttributesSize);
+        Attributes = HeapAlloc(GetProcessHeap(), 0, AttributesSize);
+        if (Attributes == NULL)
+        {
+            dwError = ERROR_NOT_ENOUGH_MEMORY;
+            goto done;
+        }
+        if (!InitializeProcThreadAttributeList(Attributes, 1, 0, &AttributesSize))
+        {
+            dwError = GetLastError();
+            HeapFree(GetProcessHeap(), 0, Attributes);
+            Attributes = NULL;
+            goto done;
+        }
+        if (!UpdateProcThreadAttribute(Attributes, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+                                       &hCallerProcess, sizeof(hCallerProcess), NULL, NULL))
+        {
+            dwError = GetLastError();
+            goto done;
+        }
+        StartupInfoEx.lpAttributeList = Attributes;
+    }
+    else
+    {
+        WARN("The requester %lu is being debugged: the elevated process is not its child\n", CallerPid);
+    }
+    StartupInfoEx.StartupInfo.lpDesktop = (LPWSTR)Desktop;
+    StartupInfoEx.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    StartupInfoEx.StartupInfo.wShowWindow = (WORD)pRequest->dwShowCmd;
     if (!CreateProcessAsUserW(hElevated,
                               FinalPath,
                               CommandLine,
                               NULL,
                               NULL,
                               FALSE,
-                              (pRequest->dwCreationFlags & SECL_ALLOWED_CREATION_FLAGS) | CREATE_UNICODE_ENVIRONMENT,
+                              (pRequest->dwCreationFlags & SECL_ALLOWED_CREATION_FLAGS) | CREATE_UNICODE_ENVIRONMENT |
+                              EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
                               Environment,
                               pRequest->CurrentDirectory,
-                              &StartupInfo,
+                              &StartupInfoEx.StartupInfo,
                               &ProcessInfo))
     {
         dwError = GetLastError();
         WARN("CreateProcessAsUser(elevated) failed with Error %lu\n", dwError);
         goto done;
     }
+    /* A debugger that attached to the requester after the check above would have reached the
+     * child through the inherited port: such a child is ended before it ever runs */
+    if (!NT_SUCCESS(NtQueryInformationProcess(ProcessInfo.hProcess, ProcessDebugPort, &DebugPort, sizeof(DebugPort), NULL)) ||
+        DebugPort != 0)
+    {
+        TerminateProcess(ProcessInfo.hProcess, ERROR_ACCESS_DENIED);
+        CloseHandle(ProcessInfo.hThread);
+        CloseHandle(ProcessInfo.hProcess);
+        ERR("The elevated process of requester %lu carried a debug port: ended\n", CallerPid);
+        dwError = ERROR_ACCESS_DENIED;
+        goto done;
+    }
+    ResumeThread(ProcessInfo.hThread);
 
     if (Grant && WatchDesktopGrant(Grant, ProcessInfo.hProcess))
         Grant = NULL;
@@ -2121,6 +2173,11 @@ done:
         CloseHandle(hImage);
     if (CommandLine != NULL)
         HeapFree(GetProcessHeap(), 0, CommandLine);
+    if (Attributes != NULL)
+    {
+        DeleteProcThreadAttributeList(Attributes);
+        HeapFree(GetProcessHeap(), 0, Attributes);
+    }
     if (Environment != NULL)
         DestroyEnvironmentBlock(Environment);
     if (Grant != NULL)
