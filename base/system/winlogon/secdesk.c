@@ -19,7 +19,9 @@ BOOL WINAPI UnlockWindowStation(HWINSTA hWinSta);
 
 /* GLOBALS *******************************************************************/
 
-/* The broker has at most this long after Begin before winlogon returns alone */
+/* The broker's timeout: at least a few seconds (a prompt needs that long to be seen),
+ * at most this long after Begin before winlogon returns alone */
+#define SECDESK_MIN_TIMEOUT_MS   (5 * 1000)
 #define SECDESK_MAX_TIMEOUT_MS   (5 * 60 * 1000)
 /* The prompt thread has this long to switch before Begin gives up */
 #define SECDESK_SWITCH_WAIT_MS   (10 * 1000)
@@ -346,7 +348,7 @@ WlSecureDesktopBegin(
         return Error;
     }
 
-    if (dwTimeoutMs == 0 || dwTimeoutMs > SECDESK_MAX_TIMEOUT_MS)
+    if (dwTimeoutMs < SECDESK_MIN_TIMEOUT_MS || dwTimeoutMs > SECDESK_MAX_TIMEOUT_MS)
         return ERROR_INVALID_PARAMETER;
 
     /* The broker's process is what tells the prompt thread that the broker is gone */
