@@ -24,6 +24,30 @@
 #include <winbase_undoc.h>
 #include <undocshell.h>
 
+extern "C" DWORD SHELL_ElevateProcess(HWND hwnd, LPCWSTR ApplicationName, LPCWSTR CommandLine,
+                                      LPCWSTR CurrentDirectory, DWORD CreationFlags,
+                                      const STARTUPINFOW *pStartupInfo, PROCESS_INFORMATION *pProcessInfo);
+
+#ifndef TokenElevationTypeLimited
+#define TokenElevationTypeLimited 3
+#endif
+
+/* A limited administrator token has an elevated one linked to it; the broker can use that. */
+static BOOL SHELL_IsTokenLimited(void)
+{
+    HANDLE hToken;
+    DWORD dwType = 0, cbSize;
+    BOOL bLimited = FALSE;
+
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+    {
+        if (GetTokenInformation(hToken, TokenElevationType, &dwType, sizeof(dwType), &cbSize))
+            bLimited = (dwType == TokenElevationTypeLimited);
+        CloseHandle(hToken);
+    }
+    return bLimited;
+}
+
 WINE_DEFAULT_DEBUG_CHANNEL(exec);
 
 EXTERN_C BOOL PathIsExeW(LPCWSTR lpszPath);
@@ -596,6 +620,32 @@ PromptAndRunProcessAs(
     INT_PTR dlgret;
     hwnd = SHELL_GetUsableDialogOwner(hwnd);
 
+    // A limited administrator asks the elevation broker, which prompts for consent and starts
+    // the program with the linked token. What the broker will not do falls through to the
+    // credentials dialog below (standard users, credential policy modes, LUA off, no broker).
+    if (SHELL_IsTokenLimited())
+    {
+        DWORD dwElevate = SHELL_ElevateProcess(hwnd, NULL, Cmd, Dir, CreationFlags, pSI, pPI);
+        if (dwElevate == ERROR_SUCCESS)
+            return S_OK;
+        if (dwElevate == ERROR_CANCELLED)
+        {
+            SetLastError(ERROR_CANCELLED);
+            pPI->hProcess = NULL;
+            return S_FALSE;
+        }
+        ERR("Elevation through the broker failed with Error %lu\n", dwElevate);
+        if (dwElevate != ERROR_ELEVATION_REQUIRED && dwElevate != ERROR_SERVICE_NOT_ACTIVE)
+        {
+            SHELL_ErrorBox(hwnd, dwElevate);
+            pPI->hProcess = NULL;
+            return E_FAIL;
+        }
+    }
+    else
+    {
+        TRACE("The caller is no limited administrator: asking for credentials\n");
+    }
 again:
     dlgret = DialogBoxParamW(shell32_hInstance, MAKEINTRESOURCEW(IDD_RUN_AS),
                              hwnd, RunAsDlgProc, (LPARAM)&data);
@@ -635,6 +685,7 @@ again:
     }
     else
     {
+        ERR("The credentials dialog could not be shown (%d), Error %lu\n", (int)dlgret, GetLastError());
         pPI->hProcess = NULL;
         return E_FAIL;
     }
@@ -750,7 +801,9 @@ static UINT_PTR SHELL_ExecuteW(const WCHAR *lpCmd, WCHAR *env, BOOL shWait,
         createdProcess = hr == S_OK;
         if (hr == S_FALSE)
         {
-            retval = 33; // Pretend cancel is success.
+            // The user declined: no process, and the caller sees ERROR_CANCELLED
+            retval = SE_ERR_ACCESSDENIED;
+            lasterror = ERROR_CANCELLED;
             goto done;
         }
     }
@@ -784,9 +837,9 @@ done:
     {
         if (!SetCurrentDirectoryW(curdir))
             ERR("cannot return to directory %s\n", debugstr_w(curdir));
-        if (lasterror)
-            RestoreLastError(lasterror);
     }
+    if (lasterror)
+        RestoreLastError(lasterror);
     return retval;
 }
 
@@ -2339,9 +2392,25 @@ static void do_error_dialog(UINT_PTR retval, HWND hwnd, PCWSTR filename)
     SetLastError(error_code); // Restore
 }
 
+// A start the user declined: read right after the attempt, before anything else touches the last error
+static BOOL SHELL_Declined(UINT_PTR retval)
+{
+    return retval == SE_ERR_ACCESSDENIED && GetLastError() == ERROR_CANCELLED;
+}
+
+// No other way of starting is tried and no error is shown; the caller sees ERROR_CANCELLED
+static BOOL SHELL_ReturnDeclined(LPSHELLEXECUTEINFOW sei)
+{
+    sei->hInstApp = (HINSTANCE)UlongToHandle(SE_ERR_ACCESSDENIED);
+    SetLastError(ERROR_CANCELLED);
+    return FALSE;
+}
+
 static UINT_PTR ExecuteFailed(UINT_PTR retval, SHELLEXECUTEINFOW &sei, LPCWSTR lpFile, BOOL AllowOpenWith = TRUE)
 {
-    if (retval <= 32 && !(sei.fMask & SEE_MASK_FLAG_NO_UI))
+    BOOL declined = SHELL_Declined(retval);
+
+    if (retval <= 32 && !(sei.fMask & SEE_MASK_FLAG_NO_UI) && !declined)
     {
         if (retval == SE_ERR_NOASSOC && !(sei.fMask & SEE_MASK_CLASSALL) && AllowOpenWith)
             retval = InvokeOpenWith(sei.hwnd, sei);
@@ -2610,6 +2679,8 @@ static BOOL SHELL_execute(LPSHELLEXECUTEINFOW sei, SHELL_ExecuteW32 execfunc)
     if (sei_tmp.fMask & SEE_MASK_CLASSALL)
     {
         retval = SHELL_execute_class(wszApplicationName, &sei_tmp, sei, execfunc);
+        if (SHELL_Declined(retval))
+            return SHELL_ReturnDeclined(sei);
         if (retval <= 32 && !(sei_tmp.fMask & SEE_MASK_FLAG_NO_UI))
         {
             OPENASINFO Info;
@@ -2781,6 +2852,8 @@ static BOOL SHELL_execute(LPSHELLEXECUTEINFOW sei, SHELL_ExecuteW32 execfunc)
         retval = bExeFound ? execfunc(wcmd, NULL, FALSE, &sei_tmp, sei) : SE_ERR_FNF;
         if (retval > 32)
             return TRUE;
+        if (SHELL_Declined(retval))
+            return SHELL_ReturnDeclined(sei);
     }
 
     /* Else, try to find the executable */
@@ -2871,6 +2944,8 @@ static BOOL SHELL_execute(LPSHELLEXECUTEINFOW sei, SHELL_ExecuteW32 execfunc)
 
     TRACE("retval %lu\n", retval);
 
+    if (SHELL_Declined(retval))
+        return SHELL_ReturnDeclined(sei);
     if (retval <= 32)
     {
         if (retval == SE_ERR_NOASSOC)
