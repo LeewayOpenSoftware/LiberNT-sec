@@ -12,6 +12,49 @@
 #include <rpc.h>
 #include "seclogon_c.h"
 
+/* kernel32 exports it (Vista+); the SDK header hides it behind a version guard */
+BOOL WINAPI GetNamedPipeServerProcessId(HANDLE Pipe, PULONG ServerProcessId);
+
+/* The process at the other end of the pipe must be LocalSystem before anything travels
+ * to it: a program that created the name before the service would receive the clients. */
+static
+BOOL
+SeclServerIsSystem(VOID)
+{
+    BYTE Buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    PTOKEN_USER User = (PTOKEN_USER)Buffer;
+    HANDLE hPipe, hProcess, hToken;
+    DWORD ServerPid = 0, Length;
+    BOOL IsSystem = FALSE;
+
+    hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    if (hPipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY && WaitNamedPipeW(L"\\\\.\\pipe\\seclogon", 2000))
+    {
+        hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    }
+    if (hPipe == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    if (GetNamedPipeServerProcessId(hPipe, &ServerPid) && ServerPid != 0)
+    {
+        hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ServerPid);
+        if (hProcess != NULL)
+        {
+            if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken))
+            {
+                if (GetTokenInformation(hToken, TokenUser, User, sizeof(Buffer), &Length))
+                    IsSystem = IsWellKnownSid(User->User.Sid, WinLocalSystemSid);
+                CloseHandle(hToken);
+            }
+            CloseHandle(hProcess);
+        }
+    }
+    CloseHandle(hPipe);
+    return IsSystem;
+}
+
 void __RPC_FAR * __RPC_USER midl_user_allocate(SIZE_T len)
 {
     return HeapAlloc(GetProcessHeap(), 0, len);
@@ -52,6 +95,9 @@ SHELL_ElevateProcess(
     Request.dwShowCmd = (pStartupInfo != NULL && (pStartupInfo->dwFlags & STARTF_USESHOWWINDOW))
                         ? pStartupInfo->wShowWindow : SW_SHOWNORMAL;
     Request.hwndOwner = (DWORD_PTR)hwnd;
+
+    if (!SeclServerIsSystem())
+        return ERROR_ACCESS_DENIED;
 
     if (RpcStringBindingComposeW(NULL, (RPC_WSTR)L"ncacn_np", NULL, (RPC_WSTR)L"\\pipe\\seclogon",
                                  NULL, &StringBinding) != RPC_S_OK)
