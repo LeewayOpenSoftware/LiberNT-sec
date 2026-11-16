@@ -1,4 +1,7 @@
 
+include_directories(${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl ${CMAKE_CURRENT_BINARY_DIR})
+add_rpc_files(client ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl/wlsecdesk.idl)
+
 list(APPEND SOURCE
     AppContainer.c
     Broker.c
@@ -11,11 +14,13 @@ list(APPEND SOURCE
     Mitigations.c
     PrivateNamespace.c
     RestrictedToken.c
+    SecureDesktop.c
     SecurityApi.c
     Uipi.c)
 
 list(APPEND PCH_SKIP_SOURCE
-    testlist.c)
+    testlist.c
+    ${CMAKE_CURRENT_BINARY_DIR}/wlsecdesk_c.c)
 
 add_executable(sandbox_apitest
     ${SOURCE}
@@ -29,7 +34,7 @@ add_library(sandbox_unsigned MODULE
 
 target_link_libraries(sandbox_apitest wine ${PSEH_LIB})
 set_module_type(sandbox_apitest win32cui)
-add_importlibs(sandbox_apitest advapi32 user32 gdi32 userenv ole32 msvcrt kernel32 ntdll)
+add_importlibs(sandbox_apitest advapi32 user32 gdi32 userenv ole32 rpcrt4 msvcrt kernel32 ntdll)
 add_pch(sandbox_apitest precomp.h "${PCH_SKIP_SOURCE}")
 add_dependencies(sandbox_apitest sandbox_helper sandbox_unsigned)
 
