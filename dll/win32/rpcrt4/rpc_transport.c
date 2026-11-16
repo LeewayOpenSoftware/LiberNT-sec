@@ -103,16 +103,29 @@ static void release_np_event(RpcConnection_np *connection, HANDLE event)
  *
  * @remarks
  * Everyone (aka World SID) and anonynous users
- * are given a subset of rights to access the pipe,
- * whereas admins are given full power.
+ * are given the rights of a client of the pipe,
+ * whereas admins and the user that serves the
+ * pipe are given full power. A client must not be
+ * able to create an instance of the pipe: it would
+ * then receive the clients of the server.
  */
+#define RPCRT4_PIPE_CLIENT_ACCESS \
+    (FILE_GENERIC_READ | (FILE_GENERIC_WRITE & ~FILE_CREATE_PIPE_INSTANCE))
+
 static DWORD
 rpcrt4_create_pipe_security(PSECURITY_DESCRIPTOR *SecDesc)
 {
     DWORD ErrCode;
     PACL Dacl = NULL;
     ULONG DaclSize, RelSDSize = 0;
-    PSID EveryoneSid = NULL, AnonymousSid = NULL, AdminsSid = NULL;
+    PSID EveryoneSid = NULL, AnonymousSid = NULL, AdminsSid = NULL, OwnSid;
+    HANDLE Token;
+    DWORD Length;
+    union
+    {
+        TOKEN_USER User;
+        BYTE Buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    } Own;
     PSECURITY_DESCRIPTOR AbsSD = NULL, RelSD = NULL;
     static SID_IDENTIFIER_AUTHORITY WorldAuthority = {SECURITY_WORLD_SID_AUTHORITY};
     static SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
@@ -166,7 +179,27 @@ rpcrt4_create_pipe_security(PSECURITY_DESCRIPTOR *SecDesc)
         goto Quit;
     }
 
+    /* The server makes a new instance for every client, so its own user keeps that right */
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token))
+    {
+        ErrCode = GetLastError();
+        ERR("rpcrt4_create_pipe_security(): Failed to open the process token (error %lu)\n", ErrCode);
+        goto Quit;
+    }
+
+    if (!GetTokenInformation(Token, TokenUser, &Own, sizeof(Own), &Length))
+    {
+        ErrCode = GetLastError();
+        CloseHandle(Token);
+        ERR("rpcrt4_create_pipe_security(): Failed to query the process user (error %lu)\n", ErrCode);
+        goto Quit;
+    }
+
+    CloseHandle(Token);
+    OwnSid = Own.User.User.Sid;
+
     DaclSize = sizeof(ACL) +
+               sizeof(ACCESS_ALLOWED_ACE) + RtlLengthSid(OwnSid) +
                sizeof(ACCESS_ALLOWED_ACE) + RtlLengthSid(EveryoneSid) +
                sizeof(ACCESS_ALLOWED_ACE) + RtlLengthSid(AnonymousSid) +
                sizeof(ACCESS_ALLOWED_ACE) + RtlLengthSid(AdminsSid);
@@ -188,7 +221,7 @@ rpcrt4_create_pipe_security(PSECURITY_DESCRIPTOR *SecDesc)
 
     if (!AddAccessAllowedAce(Dacl,
                              ACL_REVISION,
-                             GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE | READ_CONTROL,
+                             RPCRT4_PIPE_CLIENT_ACCESS,
                              EveryoneSid))
     {
         ErrCode = GetLastError();
@@ -198,7 +231,7 @@ rpcrt4_create_pipe_security(PSECURITY_DESCRIPTOR *SecDesc)
 
     if (!AddAccessAllowedAce(Dacl,
                              ACL_REVISION,
-                             GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE | READ_CONTROL,
+                             RPCRT4_PIPE_CLIENT_ACCESS,
                              AnonymousSid))
     {
         ErrCode = GetLastError();
@@ -213,6 +246,16 @@ rpcrt4_create_pipe_security(PSECURITY_DESCRIPTOR *SecDesc)
     {
         ErrCode = GetLastError();
         ERR("rpcrt4_create_pipe_security(): Failed to set up ACE for Admins SID (error %lu)\n", ErrCode);
+        goto Quit;
+    }
+
+    if (!AddAccessAllowedAce(Dacl,
+                             ACL_REVISION,
+                             GENERIC_ALL,
+                             OwnSid))
+    {
+        ErrCode = GetLastError();
+        ERR("rpcrt4_create_pipe_security(): Failed to set up ACE for the process user (error %lu)\n", ErrCode);
         goto Quit;
     }
 
