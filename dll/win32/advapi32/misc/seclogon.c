@@ -19,17 +19,36 @@ typedef BOOL (WINAPI *PGET_USER_OBJECT_INFORMATION)(HANDLE, int, PVOID, DWORD, L
 /* kernel32 exports it (Vista+); the SDK header hides it behind a version guard */
 BOOL WINAPI GetNamedPipeServerProcessId(HANDLE Pipe, PULONG ServerProcessId);
 
-/* The process at the other end of the pipe must be LocalSystem before anything travels
- * to it: a program that created the name before the service would receive the clients. */
+/* The process at the other end of the pipe must be the secondary logon service host as the
+ * service control manager reports it, before anything travels to it: a program that created
+ * the name before the service would receive the clients. Every caller may ask the SCM; no
+ * handle to the SYSTEM process is needed. ERROR_SERVICE_NOT_ACTIVE when the service is not
+ * running or the pipe is absent, ERROR_ACCESS_DENIED when another process holds the name. */
 static
-BOOL
-SeclServerIsSystem(VOID)
+DWORD
+SeclCheckServer(VOID)
 {
-    BYTE Buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
-    PTOKEN_USER User = (PTOKEN_USER)Buffer;
-    HANDLE hPipe, hProcess, hToken;
-    DWORD ServerPid = 0, Length;
-    BOOL IsSystem = FALSE;
+    SC_HANDLE hScm, hService;
+    SERVICE_STATUS_PROCESS Status;
+    HANDLE hPipe;
+    DWORD Needed, ServicePid = 0, ServerPid = 0;
+
+    hScm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (hScm == NULL)
+        return ERROR_SERVICE_NOT_ACTIVE;
+    hService = OpenServiceW(hScm, L"seclogon", SERVICE_QUERY_STATUS);
+    if (hService != NULL)
+    {
+        if (QueryServiceStatusEx(hService, SC_STATUS_PROCESS_INFO, (LPBYTE)&Status, sizeof(Status), &Needed) &&
+            Status.dwCurrentState == SERVICE_RUNNING)
+        {
+            ServicePid = Status.dwProcessId;
+        }
+        CloseServiceHandle(hService);
+    }
+    CloseServiceHandle(hScm);
+    if (ServicePid == 0)
+        return ERROR_SERVICE_NOT_ACTIVE;
 
     hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
                         SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
@@ -39,24 +58,12 @@ SeclServerIsSystem(VOID)
                             SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
     }
     if (hPipe == INVALID_HANDLE_VALUE)
-        return FALSE;
-
-    if (GetNamedPipeServerProcessId(hPipe, &ServerPid) && ServerPid != 0)
-    {
-        hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ServerPid);
-        if (hProcess != NULL)
-        {
-            if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken))
-            {
-                if (GetTokenInformation(hToken, TokenUser, User, sizeof(Buffer), &Length))
-                    IsSystem = IsWellKnownSid(User->User.Sid, WinLocalSystemSid);
-                CloseHandle(hToken);
-            }
-            CloseHandle(hProcess);
-        }
-    }
+        return ERROR_SERVICE_NOT_ACTIVE;
+    if (!GetNamedPipeServerProcessId(hPipe, &ServerPid))
+        ServerPid = 0;
     CloseHandle(hPipe);
-    return IsSystem;
+
+    return (ServerPid == ServicePid) ? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
 }
 
 static
@@ -66,9 +73,10 @@ SeclBind(VOID)
     RPC_WSTR StringBinding = NULL;
     handle_t hBinding = NULL;
 
-    if (!SeclServerIsSystem())
+    DWORD Check = SeclCheckServer();
+    if (Check != ERROR_SUCCESS)
     {
-        SetLastError(ERROR_ACCESS_DENIED);
+        SetLastError(Check);
         return NULL;
     }
 
