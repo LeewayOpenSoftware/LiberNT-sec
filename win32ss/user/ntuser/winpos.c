@@ -4220,7 +4220,8 @@ NtUserDeferWindowPos(HDWP WinPosInfo,
    }
 
    pWnd = UserGetWindowObject(Wnd);
-   if (!pWnd || UserIsDesktopWindow(pWnd) || UserIsMessageWindow(pWnd))
+   if (!pWnd || UserIsDesktopWindow(pWnd) || UserIsMessageWindow(pWnd) ||
+       !IntUipiCheckWindowChange(pWnd))
    {
       goto Exit;
    }
@@ -4508,6 +4509,11 @@ UserSetWindowPos(
       goto Exit; // Return FALSE
    }
 
+   if (!IntUipiCheckWindowChange(Window))
+   {
+      goto Exit; // Return FALSE
+   }
+
    if ( hWndInsertAfter != HWND_TOP &&
         hWndInsertAfter != HWND_BOTTOM &&
         hWndInsertAfter != HWND_TOPMOST &&
@@ -4602,6 +4608,11 @@ NtUserSetWindowRgn(
 
    if (!(Window = UserGetWindowObject(hWnd)) ||
         UserIsDesktopWindow(Window) || UserIsMessageWindow(Window))
+   {
+      goto Exit; // Return 0
+   }
+
+   if (!IntUipiCheckWindowChange(Window))
    {
       goto Exit; // Return 0
    }
@@ -4802,7 +4813,7 @@ NtUserSetWindowPlacement(HWND hWnd,
     }
 
     Wnd = UserGetWindowObject(hWnd);
-    if (!Wnd)
+    if (!Wnd || !IntUipiCheckWindowChange(Wnd))
         goto Exit; // Return FALSE
 
     UserRefObjectCo(Wnd, &Ref);
@@ -4839,6 +4850,11 @@ NtUserShowWindowAsync(HWND hWnd, LONG nCmdShow)
       goto Exit; // Return FALSE
    }
 
+   if (!IntUipiCheckWindowChange(Window))
+   {
+      goto Exit; // Return FALSE
+   }
+
    if ( nCmdShow > SW_MAX )
    {
       EngSetLastError(ERROR_INVALID_PARAMETER);
@@ -4871,6 +4887,11 @@ NtUserShowWindow(HWND hWnd, LONG nCmdShow)
 
    if (!(Window = UserGetWindowObject(hWnd)) ||
         UserIsDesktopWindow(Window) || UserIsMessageWindow(Window))
+   {
+      goto Exit; // Return FALSE
+   }
+
+   if (!IntUipiCheckWindowChange(Window))
    {
       goto Exit; // Return FALSE
    }

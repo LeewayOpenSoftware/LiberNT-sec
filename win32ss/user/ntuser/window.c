@@ -4339,6 +4339,12 @@ co_IntSetWindowLongPtr(HWND hWnd, DWORD Index, LONG_PTR NewValue, BOOL Ansi, ULO
 
    UserRefObjectCo(Window, &Ref);
 
+   if (!IntUipiCheckWindowChange(Window))
+   {
+      OldValue = 0;
+      goto Exit;
+   }
+
    if ((INT)Index >= 0)
    {
       if ((Index + Size) > Window->cbwndExtra)
@@ -5033,7 +5039,7 @@ NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
 
    UserEnterExclusive();
 
-   if(!(Wnd = UserGetWindowObject(hWnd)))
+   if(!(Wnd = UserGetWindowObject(hWnd)) || !IntUipiCheckWindowChange(Wnd))
    {
       UserLeave();
       return FALSE;

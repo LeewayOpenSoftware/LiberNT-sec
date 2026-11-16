@@ -292,6 +292,7 @@ typedef struct _USER_MSG_FILTER
 ULONG FASTCALL IntGetProcessIntegrity(PEPROCESS Process);
 ULONG FASTCALL IntUipiGetTargetIntegrity(struct _PROCESSINFO *ppiTarget, struct _WND *Window);
 BOOL FASTCALL IntUipiIsThreadAllowed(struct _PROCESSINFO *ppiCaller, struct _THREADINFO *ptiTarget, struct _WND *Window);
+BOOL FASTCALL IntUipiCheckWindowChange(struct _WND *Window);
 BOOL FASTCALL IntUipiIsAllowed(struct _PROCESSINFO *ppiSender, struct _PROCESSINFO *ppiTarget, struct _WND *Window, UINT Msg);
 DWORD FASTCALL IntChangeWindowMessageFilter(HWND hwnd, UINT Msg, DWORD Action);
 VOID FASTCALL IntUipiFreeWindowFilters(struct _WND *Window);

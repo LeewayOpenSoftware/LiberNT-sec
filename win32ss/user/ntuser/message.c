@@ -2979,6 +2979,19 @@ IntUipiCheckWindow(HWND hWnd, UINT Msg)
     return TRUE;
 }
 
+/* The window-changing calls (show, enable, move, text, styles, region, placement,
+ * properties): a window of a process above the caller is not changed from below */
+BOOL FASTCALL
+IntUipiCheckWindowChange(PWND Window)
+{
+    if (!IntUipiIsThreadAllowed(gptiCurrent ? gptiCurrent->ppi : NULL, Window->head.pti, Window))
+    {
+        EngSetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL FASTCALL
 IntUipiPostBroadcast(UINT Msg, WPARAM wParam, LPARAM lParam)
 {
