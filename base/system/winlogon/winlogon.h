@@ -240,6 +240,15 @@ typedef struct _WLSESSION
     HANDLE hProfileInfo;
     LOGON_STATE LogonState;
     DWORD DialogTimeout; /* Timeout for dialog boxes, in seconds */
+
+    /* Secure-desktop prompt held for the elevation broker (secdesk.c) */
+    HANDLE SecurePromptBroker;
+    HANDLE SecurePromptEnd;
+    DWORD SecurePromptBrokerPid;
+    DWORD SecurePromptTimeoutMs;
+    DWORD SecurePromptStart; /* GetTickCount at Begin */
+    DWORD SecurePromptGeneration; /* bumped at every clear */
+    LONG SecurePromptHold; /* non-zero while a SAS, lock or logoff action runs */
     LARGE_INTEGER LastLogon;
 
     /* Screen-saver informations */
@@ -331,6 +340,18 @@ CallNotificationDlls(
 /* rpcserver.c */
 BOOL
 StartRpcServer(VOID);
+
+/* secdesk.c */
+BOOL
+StartSecureDesktopServer(VOID);
+
+VOID
+SecDeskEndPromptAndWait(
+    IN PWLSESSION Session);
+
+VOID
+SecDeskReleaseHold(
+    IN PWLSESSION Session);
 
 /* sas.c */
 extern LUID LuidNone;

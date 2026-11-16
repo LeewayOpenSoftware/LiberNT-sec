@@ -1603,6 +1603,11 @@ DoGenericAction(
     IN OUT PWLSESSION Session,
     IN DWORD wlxAction)
 {
+    /* An action that leaves the user's desktop first ends a secure-desktop prompt
+     * and waits for its thread, so that the thread's return cannot undo the action */
+    if (wlxAction != WLX_SAS_ACTION_NONE && wlxAction != WLX_SAS_ACTION_LOGON)
+        SecDeskEndPromptAndWait(Session);
+
     switch (wlxAction)
     {
         case WLX_SAS_ACTION_LOGON: /* 0x01 */
@@ -1722,11 +1727,14 @@ DoGenericAction(
         default:
             WARN("Unknown SAS action 0x%lx\n", wlxAction);
     }
+
+    if (wlxAction != WLX_SAS_ACTION_NONE && wlxAction != WLX_SAS_ACTION_LOGON)
+        SecDeskReleaseHold(Session);
 }
 
 static
 VOID
-DispatchSAS(
+DispatchSASWorker(
     IN OUT PWLSESSION Session,
     IN DWORD dwSasType)
 {
@@ -1853,6 +1861,25 @@ DispatchSAS(
         Session->LogonState = STATE_LOCKED;
         Session->Gina.Functions.WlxDisplayLockedNotice(Session->Gina.Context);
     }
+}
+
+/* A SAS (not the activity notice of the screen saver) ends a secure-desktop prompt
+ * and waits for its thread before anything in the worker switches desktops, and
+ * holds Begin off until the worker has returned by whichever of its exits; a SAS
+ * between Begin's gate and the switch finds the state set and waits too */
+static
+VOID
+DispatchSAS(
+    IN OUT PWLSESSION Session,
+    IN DWORD dwSasType)
+{
+    if (dwSasType != WLX_SAS_TYPE_SCRNSVR_ACTIVITY)
+        SecDeskEndPromptAndWait(Session);
+
+    DispatchSASWorker(Session, dwSasType);
+
+    if (dwSasType != WLX_SAS_TYPE_SCRNSVR_ACTIVITY)
+        SecDeskReleaseHold(Session);
 }
 
 static

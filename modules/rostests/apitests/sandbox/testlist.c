@@ -12,6 +12,7 @@ extern void func_KernelBase(void);
 extern void func_Mitigations(void);
 extern void func_PrivateNamespace(void);
 extern void func_RestrictedToken(void);
+extern void func_SecureDesktop(void);
 extern void func_SecurityApi(void);
 extern void func_Uipi(void);
 
@@ -28,6 +29,7 @@ const struct test winetest_testlist[] =
     { "Mitigations",     func_Mitigations },
     { "PrivateNamespace", func_PrivateNamespace },
     { "RestrictedToken", func_RestrictedToken },
+    { "SecureDesktop",   func_SecureDesktop },
     { "SecurityApi",     func_SecurityApi },
     { "Uipi",            func_Uipi },
     { 0, 0 }
