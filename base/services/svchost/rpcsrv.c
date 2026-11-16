@@ -101,7 +101,8 @@ RpcpAddInterface (
         rpcStatus = RpcServerUseProtseqEpW(L"ncacn_np",
                                            RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
                                            endpointName, NULL);
-        if ((rpcStatus != RPC_S_OK) && (rpcStatus != RPC_S_DUPLICATE_ENDPOINT))
+        /* An endpoint this process registered before gives RPC_S_OK; a duplicate is the pipe of another program */
+        if (rpcStatus != RPC_S_OK)
         {
             /* We couldn't create it, or it already existed... */
             DbgPrint("RpcServerUseProtseqW failed! rpcstatus = %u\n", rpcStatus);
