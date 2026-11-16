@@ -1,0 +1,27 @@
+/*
+ * Winlogon secure-desktop prompt interface: the elevation broker asks the
+ * winlogon of the caller's session to hold the secure desktop around one prompt.
+ */
+
+#include <ms-dtyp.idl>
+
+[
+    uuid(65de7794-5089-4388-81c9-d23cd49ec218),
+    version(1.0),
+    pointer_default(unique)
+]
+interface IWlSecureDesktop
+{
+    /* Function 0: one prompt at a time; the caller is the broker, identified by the runtime */
+    error_status_t
+    __stdcall
+    WlSecureDesktopBegin(
+        [in] handle_t hBinding,
+        [in] DWORD dwTimeoutMs);
+
+    /* Function 1: the same broker ends what it began */
+    error_status_t
+    __stdcall
+    WlSecureDesktopEnd(
+        [in] handle_t hBinding);
+}

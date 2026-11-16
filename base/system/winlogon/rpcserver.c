@@ -41,6 +41,9 @@ StartRpcServer(VOID)
         return FALSE;
     }
 
+    if (!StartSecureDesktopServer())
+        return FALSE;
+
     Status = RpcServerListen(1, 20, TRUE);
     if (Status != RPC_S_OK)
     {
