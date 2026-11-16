@@ -86,6 +86,22 @@ Launch(HANDLE Token, PCWSTR Path, PWSTR Environment)
     return ERROR_SUCCESS;
 }
 
+/* The limited type a split administrator's logon gets */
+static HANDLE
+MakeLuaToken(void)
+{
+    HANDLE Process, Lua = NULL;
+
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT,
+                          &Process))
+        return NULL;
+    if (!CreateRestrictedToken(Process, LUA_TOKEN, 0, NULL, 0, NULL, 0, NULL, &Lua))
+        Lua = NULL;
+    CloseHandle(Process);
+    return Lua;
+}
+
 static HANDLE
 MakeNonAdminToken(void)
 {
@@ -113,7 +129,7 @@ START_TEST(ElevationRequired)
     WCHAR Dir[MAX_PATH], Admin[MAX_PATH], Invoker[MAX_PATH], Highest[MAX_PATH];
     WCHAR InvokerEnv[] = L"__COMPAT_LAYER=RunAsInvoker\0SystemRoot=C:\\Windows\0";
     WCHAR PlainEnv[] = L"SystemRoot=C:\\Windows\0";
-    HANDLE Restricted;
+    HANDLE Restricted, Lua;
     DWORD Error;
 
     GetTempPathW(ARRAYSIZE(Dir), Dir);
@@ -161,6 +177,25 @@ START_TEST(ElevationRequired)
     }
     if (Restricted)
         CloseHandle(Restricted);
+
+    /* A token of the limited type has a full token to ask for: highestAvailable asks */
+    Lua = MakeLuaToken();
+    if (!Lua)
+    {
+        skip("No limited token available\n");
+    }
+    else
+    {
+        Error = Launch(Lua, Highest, PlainEnv);
+        ok(Error == ERROR_ELEVATION_REQUIRED, "highestAvailable, limited token: got %lu\n", Error);
+
+        Error = Launch(Lua, Highest, InvokerEnv);
+        ok(Error != ERROR_ELEVATION_REQUIRED, "highestAvailable, limited token, RunAsInvoker: got %lu\n", Error);
+
+        Error = Launch(Lua, Invoker, PlainEnv);
+        ok(Error != ERROR_ELEVATION_REQUIRED, "asInvoker, limited token: got %lu\n", Error);
+        CloseHandle(Lua);
+    }
 
 Cleanup:
     DeleteFileW(Admin);

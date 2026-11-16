@@ -23,6 +23,7 @@
 #include "precomp.h"
 #include <winbase_undoc.h>
 #include <undocshell.h>
+#include <seclogon_c.h>
 
 extern "C" DWORD SHELL_ElevateProcess(HWND hwnd, LPCWSTR ApplicationName, LPCWSTR CommandLine,
                                       LPCWSTR CurrentDirectory, DWORD CreationFlags,
@@ -33,6 +34,20 @@ extern "C" DWORD SHELL_ElevateProcess(HWND hwnd, LPCWSTR ApplicationName, LPCWST
 #endif
 
 /* A limited administrator token has an elevated one linked to it; the broker can use that. */
+// ConsentPromptBehaviorUser 0 under UAC: a standard user may not ask for an administrator
+static BOOL SHELL_IsUserElevationDenied(void)
+{
+    DWORD dwLua = 0, dwUser = 3, cb;
+
+    cb = sizeof(dwLua);
+    SHGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                L"EnableLUA", NULL, &dwLua, &cb);
+    cb = sizeof(dwUser);
+    SHGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                L"ConsentPromptBehaviorUser", NULL, &dwUser, &cb);
+    return dwLua != 0 && dwUser == 0;
+}
+
 static BOOL SHELL_IsTokenLimited(void)
 {
     HANDLE hToken;
@@ -618,6 +633,7 @@ PromptAndRunProcessAs(
     RUNASDLGDATA data;
     UINT error;
     INT_PTR dlgret;
+    HRESULT hr;
     hwnd = SHELL_GetUsableDialogOwner(hwnd);
 
     // A limited administrator asks the elevation broker, which prompts for consent and starts
@@ -642,6 +658,13 @@ PromptAndRunProcessAs(
             return E_FAIL;
         }
     }
+    else if (SHELL_IsUserElevationDenied())
+    {
+        SHELL_ErrorBox(hwnd, ERROR_ACCESS_DENIED);
+        SetLastError(ERROR_ACCESS_DENIED);
+        pPI->hProcess = NULL;
+        return E_FAIL;
+    }
     else
     {
         TRACE("The caller is no limited administrator: asking for credentials\n");
@@ -651,7 +674,8 @@ again:
                              hwnd, RunAsDlgProc, (LPARAM)&data);
     if (dlgret == IDOK && data.Name)
     {
-        if (CreateProcessWithLogonW(data.Name, data.Domain, data.Password, data.LogonFlags,
+        // The elevation path: a split administrator's logon runs with its full token
+        if (CreateProcessWithLogonW(data.Name, data.Domain, data.Password, data.LogonFlags | SECL_LOGON_ELEVATE,
                                     NULL, Cmd, CreationFlags, Env, Dir, pSI, pPI))
             error = ERROR_SUCCESS;
         else
@@ -666,8 +690,10 @@ again:
             case ERROR_INVALID_LOGON_HOURS:
             case ERROR_PASSWORD_EXPIRED:
                 SHELL_ErrorBox(hwnd, error);
+                SecureZeroMemory(data.Password, sizeof(data.Password));
                 goto again;
         }
+        hr = HRESULT_FROM_WIN32(error);
     }
     else if (dlgret == IDOK)
     {
@@ -676,21 +702,27 @@ again:
             error = ERROR_SUCCESS;
         else
             error = GetLastError();
+        hr = HRESULT_FROM_WIN32(error);
     }
     else if (dlgret == IDCANCEL)
     {
         SetLastError(ERROR_CANCELLED);
         pPI->hProcess = NULL;
-        return S_FALSE;
+        hr = S_FALSE;
     }
     else
     {
-        ERR("The credentials dialog could not be shown (%d), Error %lu\n", (int)dlgret, GetLastError());
+        error = GetLastError();
+        if (error == ERROR_SUCCESS)
+            error = ERROR_GEN_FAILURE;
+        ERR("The credentials dialog could not be shown (%d), Error %lu\n", (int)dlgret, error);
+        SHELL_ErrorBox(hwnd, error);
+        SetLastError(error);
         pPI->hProcess = NULL;
-        return E_FAIL;
+        hr = E_FAIL;
     }
     SecureZeroMemory(&data, sizeof(data));
-    return HRESULT_FROM_WIN32(error);
+    return hr;
 }
 
 /*************************************************************************
@@ -804,6 +836,13 @@ static UINT_PTR SHELL_ExecuteW(const WCHAR *lpCmd, WCHAR *env, BOOL shWait,
             // The user declined: no process, and the caller sees ERROR_CANCELLED
             retval = SE_ERR_ACCESSDENIED;
             lasterror = ERROR_CANCELLED;
+            goto done;
+        }
+        if (hr == E_FAIL)
+        {
+            // Refused and already reported: no other way is tried
+            retval = SE_ERR_ACCESSDENIED;
+            lasterror = ERROR_ELEVATION_REQUIRED;
             goto done;
         }
     }
@@ -2392,17 +2431,20 @@ static void do_error_dialog(UINT_PTR retval, HWND hwnd, PCWSTR filename)
     SetLastError(error_code); // Restore
 }
 
-// A start the user declined: read right after the attempt, before anything else touches the last error
+// A start the prompt path ended, declined or refused and reported: read right after the
+// attempt, before anything else touches the last error
 static BOOL SHELL_Declined(UINT_PTR retval)
 {
-    return retval == SE_ERR_ACCESSDENIED && GetLastError() == ERROR_CANCELLED;
+    DWORD dwError = GetLastError();
+    return retval == SE_ERR_ACCESSDENIED && (dwError == ERROR_CANCELLED || dwError == ERROR_ELEVATION_REQUIRED);
 }
 
-// No other way of starting is tried and no error is shown; the caller sees ERROR_CANCELLED
+// No other way of starting is tried and no error is shown; the last error stays
 static BOOL SHELL_ReturnDeclined(LPSHELLEXECUTEINFOW sei)
 {
+    DWORD dwError = GetLastError();
     sei->hInstApp = (HINSTANCE)UlongToHandle(SE_ERR_ACCESSDENIED);
-    SetLastError(ERROR_CANCELLED);
+    SetLastError(dwError);
     return FALSE;
 }
 
