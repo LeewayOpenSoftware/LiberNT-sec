@@ -1,4 +1,5 @@
 
+include_directories(${REACTOS_SOURCE_DIR}/sdk/include/reactos)
 add_executable(consent consent.c consent.rc)
 set_module_type(consent win32gui UNICODE)
 add_importlibs(consent user32 msvcrt kernel32)

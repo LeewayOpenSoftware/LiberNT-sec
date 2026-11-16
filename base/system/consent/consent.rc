@@ -28,3 +28,26 @@ BEGIN
     DEFPUSHBUTTON   "&No", IDNO, 206, 126, 50, 14
     PUSHBUTTON      "&Yes", IDYES, 260, 126, 50, 14
 END
+
+IDD_CONSENT_CREDENTIALS DIALOGEX 0, 0, 320, 196
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION
+EXSTYLE WS_EX_TOPMOST
+CAPTION "User Account Control"
+FONT 8, "MS Shell Dlg", 0, 0, 0x0
+BEGIN
+    ICON            "", IDC_SHIELD, 10, 10, 20, 20
+    LTEXT           "To allow this program to make changes to this computer, type an administrator's user name and password.", IDC_HEADER, 40, 10, 270, 18
+    LTEXT           "Program:", -1, 40, 34, 40, 8
+    LTEXT           "", IDC_IMAGE, 84, 34, 226, 18
+    LTEXT           "Command:", -1, 40, 56, 40, 8
+    LTEXT           "", IDC_COMMAND, 84, 56, 226, 26
+    LTEXT           "Publisher:", -1, 40, 86, 40, 8
+    LTEXT           "Unknown", IDC_PUBLISHER, 84, 86, 226, 8
+    LTEXT           "User name:", -1, 40, 106, 40, 8
+    EDITTEXT        IDC_USER, 84, 104, 226, 12, ES_AUTOHSCROLL
+    LTEXT           "Password:", -1, 40, 124, 40, 8
+    EDITTEXT        IDC_PASSWORD, 84, 122, 226, 12, ES_PASSWORD | ES_AUTOHSCROLL
+    LTEXT           "", IDC_STATUS, 40, 142, 270, 16
+    PUSHBUTTON      "&Cancel", IDNO, 206, 172, 50, 14
+    DEFPUSHBUTTON   "&OK", IDYES, 260, 172, 50, 14
+END
