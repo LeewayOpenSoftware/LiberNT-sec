@@ -1237,7 +1237,8 @@ OpenElevationCaller(
     if (!OpenProcessToken(hProcess, TOKEN_QUERY | TOKEN_DUPLICATE, &hToken))
         goto done;
 
-    dwError = CheckElevationCallerToken(hToken, TRUE);
+    /* Limited or not: the policy table in the request decides what each caller gets */
+    dwError = CheckElevationCallerToken(hToken, FALSE);
     if (dwError != ERROR_SUCCESS)
         goto done;
 
@@ -1543,6 +1544,9 @@ SeclCreateProcessElevatedW(
     BOOL Allowed = FALSE, SameSession = FALSE;
     handle_t hSecureDesktop = NULL;
     PCWSTR ConsentDesktop;
+    HANDLE hElevated = NULL;
+    DWORD Type = 0;
+    BOOL IsLimited, Credentials = FALSE;
 
     TRACE("SeclCreateProcessElevatedW(%p %p %p)\n", hBinding, pRequest, pResponse);
 
@@ -1552,12 +1556,30 @@ SeclCreateProcessElevatedW(
     if (dwError != ERROR_SUCCESS)
         goto done;
 
-    /* The credential modes of the policy are the shell's credentials dialog, not ours */
-    Policy = ReadPolicyDword(L"ConsentPromptBehaviorAdmin", 5);
-    if (Policy == 1 || Policy == 3 || Policy == 4)
+    /* The prompt is chosen from the caller's token and the policy, never from the request:
+     * a split administrator gets ConsentPromptBehaviorAdmin (0 no prompt; 2, 4, 5 consent;
+     * 1, 3 credentials with the own account), a standard user ConsentPromptBehaviorUser
+     * (1, 3 credentials; 0 and anything else refused). Values are Windows' own. */
+    IsLimited = GetTokenDword(hCallerToken, TokenElevationType, &Type) && Type == TokenElevationTypeLimited;
+    if (IsLimited)
     {
-        dwError = ERROR_ELEVATION_REQUIRED;
-        goto done;
+        Policy = ReadPolicyDword(L"ConsentPromptBehaviorAdmin", 5);
+        Credentials = (Policy == 1 || Policy == 3);
+        if (Policy > 5)
+        {
+            dwError = ERROR_ACCESS_DENIED;
+            goto done;
+        }
+    }
+    else
+    {
+        Policy = ReadPolicyDword(L"ConsentPromptBehaviorUser", 3);
+        if (Policy != 1 && Policy != 3)
+        {
+            dwError = ERROR_ACCESS_DENIED;
+            goto done;
+        }
+        Credentials = TRUE;
     }
 
     Desktop = (pRequest->Desktop && pRequest->Desktop[0]) ? pRequest->Desktop : L"WinSta0\\Default";
@@ -1589,16 +1611,21 @@ SeclCreateProcessElevatedW(
     if (dwError != ERROR_SUCCESS)
         goto done;
 
-    /* The broker holds SeTcbPrivilege, so this is the primary elevated token */
-    if (!GetTokenInformation(hCallerToken, TokenLinkedToken, &Linked, sizeof(Linked), &Length) ||
-        Linked.LinkedToken == NULL)
+    /* The broker holds SeTcbPrivilege, so this is the primary elevated token; a
+     * credentials prompt brings its own logon instead */
+    if (!Credentials)
     {
-        ERR("The caller's logon has no elevated token: Error %lu\n", GetLastError());
-        dwError = ERROR_ELEVATION_REQUIRED;
-        goto done;
+        if (!GetTokenInformation(hCallerToken, TokenLinkedToken, &Linked, sizeof(Linked), &Length) ||
+            Linked.LinkedToken == NULL)
+        {
+            ERR("The caller's logon has no elevated token: Error %lu\n", GetLastError());
+            dwError = ERROR_ELEVATION_REQUIRED;
+            goto done;
+        }
+        hElevated = Linked.LinkedToken;
     }
 
-    if (Policy != 0)
+    if (Policy != 0 || Credentials)
     {
         DWORD OwnerPid = 0;
 
@@ -1631,12 +1658,21 @@ SeclCreateProcessElevatedW(
         {
             hwndOwner = pRequest->hwndOwner;
         }
-        if (!GetTokenAccountName(hCallerToken, Account, _countof(Account)))
+        /* A standard user types an administrator's account; a split administrator sees the own one */
+        if (!IsLimited)
+            Account[0] = UNICODE_NULL;
+        else if (!GetTokenAccountName(hCallerToken, Account, _countof(Account)))
         {
             dwError = ERROR_ACCESS_DENIED;
             goto done;
         }
-        dwError = AskConsent(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
+        if (Credentials)
+        {
+            /* The exchange with consent.exe arrives with the next commit */
+            dwError = ERROR_ELEVATION_REQUIRED;
+        }
+        else
+            dwError = AskConsent(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
         /* consent.exe is gone here on every path (AskConsent waits for it or ends it) */
         if (hSecureDesktop != NULL)
         {
@@ -1653,7 +1689,7 @@ SeclCreateProcessElevatedW(
         }
     }
 
-    if (!SetTokenInformation(Linked.LinkedToken, TokenSessionId, &SessionId, sizeof(SessionId)))
+    if (!SetTokenInformation(hElevated, TokenSessionId, &SessionId, sizeof(SessionId)))
     {
         dwError = GetLastError();
         goto done;
@@ -1661,11 +1697,11 @@ SeclCreateProcessElevatedW(
 
     if (pRequest->dwDesktopInherited && SameSession)
     {
-        Grant = GrantDesktopAccess(hBinding, Linked.LinkedToken, Desktop, &dwError);
+        Grant = GrantDesktopAccess(hBinding, hElevated, Desktop, &dwError);
         dwError = ERROR_SUCCESS;
     }
 
-    if (!CreateEnvironmentBlock(&Environment, Linked.LinkedToken, FALSE))
+    if (!CreateEnvironmentBlock(&Environment, hElevated, FALSE))
     {
         dwError = GetLastError();
         goto done;
@@ -1686,7 +1722,7 @@ SeclCreateProcessElevatedW(
     StartupInfo.lpDesktop = (LPWSTR)Desktop;
     StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
     StartupInfo.wShowWindow = (WORD)pRequest->dwShowCmd;
-    if (!CreateProcessAsUserW(Linked.LinkedToken,
+    if (!CreateProcessAsUserW(hElevated,
                               FinalPath,
                               CommandLine,
                               NULL,
@@ -1733,6 +1769,8 @@ done:
         ReleaseDesktopGrant(Grant);
     if (Prompt != NULL)
         EndPrompt(Prompt);
+    if (hElevated != NULL && hElevated != Linked.LinkedToken)
+        CloseHandle(hElevated);
     if (Linked.LinkedToken != NULL)
         CloseHandle(Linked.LinkedToken);
     if (hCallerToken != NULL)
