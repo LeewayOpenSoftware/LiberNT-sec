@@ -1154,6 +1154,12 @@ PortDispatchDeviceControl(
             break;
 
         case IOCTL_REACTOS_STORAGE_GET_DUMP_INTERFACE:
+            if (Irp->RequestorMode != KernelMode)
+            {
+                Status = STATUS_ACCESS_DENIED;
+                break;
+            }
+
             if (ExtensionType != PdoExtension)
             {
                 Status = STATUS_INVALID_DEVICE_REQUEST;

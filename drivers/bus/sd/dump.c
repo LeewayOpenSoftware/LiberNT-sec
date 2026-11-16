@@ -388,7 +388,11 @@ SdBusDispatchDeviceControl(
     if (!Common->IsFdo &&
         (IoStack->Parameters.DeviceIoControl.IoControlCode == IOCTL_REACTOS_STORAGE_GET_DUMP_INTERFACE))
     {
-        if ((Irp->AssociatedIrp.SystemBuffer == NULL) ||
+        if (Irp->RequestorMode != KernelMode)
+        {
+            Status = STATUS_ACCESS_DENIED;
+        }
+        else if ((Irp->AssociatedIrp.SystemBuffer == NULL) ||
             (IoStack->Parameters.DeviceIoControl.InputBufferLength < sizeof(ROS_STORAGE_DUMP_INTERFACE)) ||
             (IoStack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(ROS_STORAGE_DUMP_INTERFACE)))
         {

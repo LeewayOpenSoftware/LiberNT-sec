@@ -631,6 +631,11 @@ USBSTOR_HandleDeviceControl(
     switch (IoStack->Parameters.DeviceIoControl.IoControlCode)
     {
         case IOCTL_REACTOS_STORAGE_GET_DUMP_INTERFACE:
+            if (Irp->RequestorMode != KernelMode)
+            {
+                Status = STATUS_ACCESS_DENIED;
+                break;
+            }
             PDODeviceExtension = DeviceObject->DeviceExtension;
             if (PDODeviceExtension->Common.IsFDO)
             {

@@ -645,6 +645,11 @@ ScsiPortDeviceControl(
     {
         case IOCTL_REACTOS_STORAGE_GET_DUMP_INTERFACE:
         {
+            if (Irp->RequestorMode != KernelMode)
+            {
+                status = STATUS_ACCESS_DENIED;
+                break;
+            }
             if (comExt->IsFDO)
             {
                 status = STATUS_INVALID_DEVICE_REQUEST;
