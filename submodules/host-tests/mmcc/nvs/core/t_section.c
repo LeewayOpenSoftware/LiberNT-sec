@@ -952,6 +952,105 @@ SectionCopyOnWriteOwnerCharge(void)
     WorldDestroy(&World);
 }
 
+typedef struct _COW_LIMIT_OWNER
+{
+    LONG64 Used;
+    LONG Refusals;
+    KIRQL ChargeIrql;
+    KIRQL RefuseIrql;
+    KIRQL ReturnIrql;
+    BOOLEAN Refuse;
+} COW_LIMIT_OWNER;
+
+static
+BOOLEAN
+CowLimitOwnerCharge(_In_ PVOID Owner, _In_ LONG64 Pages)
+{
+    COW_LIMIT_OWNER *Budget = Owner;
+
+    if (MiHostIrql > Budget->ChargeIrql)
+        Budget->ChargeIrql = MiHostIrql;
+    if (Budget->Refuse)
+    {
+        /* The owner may block when it refuses, so this must run below DISPATCH_LEVEL. */
+        if (MiHostIrql > Budget->RefuseIrql)
+            Budget->RefuseIrql = MiHostIrql;
+        Budget->Refusals++;
+        return FALSE;
+    }
+    Budget->Used += Pages;
+    return TRUE;
+}
+
+static
+VOID
+CowLimitOwnerReturn(_In_ PVOID Owner, _In_ LONG64 Pages)
+{
+    COW_LIMIT_OWNER *Budget = Owner;
+
+    if (MiHostIrql > Budget->ReturnIrql)
+        Budget->ReturnIrql = MiHostIrql;
+    Budget->Used -= Pages;
+}
+
+/* A copy-on-write fault that the commit owner refuses: the refusal and every charge or
+ * return around it happen below DISPATCH_LEVEL, nothing stays charged, and the page
+ * remains the shared one until a later write succeeds. */
+static
+void
+SectionCopyOnWriteOwnerLimit(void)
+{
+    TEST_WORLD World;
+    TEST_FILE File;
+    MI_ADDRESS_SPACE A;
+    PMI_SEGMENT Segment;
+    COW_LIMIT_OWNER Owner = { 0, 0, 0, 0, 0, FALSE };
+    ULONG64 BaseA = 0;
+    LONG64 SystemCommit;
+    NTSTATUS Status;
+
+    WorldCreate(&World, 1024, 1, 100000);
+    WorldAttachPageFile(&World, 256);
+    FileCreate(&File, 0x10000);
+    SpaceCreate(&World, 0, &A);
+    World.System.ChargeOwnerCommit = CowLimitOwnerCharge;
+    World.System.ReturnOwnerCommit = CowLimitOwnerReturn;
+    A.CommitOwner = &Owner;
+
+    CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, 0x10000, MI_PROT_READONLY, &TestFileOps,
+                                     &File, NULL, 0, &Segment)));
+    CHECK(NT_SUCCESS(Map(&A, Segment, &BaseA, 0, 0, MI_PROT_WRITECOPY)));
+    MiSegmentDereference(Segment);
+    CHECK(UserRead64(&World, 0, BaseA + 0x2000, &Status) == *(ULONG64 *)(File.Data + 0x2000));
+    SystemCommit = MI_ATOMIC_READ64(&World.System.CommittedPages);
+
+    Owner.Refuse = TRUE;
+    CHECK(UserWrite64(&World, 0, BaseA + 0x2000, 0x5353) == STATUS_COMMITMENT_LIMIT);
+    CHECK(Owner.Refusals == 1 && Owner.Used == 0);
+    CHECK(Owner.RefuseIrql <= 1 && Owner.ChargeIrql <= 1 && Owner.ReturnIrql <= 1);
+    CHECK(MI_ATOMIC_READ64(&A.CommittedPages) == 0);
+    CHECK(MI_ATOMIC_READ64(&World.System.CommittedPages) == SystemCommit);
+    CHECK(MI_ATOMIC_READ64(&A.CopyOnWriteFaults) == 0);
+    CHECK(UserRead64(&World, 0, BaseA + 0x2000, &Status) == *(ULONG64 *)(File.Data + 0x2000));
+
+    Owner.Refuse = FALSE;
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, BaseA + 0x2000, 0x5353)));
+    CHECK(UserRead64(&World, 0, BaseA + 0x2000, &Status) == 0x5353);
+    CHECK(Owner.Refusals == 1 && Owner.Used == 1 && MI_ATOMIC_READ64(&A.CommittedPages) == 1);
+    CHECK(MI_ATOMIC_READ64(&A.CopyOnWriteFaults) == 1);
+
+    CHECK(NT_SUCCESS(MiUnmapView(&A, BaseA)));
+    CHECK(Owner.Used == 0 && MI_ATOMIC_READ64(&A.CommittedPages) == 0);
+    CHECK(Owner.ChargeIrql <= 1 && Owner.ReturnIrql <= 1);
+    World.System.ChargeOwnerCommit = NULL;
+    World.System.ReturnOwnerCommit = NULL;
+    SpaceDestroy(&World, 0, &A);
+
+    WorldExpectClean(&World, 1024);
+    FileDestroy(&File);
+    WorldDestroy(&World);
+}
+
 static
 void
 SectionSystemSpaceView(void)
@@ -2109,6 +2208,7 @@ TestSection(void)
     SectionReservedPageFile();
     SectionCopyOnWrite();
     SectionCopyOnWriteOwnerCharge();
+    SectionCopyOnWriteOwnerLimit();
     SectionSystemSpaceView();
     SectionViewOutlivesOwner();
     SectionUnusedCache();
