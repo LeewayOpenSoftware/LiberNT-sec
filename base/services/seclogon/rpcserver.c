@@ -10,10 +10,12 @@
 #include "precomp.h"
 
 #include <seclogon_s.h>
+#include <wlsecdesk_c.h>
+#include <consentproto.h>
+#include <ndk/psfuncs.h>
+#include <ndk/obfuncs.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(seclogon);
-
-static BOOL IsUserElevationDenied(VOID);
 
 /* GLOBALS *******************************************************************/
 
@@ -458,6 +460,83 @@ WatchDesktopGrant(
     return TRUE;
 }
 
+/* A profile loaded for a started process stays loaded until that process ends: userenv
+ * drops the hive at a reference count of zero, and a process that has not opened HKCU
+ * yet holds no reference of its own */
+typedef struct _PROFILE_HOLD
+{
+    HANDLE hWait;
+    HANDLE hProcess;
+    HANDLE hToken;
+    HANDLE hProfile;
+    LONG Owners;
+} PROFILE_HOLD, *PPROFILE_HOLD;
+
+static
+VOID
+FinishProfileHold(
+    _In_ PPROFILE_HOLD Hold)
+{
+    if (InterlockedDecrement(&Hold->Owners) != 0)
+        return;
+    UnregisterWait(Hold->hWait);
+    UnloadUserProfile(Hold->hToken, Hold->hProfile);
+    CloseHandle(Hold->hToken);
+    CloseHandle(Hold->hProcess);
+    HeapFree(GetProcessHeap(), 0, Hold);
+}
+
+static
+VOID
+CALLBACK
+ProfileHoldProcessExited(
+    _In_ PVOID Context,
+    _In_ BOOLEAN TimedOut)
+{
+    UNREFERENCED_PARAMETER(TimedOut);
+    FinishProfileHold(Context);
+}
+
+/* Keeps hProfile (loaded on hToken) until hProcess exits; FALSE leaves it with the caller */
+static
+BOOL
+WatchProfile(
+    _In_ HANDLE hToken,
+    _In_ HANDLE hProfile,
+    _In_ HANDLE hProcess)
+{
+    PPROFILE_HOLD Hold;
+
+    Hold = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Hold));
+    if (Hold == NULL)
+        return FALSE;
+    if (!DuplicateHandle(GetCurrentProcess(), hProcess, GetCurrentProcess(), &Hold->hProcess,
+                         SYNCHRONIZE, FALSE, 0))
+    {
+        HeapFree(GetProcessHeap(), 0, Hold);
+        return FALSE;
+    }
+    if (!DuplicateHandle(GetCurrentProcess(), hToken, GetCurrentProcess(), &Hold->hToken,
+                         0, FALSE, DUPLICATE_SAME_ACCESS))
+    {
+        CloseHandle(Hold->hProcess);
+        HeapFree(GetProcessHeap(), 0, Hold);
+        return FALSE;
+    }
+    Hold->hProfile = hProfile;
+    Hold->Owners = 2;
+    if (!RegisterWaitForSingleObject(&Hold->hWait, Hold->hProcess, ProfileHoldProcessExited,
+                                     Hold, INFINITE, WT_EXECUTEONLYONCE))
+    {
+        CloseHandle(Hold->hToken);
+        CloseHandle(Hold->hProcess);
+        HeapFree(GetProcessHeap(), 0, Hold);
+        return FALSE;
+    }
+    FinishProfileHold(Hold);
+    return TRUE;
+}
+
 
 void __RPC_FAR * __RPC_USER midl_user_allocate(SIZE_T len)
 {
@@ -720,24 +799,6 @@ SeclCreateProcessWithLogonW(
         goto done;
     }
 
-    /* The shell's elevation path: a logon that was split runs with its full token,
-     * unless the policy refuses standard users an elevation (then nobody gets it this way) */
-    if ((pRequest->dwLogonFlags & SECL_LOGON_ELEVATE) && pRequest->hToken == 0 &&
-        !(pRequest->dwLogonFlags & LOGON_NETCREDENTIALS_ONLY) && !IsUserElevationDenied())
-    {
-        TOKEN_LINKED_TOKEN Linked = { NULL };
-        DWORD Type = 0, LinkedLength;
-
-        if (GetTokenInformation(hToken, TokenElevationType, &Type, sizeof(Type), &LinkedLength) &&
-            Type == TokenElevationTypeLimited &&
-            GetTokenInformation(hToken, TokenLinkedToken, &Linked, sizeof(Linked), &LinkedLength) &&
-            Linked.LinkedToken != NULL)
-        {
-            CloseHandle(hToken);
-            hToken = Linked.LinkedToken;
-        }
-    }
-
     if (!SetTokenInformation(hToken, TokenSessionId, &SessionId, sizeof(SessionId)))
     {
         dwError = GetLastError();
@@ -808,6 +869,8 @@ SeclCreateProcessWithLogonW(
 
     if (Grant && WatchDesktopGrant(Grant, ProcessInfo.hProcess))
         Grant = NULL;
+    if (ProfileInfo.hProfile != NULL && WatchProfile(hToken, ProfileInfo.hProfile, ProcessInfo.hProcess))
+        ProfileInfo.hProfile = NULL;
 
     /* Return process info to the caller */
     if (pResponse != NULL)
@@ -888,10 +951,162 @@ InitPendingPromptLock(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context)
     return TRUE;
 }
 
+/* The winlogon of the caller's session holds the secure desktop around the prompt. The answer
+ * of Begin is never trusted alone: consent.exe is started on WinSta0\Winlogon by that fixed
+ * name, and the binding asks for identification only. Any failure refuses the request. */
+#define SECL_SECURE_DESKTOP L"WinSta0\\Winlogon"
+
+static
+DWORD
+SecureDesktopBegin(
+    _In_ DWORD SessionId,
+    _In_ DWORD TimeoutMs,
+    _Out_ handle_t *phBinding)
+{
+    RPC_SECURITY_QOS Qos = { RPC_C_SECURITY_QOS_VERSION, RPC_C_QOS_CAPABILITIES_DEFAULT,
+                             RPC_C_QOS_IDENTITY_STATIC, RPC_C_IMP_LEVEL_IDENTIFY };
+    WCHAR Endpoint[64];
+    RPC_WSTR StringBinding = NULL;
+    handle_t hBinding = NULL;
+    DWORD dwError;
+
+    *phBinding = NULL;
+    StringCchPrintfW(Endpoint, _countof(Endpoint), L"wlsecdesk-%lu", SessionId);
+    if (RpcStringBindingComposeW(NULL, (RPC_WSTR)L"ncalrpc", NULL, (RPC_WSTR)Endpoint, NULL, &StringBinding) != RPC_S_OK)
+        return ERROR_ACCESS_DENIED;
+    if (RpcBindingFromStringBindingW(StringBinding, &hBinding) != RPC_S_OK)
+    {
+        RpcStringFreeW(&StringBinding);
+        return ERROR_ACCESS_DENIED;
+    }
+    RpcStringFreeW(&StringBinding);
+    /* Identification only: whatever answers must not get to act as the service; in our
+     * runtime this call is what opens the pipe with SECURITY_IDENTIFICATION, so without
+     * it there is no prompt */
+    if (RpcBindingSetAuthInfoExW(hBinding, NULL, RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_AUTHN_WINNT, NULL, 0, &Qos) != RPC_S_OK)
+    {
+        ERR("The secure-desktop binding cannot be set to identification level\n");
+        RpcBindingFree(&hBinding);
+        return ERROR_ACCESS_DENIED;
+    }
+
+    RpcTryExcept
+    {
+        dwError = WlSecureDesktopBegin(hBinding, TimeoutMs);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        dwError = RpcExceptionCode();
+    }
+    RpcEndExcept;
+
+    if (dwError != ERROR_SUCCESS)
+    {
+        RpcBindingFree(&hBinding);
+        return dwError;
+    }
+    *phBinding = hBinding;
+    return ERROR_SUCCESS;
+}
+
+static
+VOID
+SecureDesktopEnd(
+    _In_ handle_t hBinding)
+{
+    DWORD dwError;
+
+    RpcTryExcept
+    {
+        dwError = WlSecureDesktopEnd(hBinding);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        dwError = RpcExceptionCode();
+    }
+    RpcEndExcept;
+    if (dwError != ERROR_SUCCESS)
+        ERR("The secure desktop could not be released: Error %lu (winlogon returns on its own)\n", dwError);
+    RpcBindingFree(&hBinding);
+}
+
+/* Declined or timed-out requests are counted per process and per logon session: a
+ * process that just declined waits a few seconds, three in a minute wait a minute.
+ * A request the user answers with Yes resets both. */
+#define SECL_DECLINE_HOLD_MS     (3 * 1000)
+#define SECL_DECLINE_WINDOW_MS   (60 * 1000)
+#define SECL_DECLINE_LIMIT       3
+#define SECL_DECLINE_ENTRIES     32
+
+typedef struct _DECLINE_ENTRY
+{
+    DWORD Pid;
+    LUID LogonId;
+    DWORD Tick;
+} DECLINE_ENTRY;
+
+static DECLINE_ENTRY DeclineRing[SECL_DECLINE_ENTRIES];
+static ULONG DeclineNext;
+
+/* Called with PendingPromptLock held */
+static
+BOOL
+IsRequestLimited(
+    _In_ DWORD Pid,
+    _In_ PLUID LogonId)
+{
+    DWORD Now = GetTickCount(), ByPid = 0, ByLogon = 0;
+    ULONG i;
+
+    for (i = 0; i < SECL_DECLINE_ENTRIES; i++)
+    {
+        if (DeclineRing[i].Tick == 0 || Now - DeclineRing[i].Tick > SECL_DECLINE_WINDOW_MS)
+            continue;
+        if (DeclineRing[i].Pid == Pid)
+        {
+            ByPid++;
+            if (Now - DeclineRing[i].Tick < SECL_DECLINE_HOLD_MS)
+                return TRUE;
+        }
+        if (RtlEqualLuid(&DeclineRing[i].LogonId, LogonId))
+            ByLogon++;
+    }
+    return ByPid >= SECL_DECLINE_LIMIT || ByLogon >= SECL_DECLINE_LIMIT;
+}
+
+static
+VOID
+RecordRequestResult(
+    _In_ DWORD Pid,
+    _In_ PLUID LogonId,
+    _In_ BOOL Declined)
+{
+    ULONG i;
+
+    EnterCriticalSection(&PendingPromptLock);
+    if (Declined)
+    {
+        DeclineRing[DeclineNext].Pid = Pid;
+        DeclineRing[DeclineNext].LogonId = *LogonId;
+        DeclineRing[DeclineNext].Tick = GetTickCount() | 1;
+        DeclineNext = (DeclineNext + 1) % SECL_DECLINE_ENTRIES;
+    }
+    else
+    {
+        for (i = 0; i < SECL_DECLINE_ENTRIES; i++)
+        {
+            if (DeclineRing[i].Pid == Pid || RtlEqualLuid(&DeclineRing[i].LogonId, LogonId))
+                DeclineRing[i].Tick = 0;
+        }
+    }
+    LeaveCriticalSection(&PendingPromptLock);
+}
+
 /* One prompt per logon session at a time */
 static
 PPENDING_PROMPT
 BeginPrompt(
+    _In_ DWORD CallerPid,
     _In_ PLUID LogonId)
 {
     PLIST_ENTRY Entry;
@@ -899,6 +1114,11 @@ BeginPrompt(
 
     InitOnceExecuteOnce(&PendingPromptInit, InitPendingPromptLock, NULL, NULL);
     EnterCriticalSection(&PendingPromptLock);
+    if (IsRequestLimited(CallerPid, LogonId))
+    {
+        LeaveCriticalSection(&PendingPromptLock);
+        return NULL;
+    }
     for (Entry = PendingPromptList.Flink; Entry != &PendingPromptList; Entry = Entry->Flink)
     {
         Prompt = CONTAINING_RECORD(Entry, PENDING_PROMPT, ListEntry);
@@ -947,14 +1167,6 @@ ReadPolicyDword(
     }
     RegCloseKey(hKey);
     return Value;
-}
-
-/* ConsentPromptBehaviorUser 0: a standard user gets no elevation at all */
-static
-BOOL
-IsUserElevationDenied(VOID)
-{
-    return ReadPolicyDword(L"EnableLUA", 0) != 0 && ReadPolicyDword(L"ConsentPromptBehaviorUser", 3) == 0;
 }
 
 static
@@ -1072,14 +1284,16 @@ OpenElevationCaller(
     if (I_RpcBindingInqLocalClientPID(hBinding, &ClientPid) != RPC_S_OK)
         return ERROR_ACCESS_DENIED;
 
-    hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE, FALSE, ClientPid);
+    /* PROCESS_CREATE_PROCESS: the elevated process is created as this process's child */
+    hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE | PROCESS_CREATE_PROCESS, FALSE, ClientPid);
     if (hProcess == NULL)
         return ERROR_ACCESS_DENIED;
 
     if (!OpenProcessToken(hProcess, TOKEN_QUERY | TOKEN_DUPLICATE, &hToken))
         goto done;
 
-    dwError = CheckElevationCallerToken(hToken, TRUE);
+    /* Limited or not: the policy table in the request decides what each caller gets */
+    dwError = CheckElevationCallerToken(hToken, FALSE);
     if (dwError != ERROR_SUCCESS)
         goto done;
 
@@ -1292,6 +1506,44 @@ GetTokenAccountName(
     return Named;
 }
 
+/* An elevated process that runs as another account than the caller's (the credentials were
+ * that account's) gets that account's profile, as the logon path does; the same account
+ * already has its profile loaded by its logon */
+static
+DWORD
+LoadProfileWhenOtherUser(
+    _In_ HANDLE hCaller,
+    _In_ HANDLE hElevated,
+    _Out_writes_(NameChars) PWSTR Name,
+    _In_ DWORD NameChars,
+    _Inout_ LPPROFILEINFOW ProfileInfo)
+{
+    UCHAR CallerBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    UCHAR ElevatedBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    PTOKEN_USER Caller = (PTOKEN_USER)CallerBuffer, Elevated = (PTOKEN_USER)ElevatedBuffer;
+    WCHAR Domain[256];
+    DWORD Length, DomainChars = _countof(Domain);
+    SID_NAME_USE Use;
+
+    if (!GetTokenInformation(hCaller, TokenUser, CallerBuffer, sizeof(CallerBuffer), &Length) ||
+        !GetTokenInformation(hElevated, TokenUser, ElevatedBuffer, sizeof(ElevatedBuffer), &Length))
+    {
+        return GetLastError();
+    }
+    if (EqualSid(Caller->User.Sid, Elevated->User.Sid))
+        return ERROR_SUCCESS;
+    if (!LookupAccountSidW(NULL, Elevated->User.Sid, Name, &NameChars, Domain, &DomainChars, &Use))
+        return GetLastError();
+    ProfileInfo->dwSize = sizeof(*ProfileInfo);
+    ProfileInfo->lpUserName = Name;
+    if (!LoadUserProfileW(hElevated, ProfileInfo))
+    {
+        ProfileInfo->hProfile = NULL;
+        return GetLastError();
+    }
+    return ERROR_SUCCESS;
+}
+
 static
 DWORD
 AskConsent(
@@ -1362,6 +1614,267 @@ done:
     return dwError;
 }
 
+/* The groups of a token: Administrators present and enabled */
+static
+BOOL
+TokenHasEnabledAdministrators(
+    _In_ HANDLE hToken)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    PTOKEN_GROUPS Groups = NULL;
+    PSID AdminsSid = NULL;
+    DWORD Length = 0, i;
+    BOOL Found = FALSE;
+
+    GetTokenInformation(hToken, TokenGroups, NULL, 0, &Length);
+    if (Length == 0 || (Groups = HeapAlloc(GetProcessHeap(), 0, Length)) == NULL)
+        return FALSE;
+    if (GetTokenInformation(hToken, TokenGroups, Groups, Length, &Length) &&
+        AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+                                 0, 0, 0, 0, 0, 0, &AdminsSid))
+    {
+        for (i = 0; i < Groups->GroupCount && !Found; i++)
+        {
+            Found = (Groups->Groups[i].Attributes & SE_GROUP_ENABLED) &&
+                    !(Groups->Groups[i].Attributes & SE_GROUP_USE_FOR_DENY_ONLY) &&
+                    EqualSid(Groups->Groups[i].Sid, AdminsSid);
+        }
+        FreeSid(AdminsSid);
+    }
+    HeapFree(GetProcessHeap(), 0, Groups);
+    return Found;
+}
+
+/* The token a logon will really run with (the linked one when the logon is split),
+ * accepted only if it is an administrator's */
+static
+DWORD
+AdministratorTokenOfLogon(
+    _In_ HANDLE hLogon,
+    _Out_ PHANDLE phUse)
+{
+    TOKEN_LINKED_TOKEN LogonLinked = { NULL };
+    DWORD Type = 0, Length;
+    HANDLE hUse = hLogon;
+
+    *phUse = NULL;
+    if (GetTokenDword(hLogon, TokenElevationType, &Type) && Type == TokenElevationTypeLimited)
+    {
+        if (!GetTokenInformation(hLogon, TokenLinkedToken, &LogonLinked, sizeof(LogonLinked), &Length) ||
+            LogonLinked.LinkedToken == NULL)
+        {
+            return ERROR_ACCESS_DENIED;
+        }
+        hUse = LogonLinked.LinkedToken;
+    }
+    if (!TokenHasEnabledAdministrators(hUse))
+    {
+        if (hUse != hLogon)
+            CloseHandle(hUse);
+        return ERROR_ACCESS_DENIED;
+    }
+    *phUse = hUse;
+    return ERROR_SUCCESS;
+}
+
+static INIT_ONCE ConsentInheritInit = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION ConsentInheritLock;
+
+static
+BOOL
+CALLBACK
+InitConsentInheritLock(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context)
+{
+    InitializeCriticalSection(&ConsentInheritLock);
+    return TRUE;
+}
+
+#define SECL_CREDENTIAL_TRIES 3
+
+static
+VOID
+SendVerdict(
+    _In_ HANDLE hVerdict,
+    _In_ CONSENT_VERDICT Verdict)
+{
+    ULONG Value = Verdict;
+    DWORD Written;
+    WriteFile(hVerdict, &Value, sizeof(Value), &Written, NULL);
+}
+
+/* Waits for one whole record, or for consent to be gone, within the prompt's timeout */
+static
+BOOL
+ReadRecord(
+    _In_ HANDLE hRecord,
+    _In_ HANDLE hConsent,
+    _In_ DWORD Start,
+    _Out_ PCONSENT_CREDENTIAL_RECORD Record)
+{
+    DWORD Available, Read;
+
+    for (;;)
+    {
+        if (!PeekNamedPipe(hRecord, NULL, 0, NULL, &Available, NULL))
+            return FALSE;
+        if (Available >= sizeof(*Record))
+            break;
+        if (WaitForSingleObject(hConsent, 100) == WAIT_OBJECT_0 ||
+            GetTickCount() - Start > CONSENT_TIMEOUT_MS)
+        {
+            return FALSE;
+        }
+    }
+    if (!ReadFile(hRecord, Record, sizeof(*Record), &Read, NULL) || Read != sizeof(*Record))
+        return FALSE;
+    /* Nothing from consent is trusted for its shape, SYSTEM or not */
+    if (Record->Magic != CONSENT_RECORD_MAGIC ||
+        Record->UserLength >= CONSENT_MAX_USER || Record->DomainLength >= CONSENT_MAX_DOMAIN ||
+        Record->PasswordLength >= CONSENT_MAX_PASSWORD)
+    {
+        return FALSE;
+    }
+    Record->User[Record->UserLength] = UNICODE_NULL;
+    Record->Domain[Record->DomainLength] = UNICODE_NULL;
+    Record->Password[Record->PasswordLength] = UNICODE_NULL;
+    return TRUE;
+}
+
+/* consent.exe in its credentials mode: the record pipe carries the typed credentials to
+ * this service, the verdict pipe its answer; only this service logs on and counts the
+ * tries. Only the consent process inherits its two ends, under one lock, because this
+ * is the only process start of the service with handle inheritance on. */
+static
+DWORD
+AskCredentials(
+    _In_ DWORD SessionId,
+    _In_ PCWSTR DesktopPath,
+    _In_ PCWSTR Account,
+    _In_ PCWSTR FinalPath,
+    _In_ PCWSTR CommandLine,
+    _In_ DWORD_PTR hwndOwner,
+    _Out_ PHANDLE phToken,
+    _Out_ PBOOL Allowed)
+{
+    SECURITY_ATTRIBUTES NoInherit = { sizeof(SECURITY_ATTRIBUTES), NULL, FALSE };
+    HANDLE hSelf = NULL, hSystem = NULL, hRecRead = NULL, hRecWrite = NULL, hVerRead = NULL, hVerWrite = NULL;
+    STARTUPINFOW StartupInfo = { sizeof(StartupInfo) };
+    PROCESS_INFORMATION ProcessInfo = { 0 };
+    CONSENT_CREDENTIAL_RECORD Record;
+    WCHAR Exe[MAX_PATH];
+    PWSTR Cmd = NULL;
+    SIZE_T CmdChars;
+    DWORD Start, Tries, dwError = ERROR_SUCCESS;
+    HANDLE hLogon, hUse;
+
+    *phToken = NULL;
+    *Allowed = FALSE;
+    InitOnceExecuteOnce(&ConsentInheritInit, InitConsentInheritLock, NULL, NULL);
+
+    if (!GetSystemDirectoryW(Exe, _countof(Exe)) ||
+        FAILED(StringCchCatW(Exe, _countof(Exe), L"\\consent.exe")))
+    {
+        return ERROR_BAD_PATHNAME;
+    }
+
+    if (!CreatePipe(&hRecRead, &hRecWrite, &NoInherit, sizeof(Record)) ||
+        !CreatePipe(&hVerRead, &hVerWrite, &NoInherit, sizeof(ULONG)) ||
+        !SetHandleInformation(hRecWrite, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) ||
+        !SetHandleInformation(hVerRead, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+    {
+        dwError = GetLastError();
+        goto done;
+    }
+
+    CmdChars = wcslen(Exe) + wcslen(Account) + wcslen(FinalPath) + (CommandLine ? wcslen(CommandLine) : 0) + 96;
+    Cmd = HeapAlloc(GetProcessHeap(), 0, CmdChars * sizeof(WCHAR));
+    if (Cmd == NULL)
+    {
+        dwError = ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
+    }
+    StringCchPrintfW(Cmd, CmdChars, L"\"%ls\" %Ix \"%ls\" \"%ls\" /cred:%Iu,%Iu %ls", Exe, hwndOwner, Account, FinalPath,
+                     (ULONG_PTR)hRecWrite, (ULONG_PTR)hVerRead, CommandLine ? CommandLine : L"");
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &hSelf) ||
+        !DuplicateTokenEx(hSelf, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenPrimary, &hSystem) ||
+        !SetTokenInformation(hSystem, TokenSessionId, &SessionId, sizeof(SessionId)))
+    {
+        dwError = GetLastError();
+        goto done;
+    }
+
+    StartupInfo.lpDesktop = (LPWSTR)DesktopPath;
+    EnterCriticalSection(&ConsentInheritLock);
+    if (!CreateProcessAsUserW(hSystem, Exe, Cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT,
+                              NULL, NULL, &StartupInfo, &ProcessInfo))
+    {
+        dwError = GetLastError();
+    }
+    /* The service's copies of consent's ends go at once, so nothing else can inherit them */
+    CloseHandle(hRecWrite);
+    hRecWrite = NULL;
+    CloseHandle(hVerRead);
+    hVerRead = NULL;
+    LeaveCriticalSection(&ConsentInheritLock);
+    if (dwError != ERROR_SUCCESS)
+        goto done;
+
+    Start = GetTickCount();
+    for (Tries = 0; Tries < SECL_CREDENTIAL_TRIES; )
+    {
+        if (!ReadRecord(hRecRead, ProcessInfo.hProcess, Start, &Record))
+            break; /* consent gone, timeout, or a malformed record: a decline */
+        if (Record.Answer != IDYES)
+        {
+            SecureZeroMemory(&Record, sizeof(Record));
+            break; /* the user declined */
+        }
+        if (!LogonUser(Record.User, Record.DomainLength ? Record.Domain : NULL, Record.Password,
+                       LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hLogon))
+        {
+            SecureZeroMemory(&Record, sizeof(Record));
+            Tries++;
+            SendVerdict(hVerWrite, Tries < SECL_CREDENTIAL_TRIES ? ConsentVerdictWrongPassword : ConsentVerdictRefused);
+            continue;
+        }
+        SecureZeroMemory(&Record, sizeof(Record));
+        if (AdministratorTokenOfLogon(hLogon, &hUse) != ERROR_SUCCESS)
+        {
+            CloseHandle(hLogon);
+            Tries++;
+            SendVerdict(hVerWrite, Tries < SECL_CREDENTIAL_TRIES ? ConsentVerdictCannotApprove : ConsentVerdictRefused);
+            continue;
+        }
+        if (hUse != hLogon)
+            CloseHandle(hLogon);
+        *phToken = hUse;
+        *Allowed = TRUE;
+        SendVerdict(hVerWrite, ConsentVerdictOk);
+        break;
+    }
+    if (Tries >= SECL_CREDENTIAL_TRIES)
+        dwError = ERROR_ACCESS_DENIED;
+
+    if (WaitForSingleObject(ProcessInfo.hProcess, 5000) != WAIT_OBJECT_0)
+    {
+        TerminateProcess(ProcessInfo.hProcess, IDNO);
+        WaitForSingleObject(ProcessInfo.hProcess, 5000);
+    }
+    CloseHandle(ProcessInfo.hThread);
+    CloseHandle(ProcessInfo.hProcess);
+
+done:
+    if (hRecRead != NULL) CloseHandle(hRecRead);
+    if (hRecWrite != NULL) CloseHandle(hRecWrite);
+    if (hVerRead != NULL) CloseHandle(hVerRead);
+    if (hVerWrite != NULL) CloseHandle(hVerWrite);
+    if (hSystem != NULL) CloseHandle(hSystem);
+    if (hSelf != NULL) CloseHandle(hSelf);
+    if (Cmd != NULL) HeapFree(GetProcessHeap(), 0, Cmd);
+    return dwError;
+}
+
 void
 __stdcall
 SeclCreateProcessElevatedW(
@@ -1374,15 +1887,28 @@ SeclCreateProcessElevatedW(
     PPENDING_PROMPT Prompt = NULL;
     PDESKTOP_GRANT Grant = NULL;
     PVOID Environment = NULL;
-    STARTUPINFOW StartupInfo = { sizeof(StartupInfo) };
+    STARTUPINFOEXW StartupInfoEx = { { sizeof(StartupInfoEx) } };
     PROCESS_INFORMATION ProcessInfo = { 0 };
-    WCHAR FinalPath[MAX_PATH], Account[512];
+    LPPROC_THREAD_ATTRIBUTE_LIST Attributes = NULL;
+    SIZE_T AttributesSize = 0;
+    DWORD_PTR DebugPort = 0;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    UNICODE_STRING DosDevices;
+    HANDLE hDosDevices = NULL;
+    NTSTATUS Status;
+    WCHAR FinalPath[MAX_PATH], Account[512], ProfileUser[256];
+    PROFILEINFOW ProfileInfo = { sizeof(ProfileInfo) };
     PWSTR CommandLine = NULL;
     PCWSTR Desktop;
     LUID LogonId;
     DWORD SessionId = 0, OwnSession = 0, CallerPid = 0, Policy = 0, Length, dwError;
     DWORD_PTR hwndOwner = 0;
     BOOL Allowed = FALSE, SameSession = FALSE;
+    handle_t hSecureDesktop = NULL;
+    PCWSTR ConsentDesktop;
+    HANDLE hElevated = NULL;
+    DWORD Type = 0;
+    BOOL IsLimited, Credentials = FALSE;
 
     TRACE("SeclCreateProcessElevatedW(%p %p %p)\n", hBinding, pRequest, pResponse);
 
@@ -1392,12 +1918,30 @@ SeclCreateProcessElevatedW(
     if (dwError != ERROR_SUCCESS)
         goto done;
 
-    /* The credential modes of the policy are the shell's credentials dialog, not ours */
-    Policy = ReadPolicyDword(L"ConsentPromptBehaviorAdmin", 5);
-    if (Policy == 1 || Policy == 3 || Policy == 4)
+    /* The prompt is chosen from the caller's token and the policy, never from the request:
+     * a split administrator gets ConsentPromptBehaviorAdmin (0 no prompt; 2, 4, 5 consent;
+     * 1, 3 credentials with the own account), a standard user ConsentPromptBehaviorUser
+     * (1, 3 credentials; 0 and anything else refused). Values are Windows' own. */
+    IsLimited = GetTokenDword(hCallerToken, TokenElevationType, &Type) && Type == TokenElevationTypeLimited;
+    if (IsLimited)
     {
-        dwError = ERROR_ELEVATION_REQUIRED;
-        goto done;
+        Policy = ReadPolicyDword(L"ConsentPromptBehaviorAdmin", 5);
+        Credentials = (Policy == 1 || Policy == 3);
+        if (Policy > 5)
+        {
+            dwError = ERROR_ACCESS_DENIED;
+            goto done;
+        }
+    }
+    else
+    {
+        Policy = ReadPolicyDword(L"ConsentPromptBehaviorUser", 3);
+        if (Policy != 1 && Policy != 3)
+        {
+            dwError = ERROR_ACCESS_DENIED;
+            goto done;
+        }
+        Credentials = TRUE;
     }
 
     Desktop = (pRequest->Desktop && pRequest->Desktop[0]) ? pRequest->Desktop : L"WinSta0\\Default";
@@ -1429,38 +1973,74 @@ SeclCreateProcessElevatedW(
     if (dwError != ERROR_SUCCESS)
         goto done;
 
-    /* The broker holds SeTcbPrivilege, so this is the primary elevated token */
-    if (!GetTokenInformation(hCallerToken, TokenLinkedToken, &Linked, sizeof(Linked), &Length) ||
-        Linked.LinkedToken == NULL)
+    /* The broker holds SeTcbPrivilege, so this is the primary elevated token; a
+     * credentials prompt brings its own logon instead */
+    if (!Credentials)
     {
-        ERR("The caller's logon has no elevated token: Error %lu\n", GetLastError());
-        dwError = ERROR_ELEVATION_REQUIRED;
-        goto done;
+        if (!GetTokenInformation(hCallerToken, TokenLinkedToken, &Linked, sizeof(Linked), &Length) ||
+            Linked.LinkedToken == NULL)
+        {
+            ERR("The caller's logon has no elevated token: Error %lu\n", GetLastError());
+            dwError = ERROR_ELEVATION_REQUIRED;
+            goto done;
+        }
+        hElevated = Linked.LinkedToken;
     }
 
-    if (Policy != 0)
+    if (Policy != 0 || Credentials)
     {
         DWORD OwnerPid = 0;
 
-        Prompt = BeginPrompt(&LogonId);
+        Prompt = BeginPrompt(CallerPid, &LogonId);
         if (Prompt == NULL)
         {
             dwError = ERROR_BUSY;
             goto done;
         }
-        if (pRequest->hwndOwner != 0 && IsWindow((HWND)pRequest->hwndOwner) &&
+
+        /* The policy is the broker's to read; the prompt goes to the secure desktop when it says so,
+         * and a secure desktop that cannot be held refuses the request (no quieter prompt instead) */
+        ConsentDesktop = Desktop;
+        if (ReadPolicyDword(L"PromptOnSecureDesktop", 0) != 0)
+        {
+            dwError = SecureDesktopBegin(SessionId, CONSENT_TIMEOUT_MS, &hSecureDesktop);
+            if (dwError != ERROR_SUCCESS)
+            {
+                ERR("The secure desktop of session %lu could not be held: Error %lu\n", SessionId, dwError);
+                dwError = ERROR_ACCESS_DENIED;
+                goto done;
+            }
+            ConsentDesktop = SECL_SECURE_DESKTOP;
+        }
+        /* The caller's window can own the prompt only on the caller's desktop; on the
+         * secure desktop the prompt owns itself */
+        if (ConsentDesktop == Desktop &&
+            pRequest->hwndOwner != 0 && IsWindow((HWND)pRequest->hwndOwner) &&
             GetWindowThreadProcessId((HWND)pRequest->hwndOwner, &OwnerPid) && OwnerPid == CallerPid)
         {
             hwndOwner = pRequest->hwndOwner;
         }
-        if (!GetTokenAccountName(hCallerToken, Account, _countof(Account)))
+        /* A standard user types an administrator's account; a split administrator sees the own one */
+        if (!IsLimited)
+            Account[0] = UNICODE_NULL;
+        else if (!GetTokenAccountName(hCallerToken, Account, _countof(Account)))
         {
             dwError = ERROR_ACCESS_DENIED;
             goto done;
         }
-        dwError = AskConsent(SessionId, Desktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
+        if (Credentials)
+            dwError = AskCredentials(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &hElevated, &Allowed);
+        else
+            dwError = AskConsent(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
+        /* consent.exe is gone here on every path (AskConsent waits for it or ends it) */
+        if (hSecureDesktop != NULL)
+        {
+            SecureDesktopEnd(hSecureDesktop);
+            hSecureDesktop = NULL;
+        }
         if (dwError != ERROR_SUCCESS)
             goto done;
+        RecordRequestResult(CallerPid, &LogonId, !Allowed);
         if (!Allowed)
         {
             dwError = ERROR_CANCELLED;
@@ -1468,19 +2048,26 @@ SeclCreateProcessElevatedW(
         }
     }
 
-    if (!SetTokenInformation(Linked.LinkedToken, TokenSessionId, &SessionId, sizeof(SessionId)))
+    if (!SetTokenInformation(hElevated, TokenSessionId, &SessionId, sizeof(SessionId)))
     {
         dwError = GetLastError();
         goto done;
     }
 
+    dwError = LoadProfileWhenOtherUser(hCallerToken, hElevated, ProfileUser, _countof(ProfileUser), &ProfileInfo);
+    if (dwError != ERROR_SUCCESS)
+    {
+        ERR("The profile of the elevated account could not be loaded: Error %lu\n", dwError);
+        goto done;
+    }
+
     if (pRequest->dwDesktopInherited && SameSession)
     {
-        Grant = GrantDesktopAccess(hBinding, Linked.LinkedToken, Desktop, &dwError);
+        Grant = GrantDesktopAccess(hBinding, hElevated, Desktop, &dwError);
         dwError = ERROR_SUCCESS;
     }
 
-    if (!CreateEnvironmentBlock(&Environment, Linked.LinkedToken, FALSE))
+    if (!CreateEnvironmentBlock(&Environment, hElevated, FALSE))
     {
         dwError = GetLastError();
         goto done;
@@ -1498,28 +2085,99 @@ SeclCreateProcessElevatedW(
         CopyMemory(CommandLine, pRequest->CommandLine, Length * sizeof(WCHAR));
     }
 
-    StartupInfo.lpDesktop = (LPWSTR)Desktop;
-    StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
-    StartupInfo.wShowWindow = (WORD)pRequest->dwShowCmd;
-    if (!CreateProcessAsUserW(Linked.LinkedToken,
+    /* The elevated process is the requester's child (parent pid, job, device map and priorities as
+     * if the requester had started it) with the requester's handles kept out: inheritance stays
+     * off in this call. A requester under a debugger is not made the parent, because the parent's
+     * debug port travels to the child at creation and the debugger would hold the elevated process. */
+    if (NT_SUCCESS(NtQueryInformationProcess(hCallerProcess, ProcessDebugPort, &DebugPort, sizeof(DebugPort), NULL)) &&
+        DebugPort == 0)
+    {
+        InitializeProcThreadAttributeList(NULL, 1, 0, &AttributesSize);
+        Attributes = HeapAlloc(GetProcessHeap(), 0, AttributesSize);
+        if (Attributes == NULL)
+        {
+            dwError = ERROR_NOT_ENOUGH_MEMORY;
+            goto done;
+        }
+        if (!InitializeProcThreadAttributeList(Attributes, 1, 0, &AttributesSize))
+        {
+            dwError = GetLastError();
+            HeapFree(GetProcessHeap(), 0, Attributes);
+            Attributes = NULL;
+            goto done;
+        }
+        if (!UpdateProcThreadAttribute(Attributes, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+                                       &hCallerProcess, sizeof(hCallerProcess), NULL, NULL))
+        {
+            dwError = GetLastError();
+            goto done;
+        }
+        StartupInfoEx.lpAttributeList = Attributes;
+    }
+    else
+    {
+        WARN("The requester %lu is being debugged: the elevated process is not its child\n", CallerPid);
+    }
+    StartupInfoEx.StartupInfo.lpDesktop = (LPWSTR)Desktop;
+    StartupInfoEx.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    StartupInfoEx.StartupInfo.wShowWindow = (WORD)pRequest->dwShowCmd;
+    if (!CreateProcessAsUserW(hElevated,
                               FinalPath,
                               CommandLine,
                               NULL,
                               NULL,
                               FALSE,
-                              (pRequest->dwCreationFlags & SECL_ALLOWED_CREATION_FLAGS) | CREATE_UNICODE_ENVIRONMENT,
+                              (pRequest->dwCreationFlags & SECL_ALLOWED_CREATION_FLAGS) | CREATE_UNICODE_ENVIRONMENT |
+                              EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
                               Environment,
                               pRequest->CurrentDirectory,
-                              &StartupInfo,
+                              &StartupInfoEx.StartupInfo,
                               &ProcessInfo))
     {
         dwError = GetLastError();
         WARN("CreateProcessAsUser(elevated) failed with Error %lu\n", dwError);
         goto done;
     }
+    /* A debugger that attached to the requester after the check above would have reached the
+     * child through the inherited port: such a child is ended before it ever runs */
+    if (!NT_SUCCESS(NtQueryInformationProcess(ProcessInfo.hProcess, ProcessDebugPort, &DebugPort, sizeof(DebugPort), NULL)) ||
+        DebugPort != 0)
+    {
+        TerminateProcess(ProcessInfo.hProcess, ERROR_ACCESS_DENIED);
+        CloseHandle(ProcessInfo.hThread);
+        CloseHandle(ProcessInfo.hProcess);
+        ERR("The elevated process of requester %lu carried a debug port: ended\n", CallerPid);
+        dwError = ERROR_ACCESS_DENIED;
+        goto done;
+    }
+    /* The child took its DOS device map from its parent, and a requester may set its own map
+     * without any privilege (a C: of its choosing): the elevated process gets the global map
+     * before it runs, as a process of a clean session has */
+    /* \GLOBAL?? is the global DOS-devices directory by name, not via the broker's own map; if LUID
+     * device maps are ever enabled, the right map becomes the elevated token's logon session (A). */
+    RtlInitUnicodeString(&DosDevices, L"\\GLOBAL??");
+    InitializeObjectAttributes(&ObjectAttributes, &DosDevices, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    Status = NtOpenDirectoryObject(&hDosDevices, DIRECTORY_TRAVERSE, &ObjectAttributes);
+    if (NT_SUCCESS(Status))
+    {
+        Status = NtSetInformationProcess(ProcessInfo.hProcess, ProcessDeviceMap, &hDosDevices, sizeof(hDosDevices));
+        NtClose(hDosDevices);
+    }
+    if (!NT_SUCCESS(Status))
+    {
+        TerminateProcess(ProcessInfo.hProcess, ERROR_ACCESS_DENIED);
+        CloseHandle(ProcessInfo.hThread);
+        CloseHandle(ProcessInfo.hProcess);
+        ERR("The elevated process of requester %lu could not get the global device map: Status 0x%08lx\n", CallerPid, Status);
+        dwError = ERROR_ACCESS_DENIED;
+        goto done;
+    }
+    ResumeThread(ProcessInfo.hThread);
 
     if (Grant && WatchDesktopGrant(Grant, ProcessInfo.hProcess))
         Grant = NULL;
+    if (ProfileInfo.hProfile != NULL && WatchProfile(hElevated, ProfileInfo.hProfile, ProcessInfo.hProcess))
+        ProfileInfo.hProfile = NULL;
 
     /* The caller may wait for and query the process, nothing more */
     if (!DuplicateHandle(GetCurrentProcess(), ProcessInfo.hProcess, hCallerProcess,
@@ -1534,18 +2192,29 @@ SeclCreateProcessElevatedW(
     CloseHandle(ProcessInfo.hProcess);
 
 done:
+    if (hSecureDesktop != NULL)
+        SecureDesktopEnd(hSecureDesktop);
     if (dwError != ERROR_SUCCESS)
         ERR("Elevation request of process %lu (session %lu, policy %lu) ends with Error %lu\n", CallerPid, SessionId, Policy, dwError);
     if (hImage != NULL)
         CloseHandle(hImage);
     if (CommandLine != NULL)
         HeapFree(GetProcessHeap(), 0, CommandLine);
+    if (Attributes != NULL)
+    {
+        DeleteProcThreadAttributeList(Attributes);
+        HeapFree(GetProcessHeap(), 0, Attributes);
+    }
     if (Environment != NULL)
         DestroyEnvironmentBlock(Environment);
     if (Grant != NULL)
         ReleaseDesktopGrant(Grant);
     if (Prompt != NULL)
         EndPrompt(Prompt);
+    if (ProfileInfo.hProfile != NULL)
+        UnloadUserProfile(hElevated, ProfileInfo.hProfile);
+    if (hElevated != NULL && hElevated != Linked.LinkedToken)
+        CloseHandle(hElevated);
     if (Linked.LinkedToken != NULL)
         CloseHandle(Linked.LinkedToken);
     if (hCallerToken != NULL)

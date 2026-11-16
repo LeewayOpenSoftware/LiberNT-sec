@@ -4,10 +4,6 @@
 
 #include <ms-dtyp.idl>
 
-/* dwLogonFlags bit set by the shell's elevation path only: an administrator's logon
- * runs with its full token. Plain runas keeps the token as the logon returns it. */
-cpp_quote("#define SECL_LOGON_ELEVATE 0x80000000")
-
 typedef struct _SECL_REQUEST
 {
     [string] WCHAR *Username;

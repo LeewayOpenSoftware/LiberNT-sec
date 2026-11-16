@@ -16,12 +16,73 @@ typedef BOOL (WINAPI *PGET_USER_OBJECT_INFORMATION)(HANDLE, int, PVOID, DWORD, L
 /* UOI_NAME, winuser.h */
 #define SECL_UOI_NAME 2
 
+/* kernel32 exports it (Vista+); the SDK header hides it behind a version guard */
+BOOL WINAPI GetNamedPipeServerProcessId(HANDLE Pipe, PULONG ServerProcessId);
+
+/* The process at the other end of the pipe must be the secondary logon service host as the
+ * service control manager reports it, before anything travels to it: a program that created
+ * the name before the service would receive the clients. Every caller may ask the SCM; no
+ * handle to the SYSTEM process is needed. ERROR_SERVICE_NOT_ACTIVE when the service is not
+ * running or the pipe is absent, ERROR_ACCESS_DENIED when another process holds the name. */
+static
+DWORD
+SeclCheckServer(VOID)
+{
+    SC_HANDLE hScm, hService;
+    SERVICE_STATUS_PROCESS Status;
+    HANDLE hPipe;
+    DWORD Needed, ServicePid = 0, ServerPid = 0;
+
+    /* The pipe first: whoever holds the name now is judged against a service that is
+     * running now under that very pid, which a reused pid of a dead service cannot be */
+    hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    if (hPipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY && WaitNamedPipeW(L"\\\\.\\pipe\\seclogon", 2000))
+    {
+        hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    }
+    if (hPipe == INVALID_HANDLE_VALUE)
+        return ERROR_SERVICE_NOT_ACTIVE;
+    if (!GetNamedPipeServerProcessId(hPipe, &ServerPid))
+        ServerPid = 0;
+    CloseHandle(hPipe);
+    if (ServerPid == 0)
+        return ERROR_ACCESS_DENIED;
+
+    hScm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (hScm == NULL)
+        return ERROR_SERVICE_NOT_ACTIVE;
+    hService = OpenServiceW(hScm, L"seclogon", SERVICE_QUERY_STATUS);
+    if (hService != NULL)
+    {
+        if (QueryServiceStatusEx(hService, SC_STATUS_PROCESS_INFO, (LPBYTE)&Status, sizeof(Status), &Needed) &&
+            Status.dwCurrentState == SERVICE_RUNNING)
+        {
+            ServicePid = Status.dwProcessId;
+        }
+        CloseServiceHandle(hService);
+    }
+    CloseServiceHandle(hScm);
+    if (ServicePid == 0)
+        return ERROR_SERVICE_NOT_ACTIVE;
+
+    return (ServerPid == ServicePid) ? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
+}
+
 static
 handle_t
 SeclBind(VOID)
 {
     RPC_WSTR StringBinding = NULL;
     handle_t hBinding = NULL;
+
+    DWORD Check = SeclCheckServer();
+    if (Check != ERROR_SUCCESS)
+    {
+        SetLastError(Check);
+        return NULL;
+    }
 
     if (RpcStringBindingComposeW(NULL,
                                  (RPC_WSTR)L"ncacn_np",
@@ -210,7 +271,9 @@ CreateProcessWithTokenW(
     hBinding = SeclBind();
     if (hBinding == NULL)
     {
-        SetLastError(ERROR_SERVICE_NOT_ACTIVE);
+        /* The server check leaves ERROR_ACCESS_DENIED; a missing service is reported as such */
+        if (GetLastError() != ERROR_ACCESS_DENIED)
+            SetLastError(ERROR_SERVICE_NOT_ACTIVE);
         return FALSE;
     }
 
