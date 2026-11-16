@@ -1622,10 +1622,11 @@ SeclCreateProcessElevatedW(
                 goto done;
             }
             ConsentDesktop = SECL_SECURE_DESKTOP;
-            /* The owner window lives on the user's desktop; the prompt there owns itself */
-            hwndOwner = 0;
         }
-        if (pRequest->hwndOwner != 0 && IsWindow((HWND)pRequest->hwndOwner) &&
+        /* The caller's window can own the prompt only on the caller's desktop; on the
+         * secure desktop the prompt owns itself */
+        if (ConsentDesktop == Desktop &&
+            pRequest->hwndOwner != 0 && IsWindow((HWND)pRequest->hwndOwner) &&
             GetWindowThreadProcessId((HWND)pRequest->hwndOwner, &OwnerPid) && OwnerPid == CallerPid)
         {
             hwndOwner = pRequest->hwndOwner;
