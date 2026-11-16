@@ -30,6 +30,23 @@ SeclCheckServer(VOID)
     HANDLE hPipe;
     DWORD Needed, ServicePid = 0, ServerPid = 0;
 
+    /* The pipe first: whoever holds the name now is judged against a service that is
+     * running now under that very pid, which a reused pid of a dead service cannot be */
+    hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    if (hPipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY && WaitNamedPipeW(L"\\\\.\\pipe\\seclogon", 2000))
+    {
+        hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
+                            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+    }
+    if (hPipe == INVALID_HANDLE_VALUE)
+        return ERROR_SERVICE_NOT_ACTIVE;
+    if (!GetNamedPipeServerProcessId(hPipe, &ServerPid))
+        ServerPid = 0;
+    CloseHandle(hPipe);
+    if (ServerPid == 0)
+        return ERROR_ACCESS_DENIED;
+
     hScm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
     if (hScm == NULL)
         return ERROR_SERVICE_NOT_ACTIVE;
@@ -46,19 +63,6 @@ SeclCheckServer(VOID)
     CloseServiceHandle(hScm);
     if (ServicePid == 0)
         return ERROR_SERVICE_NOT_ACTIVE;
-
-    hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
-                        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
-    if (hPipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY && WaitNamedPipeW(L"\\\\.\\pipe\\seclogon", 2000))
-    {
-        hPipe = CreateFileW(L"\\\\.\\pipe\\seclogon", GENERIC_READ, 0, NULL, OPEN_EXISTING,
-                            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
-    }
-    if (hPipe == INVALID_HANDLE_VALUE)
-        return ERROR_SERVICE_NOT_ACTIVE;
-    if (!GetNamedPipeServerProcessId(hPipe, &ServerPid))
-        ServerPid = 0;
-    CloseHandle(hPipe);
 
     return (ServerPid == ServicePid) ? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
 }
