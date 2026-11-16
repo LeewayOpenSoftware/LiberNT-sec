@@ -59,6 +59,7 @@ typedef struct _BROKER_CALL
 static int g_Failures;
 static HWND g_Consent;
 static LONG g_KeysSeen;
+static LONG g_MouseSeen;
 
 static void Report(BOOL Passed, const char *Format, ...)
 {
@@ -217,6 +218,18 @@ static LRESULT CALLBACK KeyboardProc(int Code, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(NULL, Code, wParam, lParam);
 }
 
+static LRESULT CALLBACK MouseProc(int Code, WPARAM wParam, LPARAM lParam)
+{
+    const MSLLHOOKSTRUCT *Mouse = (const MSLLHOOKSTRUCT *)lParam;
+    RECT Prompt;
+
+    /* Pointer movement and clicks by a person over the prompt, not the ones this program injects */
+    if (Code == HC_ACTION && !(Mouse->flags & LLMHF_INJECTED) && g_Consent &&
+        GetWindowRect(g_Consent, &Prompt) && PtInRect(&Prompt, Mouse->pt))
+        InterlockedIncrement(&g_MouseSeen);
+    return CallNextHookEx(NULL, Code, wParam, lParam);
+}
+
 static LRESULT CALLBACK ThreadHookProc(int Code, WPARAM wParam, LPARAM lParam)
 {
     return CallNextHookEx(NULL, Code, wParam, lParam);
@@ -265,7 +278,7 @@ static void ProbeP(void)
 {
     BROKER_CALL Call;
     HANDLE Thread;
-    HHOOK KeyHook, ThreadHook;
+    HHOOK KeyHook, MouseHook, ThreadHook;
     DWORD ConsentThread, ConsentProcess = 0, Start, Error;
     WCHAR Before[128], After[128];
     RECT RectBefore, RectAfter, Button;
@@ -302,6 +315,7 @@ static void ProbeP(void)
 
     /* The keyboard hook stays for the whole check; it counts keys a person types into the prompt */
     KeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandleW(NULL), 0);
+    MouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseProc, GetModuleHandleW(NULL), 0);
 
     /* P1: messages */
     SetLastError(0);
@@ -461,7 +475,7 @@ static void ProbeP(void)
     /* The end: only a person answers. No elevated process may exist unless a person said Yes. */
     if (WaitForSingleObject(Thread, 0) == WAIT_TIMEOUT)
     {
-        printf("ACTION: answer the prompt with No now, with the keyboard (Enter). Waiting up to %u seconds.\n",
+        printf("ACTION: move the pointer once across the prompt, then answer it with No with the keyboard (Enter). Waiting up to %u seconds.\n",
                ANSWER_MS / 1000);
         fflush(stdout);
         PumpWait(Thread, ANSWER_MS);
@@ -486,6 +500,16 @@ static void ProbeP(void)
     else
     {
         Info("P6 the low-level keyboard hook could not be installed; not checked");
+    }
+    if (MouseHook)
+    {
+        Report(g_MouseSeen == 0, "P6 low-level mouse hook: %ld pointer events over the prompt were seen%s",
+               g_MouseSeen, g_MouseSeen == 0 ? " (only meaningful if the pointer was moved over the prompt)" : "");
+        UnhookWindowsHookEx(MouseHook);
+    }
+    else
+    {
+        Info("P6 the low-level mouse hook could not be installed; not checked");
     }
 
     g_Consent = NULL;
