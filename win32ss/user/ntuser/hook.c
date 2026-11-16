@@ -1201,6 +1201,8 @@ co_HOOK_CallHooks( INT HookId,
     USER_REFERENCE_ENTRY Ref;
     PTHREADINFO ptiLLTarget = NULL; /* the thread that receives this low-level input */
     PWND pwndLLTarget = NULL;
+    PTHREADINFO ptiLLForeground = NULL; /* mouse: the thread that holds the foreground */
+    PWND pwndLLForeground = NULL;
 
     ASSERT(WH_MINHOOK <= HookId && HookId <= WH_MAXHOOK);
 
@@ -1242,7 +1244,7 @@ co_HOOK_CallHooks( INT HookId,
 
     /* Low-level input is not shown to a hook of a process below the thread that
      * receives it: for a key the focus window of the active queue, for the mouse
-     * the capture window or the window under the cursor of this event */
+     * the capture window or the window under the cursor, and the foreground window */
     if (HookId == WH_KEYBOARD_LL)
     {
        PUSER_MESSAGE_QUEUE pQueue = IntGetFocusMessageQueue();
@@ -1256,6 +1258,7 @@ co_HOOK_CallHooks( INT HookId,
     {
        PMSLLHOOKSTRUCT pMouse = (PMSLLHOOKSTRUCT)lParam;
        HWND hwndCapture = IntGetCaptureWindow();
+       PUSER_MESSAGE_QUEUE pfgQueue;
        pwndLLTarget = hwndCapture ? UserGetWindowObject(hwndCapture) : NULL;
        /* The top-level window is enough: its children belong to the same thread */
        if (!pwndLLTarget)
@@ -1264,6 +1267,16 @@ co_HOOK_CallHooks( INT HookId,
        if (pwndLLTarget && UserIsDesktopWindow(pwndLLTarget))
           pwndLLTarget = NULL;
        ptiLLTarget = pwndLLTarget ? pwndLLTarget->head.pti : NULL;
+
+       /* A higher-integrity foreground window (the consent prompt) hides the whole mouse
+        * stream from a lower hook, as Windows does; the point target alone misses the moves
+        * that land just off the window - its shaped corners or shadow - while it is foreground */
+       pfgQueue = IntGetFocusMessageQueue();
+       if (pfgQueue)
+       {
+          pwndLLForeground = pfgQueue->spwndActive ? pfgQueue->spwndActive : pfgQueue->spwndFocus;
+          ptiLLForeground = pwndLLForeground ? pwndLLForeground->head.pti : NULL;
+       }
     }
 
     if ( !Local && !Global ) goto Exit; // No work!
@@ -1379,8 +1392,11 @@ co_HOOK_CallHooks( INT HookId,
           }
 
           /* Skipped silently; the chain goes on with the next hook */
-          if ((HookId == WH_KEYBOARD_LL || HookId == WH_MOUSE_LL) &&
-              !IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLTarget, pwndLLTarget))
+          if ((HookId == WH_KEYBOARD_LL &&
+               !IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLTarget, pwndLLTarget)) ||
+              (HookId == WH_MOUSE_LL &&
+               (!IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLTarget, pwndLLTarget) ||
+                !IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLForeground, pwndLLForeground))))
           {
              TRACE("Low-level hook of a lower process not shown this input\n");
              continue;
