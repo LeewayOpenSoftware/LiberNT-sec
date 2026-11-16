@@ -918,8 +918,15 @@ SecureDesktopBegin(
         return ERROR_ACCESS_DENIED;
     }
     RpcStringFreeW(&StringBinding);
-    /* Identification only: whatever answers must not get to act as the service */
-    RpcBindingSetAuthInfoExW(hBinding, NULL, RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_AUTHN_WINNT, NULL, 0, &Qos);
+    /* Identification only: whatever answers must not get to act as the service; in our
+     * runtime this call is what opens the pipe with SECURITY_IDENTIFICATION, so without
+     * it there is no prompt */
+    if (RpcBindingSetAuthInfoExW(hBinding, NULL, RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_AUTHN_WINNT, NULL, 0, &Qos) != RPC_S_OK)
+    {
+        ERR("The secure-desktop binding cannot be set to identification level\n");
+        RpcBindingFree(&hBinding);
+        return ERROR_ACCESS_DENIED;
+    }
 
     RpcTryExcept
     {
@@ -1615,6 +1622,8 @@ SeclCreateProcessElevatedW(
                 goto done;
             }
             ConsentDesktop = SECL_SECURE_DESKTOP;
+            /* The owner window lives on the user's desktop; the prompt there owns itself */
+            hwndOwner = 0;
         }
         if (pRequest->hwndOwner != 0 && IsWindow((HWND)pRequest->hwndOwner) &&
             GetWindowThreadProcessId((HWND)pRequest->hwndOwner, &OwnerPid) && OwnerPid == CallerPid)
