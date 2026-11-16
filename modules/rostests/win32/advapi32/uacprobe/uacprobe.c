@@ -230,6 +230,13 @@ static BOOL StillAsking(HANDLE Thread)
     return IsWindow(g_Consent) && IsWindowVisible(g_Consent) && WaitForSingleObject(Thread, 0) == WAIT_TIMEOUT;
 }
 
+/* The secure-desktop prompt has no window on this desktop, so its still-up signal is the broker
+ * call still pending (the user has not answered) rather than a window handle */
+static BOOL BrokerPending(HANDLE Thread)
+{
+    return PumpWait(Thread, SETTLE_MS) == WAIT_TIMEOUT;
+}
+
 static LRESULT CALLBACK KeyboardProc(int Code, WPARAM wParam, LPARAM lParam)
 {
     const KBDLLHOOKSTRUCT *Key = (const KBDLLHOOKSTRUCT *)lParam;
@@ -592,7 +599,7 @@ static void ProbeS(void)
         SetLastError(0);
         Switched = SwitchDesktop(Default);
         Error = GetLastError();
-        Open = StillAsking(Thread);
+        Open = BrokerPending(Thread);
         Report(!Switched && Open, "L7 SwitchDesktop(Default) while the prompt holds the station: %s, error %lu, prompt %s",
                Switched ? "SWITCHED" : "refused", Error, Open ? "still open" : "gone");
         CloseDesktop(Default);
@@ -617,7 +624,7 @@ static void ProbeS(void)
 
     /* L8b: the dialog is on the secure desktop, so it is not reachable from here at all. */
     Prompt = FindConsent();
-    Open = StillAsking(Thread);
+    Open = BrokerPending(Thread);
     Report(Prompt == NULL && Open, "L8 the prompt window from this desktop: %s, prompt %s",
            Prompt ? "FOUND" : "not found", Open ? "still open" : "gone");
 
