@@ -2,7 +2,7 @@
  * COPYRIGHT:       See COPYING in the top level directory
  * PROJECT:         ReactOS Winlogon
  * FILE:            base/system/winlogon/secdesk.c
- * PURPOSE:         Secure-desktop prompt state for the elevation broker (RPC server side)
+ * PURPOSE:         Secure-desktop prompt held for the elevation broker (RPC server side)
  */
 
 /* INCLUDES ******************************************************************/
@@ -13,16 +13,36 @@
 #include <winsvc.h>
 #include <wlsecdesk_s.h>
 
+/* user32 exports both; the SDK headers declare neither */
+BOOL WINAPI LockWindowStation(HWINSTA hWinSta);
+BOOL WINAPI UnlockWindowStation(HWINSTA hWinSta);
+
 /* GLOBALS *******************************************************************/
 
 /* The broker has at most this long after Begin before winlogon returns alone */
-#define SECDESK_MAX_TIMEOUT_MS (5 * 60 * 1000)
+#define SECDESK_MAX_TIMEOUT_MS   (5 * 60 * 1000)
+/* The prompt thread has this long to switch before Begin gives up */
+#define SECDESK_SWITCH_WAIT_MS   (10 * 1000)
+/* Slack on top of the broker's timeout before winlogon returns alone */
+#define SECDESK_WATCHDOG_SLACK_MS (10 * 1000)
 
 static CRITICAL_SECTION SecDeskLock;
+static const WCHAR SecDeskBackdropClass[] = L"WinlogonSecurePromptBackdrop";
+
+/* What the prompt thread works with; owned by the thread once it runs */
+typedef struct _SECDESK_PROMPT
+{
+    PWLSESSION Session;
+    HANDLE hBroker;     /* the broker's process: its end ends the prompt */
+    HANDLE hEnd;        /* set by End, or by Begin when the switch failed */
+    HANDLE hReady;      /* set by the thread once switched, or once it gave up */
+    DWORD TimeoutMs;
+    BOOL Switched;
+} SECDESK_PROMPT, *PSECDESK_PROMPT;
 
 /* FUNCTIONS *****************************************************************/
 
-/* The process id of the running secondary logon service, 0 when it is not running */
+/* The process id of the running secondary logon service host, 0 when it is not running */
 static
 DWORD
 SecDeskServicePid(VOID)
@@ -49,8 +69,10 @@ SecDeskServicePid(VOID)
     return Pid;
 }
 
-/* Only the broker is heard: the caller runs as SYSTEM and is the service process.
- * Both facts come from the runtime and the system, not from the request. */
+/* Only the broker is heard: the caller runs as SYSTEM and is the service host process.
+ * Both facts come from the runtime and the system, not from the request. This is the
+ * whole protection: the runtime enforces no local-only flag and the endpoint's pipe is
+ * open to every local caller. */
 static
 DWORD
 SecDeskCheckCaller(
@@ -99,22 +121,183 @@ SecDeskClear(
 {
     if (Session->SecurePromptBroker)
         CloseHandle(Session->SecurePromptBroker);
+    if (Session->SecurePromptEnd)
+        CloseHandle(Session->SecurePromptEnd);
     Session->SecurePromptBroker = NULL;
+    Session->SecurePromptEnd = NULL;
     Session->SecurePromptBrokerPid = 0;
     Session->SecurePromptTimeoutMs = 0;
     Session->SecurePromptStart = 0;
 }
 
+static
+LRESULT
+CALLBACK
+SecDeskBackdropProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    switch (uMsg)
+    {
+        case WM_ERASEBKGND:
+        {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            FillRect((HDC)wParam, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+            return 1;
+        }
+        case WM_CLOSE:
+            /* Only the prompt thread takes it down */
+            return 0;
+    }
+    return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+}
+
+/* The one way back, used by every path: the backdrop goes, the user's desktop
+ * returns, the window station is unlocked. Each step is tried even if the one
+ * before failed, so nothing stays half done. */
+static
+VOID
+SecDeskReturn(
+    _In_ PWLSESSION Session,
+    _In_opt_ HWND hwndBackdrop)
+{
+    if (hwndBackdrop)
+        DestroyWindow(hwndBackdrop);
+    if (!SwitchDesktop(Session->ApplicationDesktop))
+        ERR("Secure-desktop return: SwitchDesktop failed (error %lu)\n", GetLastError());
+    if (!UnlockWindowStation(Session->InteractiveWindowStation))
+        ERR("Secure-desktop return: UnlockWindowStation failed (error %lu)\n", GetLastError());
+}
+
+/* One thread per prompt: it owns the backdrop window, holds the switch, and
+ * returns when the broker says End, when the broker's process ends, or when
+ * the broker's own timeout plus slack has passed. */
+static
+DWORD
+WINAPI
+SecDeskPromptThread(
+    _In_ LPVOID Parameter)
+{
+    PSECDESK_PROMPT Prompt = (PSECDESK_PROMPT)Parameter;
+    PWLSESSION Session = Prompt->Session;
+    HANDLE Handles[2] = { Prompt->hEnd, Prompt->hBroker };
+    HWND hwndBackdrop = NULL;
+    DWORD Start, Elapsed, Wait, Result;
+    MSG msg;
+
+    /* Everything below happens on the Winlogon desktop */
+    if (!SetThreadDesktop(Session->WinlogonDesktop))
+    {
+        ERR("Secure-desktop prompt: SetThreadDesktop failed (error %lu)\n", GetLastError());
+        goto Failed;
+    }
+
+    hwndBackdrop = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                                   SecDeskBackdropClass, L"",
+                                   WS_POPUP,
+                                   0, 0,
+                                   GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+                                   NULL, NULL, hAppInstance, NULL);
+    if (!hwndBackdrop)
+    {
+        ERR("Secure-desktop prompt: backdrop window failed (error %lu)\n", GetLastError());
+        goto Failed;
+    }
+
+    /* Lock first, so that nobody switches back under the prompt; only the logon process may */
+    if (!LockWindowStation(Session->InteractiveWindowStation))
+    {
+        ERR("Secure-desktop prompt: LockWindowStation failed (error %lu)\n", GetLastError());
+        DestroyWindow(hwndBackdrop);
+        goto Failed;
+    }
+
+    if (!SwitchDesktop(Session->WinlogonDesktop))
+    {
+        ERR("Secure-desktop prompt: SwitchDesktop failed (error %lu)\n", GetLastError());
+        SecDeskReturn(Session, hwndBackdrop);
+        goto Failed;
+    }
+
+    ShowWindow(hwndBackdrop, SW_SHOWNA);
+    UpdateWindow(hwndBackdrop);
+
+    Prompt->Switched = TRUE;
+    SetEvent(Prompt->hReady);
+
+    Start = GetTickCount();
+    for (;;)
+    {
+        Elapsed = GetTickCount() - Start;
+        if (Elapsed >= Prompt->TimeoutMs + SECDESK_WATCHDOG_SLACK_MS)
+        {
+            ERR("Secure-desktop prompt: the broker did not end it in time, returning alone\n");
+            break;
+        }
+        Wait = Prompt->TimeoutMs + SECDESK_WATCHDOG_SLACK_MS - Elapsed;
+
+        Result = MsgWaitForMultipleObjects(2, Handles, FALSE, Wait, QS_ALLINPUT);
+        if (Result == WAIT_OBJECT_0)
+        {
+            TRACE("Secure-desktop prompt: End received\n");
+            break;
+        }
+        if (Result == WAIT_OBJECT_0 + 1)
+        {
+            ERR("Secure-desktop prompt: the broker's process ended, returning alone\n");
+            break;
+        }
+        if (Result == WAIT_OBJECT_0 + 2)
+        {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            continue;
+        }
+        /* Timeout or failure of the wait itself: return either way */
+        break;
+    }
+
+    SecDeskReturn(Session, hwndBackdrop);
+
+    EnterCriticalSection(&SecDeskLock);
+    SecDeskClear(Session);
+    LeaveCriticalSection(&SecDeskLock);
+
+    CloseHandle(Prompt->hReady);
+    HeapFree(GetProcessHeap(), 0, Prompt);
+    return 0;
+
+Failed:
+    Prompt->Switched = FALSE;
+    SetEvent(Prompt->hReady);
+    /* Begin owns the state and the structure on this path */
+    return 0;
+}
+
 BOOL
 StartSecureDesktopServer(VOID)
 {
+    WNDCLASSEXW wc = { sizeof(wc) };
     WCHAR Endpoint[64];
     DWORD SessionId = 0;
     RPC_STATUS Status;
 
     InitializeCriticalSection(&SecDeskLock);
 
-    /* One endpoint per session, so the broker reaches the winlogon of the caller's session */
+    wc.lpfnWndProc = SecDeskBackdropProc;
+    wc.hInstance = hAppInstance;
+    wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.lpszClassName = SecDeskBackdropClass;
+    if (!RegisterClassExW(&wc))
+        ERR("Secure-desktop backdrop class failed (error %lu)\n", GetLastError());
+
+    /* One endpoint per session, so the broker reaches the winlogon of the caller's session.
+     * The runtime does not honour a security descriptor for ncalrpc (RpcServerUseProtseqEpExW
+     * drops it), so the callers are checked inside the functions instead. A failure here is
+     * not fatal: without the endpoint the broker gets no Begin and refuses the elevation. */
     ProcessIdToSessionId(GetCurrentProcessId(), &SessionId);
     StringCchPrintfW(Endpoint, _countof(Endpoint), L"wlsecdesk-%lu", SessionId);
 
@@ -124,8 +307,8 @@ StartSecureDesktopServer(VOID)
                                     NULL);
     if (Status != RPC_S_OK)
     {
-        ERR("RpcServerUseProtseqEpW(%S) failed (Status %lx)\n", Endpoint, Status);
-        return FALSE;
+        ERR("RpcServerUseProtseqEpW(%S) failed (Status %lx); no secure-desktop prompts in this session\n", Endpoint, Status);
+        return TRUE;
     }
 
     Status = RpcServerRegisterIfEx(IWlSecureDesktop_v1_0_s_ifspec,
@@ -136,8 +319,8 @@ StartSecureDesktopServer(VOID)
                                    NULL);
     if (Status != RPC_S_OK)
     {
-        ERR("RpcServerRegisterIfEx(wlsecdesk) failed (Status %lx)\n", Status);
-        return FALSE;
+        ERR("RpcServerRegisterIfEx(wlsecdesk) failed (Status %lx); no secure-desktop prompts in this session\n", Status);
+        return TRUE;
     }
 
     TRACE("Secure-desktop endpoint %S registered\n", Endpoint);
@@ -152,7 +335,8 @@ WlSecureDesktopBegin(
     DWORD dwTimeoutMs)
 {
     PWLSESSION Session = WLSession;
-    HANDLE hBroker;
+    PSECDESK_PROMPT Prompt;
+    HANDLE hBroker, hEnd, hReady, hThread;
     DWORD Pid, Error;
 
     Error = SecDeskCheckCaller(hBinding, &Pid);
@@ -165,35 +349,74 @@ WlSecureDesktopBegin(
     if (dwTimeoutMs == 0 || dwTimeoutMs > SECDESK_MAX_TIMEOUT_MS)
         return ERROR_INVALID_PARAMETER;
 
-    /* The broker's process is what tells winlogon later that the broker is gone */
+    /* The broker's process is what tells the prompt thread that the broker is gone */
     hBroker = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, Pid);
     if (!hBroker)
         return ERROR_ACCESS_DENIED;
 
-    EnterCriticalSection(&SecDeskLock);
-
-    /* A prompt whose broker has died is over */
-    if (Session->SecurePromptBroker &&
-        WaitForSingleObject(Session->SecurePromptBroker, 0) == WAIT_OBJECT_0)
+    hEnd = CreateEventW(NULL, TRUE, FALSE, NULL);
+    hReady = CreateEventW(NULL, TRUE, FALSE, NULL);
+    Prompt = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Prompt));
+    if (!hEnd || !hReady || !Prompt)
     {
-        ERR("Secure-desktop prompt of broker %lu ended with its process\n", Session->SecurePromptBrokerPid);
-        SecDeskClear(Session);
+        if (hEnd) CloseHandle(hEnd);
+        if (hReady) CloseHandle(hReady);
+        if (Prompt) HeapFree(GetProcessHeap(), 0, Prompt);
+        CloseHandle(hBroker);
+        return ERROR_NOT_ENOUGH_MEMORY;
     }
+
+    EnterCriticalSection(&SecDeskLock);
 
     if (Session->SecurePromptBroker)
     {
         LeaveCriticalSection(&SecDeskLock);
+        CloseHandle(hEnd);
+        CloseHandle(hReady);
+        HeapFree(GetProcessHeap(), 0, Prompt);
         CloseHandle(hBroker);
         ERR("Secure-desktop Begin from %lu while a prompt is up\n", Pid);
         return ERROR_BUSY;
     }
 
     Session->SecurePromptBroker = hBroker;
+    Session->SecurePromptEnd = hEnd;
     Session->SecurePromptBrokerPid = Pid;
     Session->SecurePromptTimeoutMs = dwTimeoutMs;
     Session->SecurePromptStart = GetTickCount();
 
     LeaveCriticalSection(&SecDeskLock);
+
+    Prompt->Session = Session;
+    Prompt->hBroker = hBroker;
+    Prompt->hEnd = hEnd;
+    Prompt->hReady = hReady;
+    Prompt->TimeoutMs = dwTimeoutMs;
+
+    hThread = CreateThread(NULL, 0, SecDeskPromptThread, Prompt, 0, NULL);
+    if (hThread)
+    {
+        /* The thread answers within the switch wait, or the prompt is not held */
+        if (WaitForSingleObject(hReady, SECDESK_SWITCH_WAIT_MS) != WAIT_OBJECT_0)
+        {
+            ERR("Secure-desktop prompt thread did not switch in time\n");
+            SetEvent(hEnd);
+            Prompt->Switched = FALSE;
+        }
+        CloseHandle(hThread);
+    }
+
+    if (!hThread || !Prompt->Switched)
+    {
+        /* Nothing is held: the thread has given up (or never ran) and left the state to us */
+        EnterCriticalSection(&SecDeskLock);
+        SecDeskClear(Session);
+        LeaveCriticalSection(&SecDeskLock);
+        CloseHandle(hReady);
+        HeapFree(GetProcessHeap(), 0, Prompt);
+        ERR("Secure-desktop Begin from %lu: the switch failed, the request is refused\n", Pid);
+        return ERROR_GEN_FAILURE;
+    }
 
     TRACE("Secure-desktop prompt begun by %lu, %lu ms\n", Pid, dwTimeoutMs);
     return ERROR_SUCCESS;
@@ -225,15 +448,23 @@ WlSecureDesktopEnd(
 
     if (Session->SecurePromptBrokerPid != Pid)
     {
+        /* A broker that has ended cannot end its prompt; the thread returns on its own,
+         * and a restarted service must not find a state it can never end */
+        if (WaitForSingleObject(Session->SecurePromptBroker, 0) == WAIT_OBJECT_0)
+        {
+            LeaveCriticalSection(&SecDeskLock);
+            return ERROR_INVALID_STATE;
+        }
         LeaveCriticalSection(&SecDeskLock);
         ERR("Secure-desktop End from %lu for the prompt of %lu\n", Pid, Session->SecurePromptBrokerPid);
         return ERROR_ACCESS_DENIED;
     }
 
-    SecDeskClear(Session);
+    /* The prompt thread does the return and clears the state */
+    SetEvent(Session->SecurePromptEnd);
 
     LeaveCriticalSection(&SecDeskLock);
 
-    TRACE("Secure-desktop prompt of %lu ended\n", Pid);
+    TRACE("Secure-desktop prompt of %lu ending\n", Pid);
     return ERROR_SUCCESS;
 }

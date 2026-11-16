@@ -41,8 +41,8 @@ StartRpcServer(VOID)
         return FALSE;
     }
 
-    if (!StartSecureDesktopServer())
-        return FALSE;
+    /* Not fatal: without its endpoint no secure-desktop prompt is held and the broker refuses */
+    StartSecureDesktopServer();
 
     Status = RpcServerListen(1, 20, TRUE);
     if (Status != RPC_S_OK)

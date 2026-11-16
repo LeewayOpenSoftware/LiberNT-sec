@@ -243,6 +243,7 @@ typedef struct _WLSESSION
 
     /* Secure-desktop prompt held for the elevation broker (secdesk.c) */
     HANDLE SecurePromptBroker;
+    HANDLE SecurePromptEnd;
     DWORD SecurePromptBrokerPid;
     DWORD SecurePromptTimeoutMs;
     DWORD SecurePromptStart; /* GetTickCount at Begin */
