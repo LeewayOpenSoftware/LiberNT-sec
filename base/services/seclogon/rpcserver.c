@@ -1452,6 +1452,44 @@ GetTokenAccountName(
     return Named;
 }
 
+/* An elevated process that runs as another account than the caller's (the credentials were
+ * that account's) gets that account's profile, as the logon path does; the same account
+ * already has its profile loaded by its logon */
+static
+DWORD
+LoadProfileWhenOtherUser(
+    _In_ HANDLE hCaller,
+    _In_ HANDLE hElevated,
+    _Out_writes_(NameChars) PWSTR Name,
+    _In_ DWORD NameChars,
+    _Inout_ LPPROFILEINFOW ProfileInfo)
+{
+    UCHAR CallerBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    UCHAR ElevatedBuffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    PTOKEN_USER Caller = (PTOKEN_USER)CallerBuffer, Elevated = (PTOKEN_USER)ElevatedBuffer;
+    WCHAR Domain[256];
+    DWORD Length, DomainChars = _countof(Domain);
+    SID_NAME_USE Use;
+
+    if (!GetTokenInformation(hCaller, TokenUser, CallerBuffer, sizeof(CallerBuffer), &Length) ||
+        !GetTokenInformation(hElevated, TokenUser, ElevatedBuffer, sizeof(ElevatedBuffer), &Length))
+    {
+        return GetLastError();
+    }
+    if (EqualSid(Caller->User.Sid, Elevated->User.Sid))
+        return ERROR_SUCCESS;
+    if (!LookupAccountSidW(NULL, Elevated->User.Sid, Name, &NameChars, Domain, &DomainChars, &Use))
+        return GetLastError();
+    ProfileInfo->dwSize = sizeof(*ProfileInfo);
+    ProfileInfo->lpUserName = Name;
+    if (!LoadUserProfileW(hElevated, ProfileInfo))
+    {
+        ProfileInfo->hProfile = NULL;
+        return GetLastError();
+    }
+    return ERROR_SUCCESS;
+}
+
 static
 DWORD
 AskConsent(
@@ -1797,7 +1835,8 @@ SeclCreateProcessElevatedW(
     PVOID Environment = NULL;
     STARTUPINFOW StartupInfo = { sizeof(StartupInfo) };
     PROCESS_INFORMATION ProcessInfo = { 0 };
-    WCHAR FinalPath[MAX_PATH], Account[512];
+    WCHAR FinalPath[MAX_PATH], Account[512], ProfileUser[256];
+    PROFILEINFOW ProfileInfo = { sizeof(ProfileInfo) };
     PWSTR CommandLine = NULL;
     PCWSTR Desktop;
     LUID LogonId;
@@ -1954,6 +1993,13 @@ SeclCreateProcessElevatedW(
         goto done;
     }
 
+    dwError = LoadProfileWhenOtherUser(hCallerToken, hElevated, ProfileUser, _countof(ProfileUser), &ProfileInfo);
+    if (dwError != ERROR_SUCCESS)
+    {
+        ERR("The profile of the elevated account could not be loaded: Error %lu\n", dwError);
+        goto done;
+    }
+
     if (pRequest->dwDesktopInherited && SameSession)
     {
         Grant = GrantDesktopAccess(hBinding, hElevated, Desktop, &dwError);
@@ -2028,6 +2074,8 @@ done:
         ReleaseDesktopGrant(Grant);
     if (Prompt != NULL)
         EndPrompt(Prompt);
+    if (ProfileInfo.hProfile != NULL)
+        UnloadUserProfile(hElevated, ProfileInfo.hProfile);
     if (hElevated != NULL && hElevated != Linked.LinkedToken)
         CloseHandle(hElevated);
     if (Linked.LinkedToken != NULL)
