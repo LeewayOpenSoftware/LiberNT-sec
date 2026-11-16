@@ -1603,6 +1603,11 @@ DoGenericAction(
     IN OUT PWLSESSION Session,
     IN DWORD wlxAction)
 {
+    /* An action that leaves the user's desktop first ends a secure-desktop prompt
+     * and waits for its thread, so that the thread's return cannot undo the action */
+    if (wlxAction != WLX_SAS_ACTION_NONE && wlxAction != WLX_SAS_ACTION_LOGON)
+        SecDeskEndPromptAndWait(Session);
+
     switch (wlxAction)
     {
         case WLX_SAS_ACTION_LOGON: /* 0x01 */
@@ -1733,6 +1738,12 @@ DispatchSAS(
     DWORD wlxAction = WLX_SAS_ACTION_NONE;
     PSID LogonSid = NULL; /* FIXME */
     BOOL bSecure = TRUE;
+
+    /* A SAS (not the activity notice of the screen saver) ends a secure-desktop
+     * prompt and waits for its thread before anything below switches desktops;
+     * a SAS between Begin's gate and the switch finds the state set and waits too */
+    if (dwSasType != WLX_SAS_TYPE_SCRNSVR_ACTIVITY)
+        SecDeskEndPromptAndWait(Session);
 
     switch (dwSasType)
     {

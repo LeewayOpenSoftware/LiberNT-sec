@@ -29,6 +29,8 @@ BOOL WINAPI UnlockWindowStation(HWINSTA hWinSta);
 #define SECDESK_WATCHDOG_SLACK_MS (10 * 1000)
 
 static CRITICAL_SECTION SecDeskLock;
+/* Signalled while no prompt is held; the SAS, lock and logoff paths wait on it */
+static HANDLE SecDeskIdleEvent;
 static const WCHAR SecDeskBackdropClass[] = L"WinlogonSecurePromptBackdrop";
 
 /* What the prompt thread works with. Shared by Begin and the thread through a
@@ -42,6 +44,7 @@ typedef struct _SECDESK_PROMPT
     HANDLE hEnd;        /* set by End, or by Begin when it gave up waiting */
     HANDLE hReady;      /* set by the thread once switched, or once it gave up */
     DWORD TimeoutMs;
+    DWORD Generation;   /* the session's generation when this prompt took the slot */
     BOOL Switched;
 } SECDESK_PROMPT, *PSECDESK_PROMPT;
 
@@ -133,6 +136,8 @@ SecDeskClear(
     Session->SecurePromptBrokerPid = 0;
     Session->SecurePromptTimeoutMs = 0;
     Session->SecurePromptStart = 0;
+    Session->SecurePromptGeneration++;
+    SetEvent(SecDeskIdleEvent);
 }
 
 static
@@ -303,6 +308,29 @@ Failed:
     return 0;
 }
 
+/* A lock, a logoff or a SAS that arrives while a prompt is up ends the prompt and
+ * waits until the prompt thread has returned, so that its own switch is not undone
+ * by the thread's return a moment later. Returns at once when no prompt is held. */
+VOID
+SecDeskEndPromptAndWait(
+    _In_ PWLSESSION Session)
+{
+    if (!SecDeskIdleEvent)
+        return;
+
+    EnterCriticalSection(&SecDeskLock);
+    if (Session->SecurePromptBroker)
+    {
+        ERR("Secure-desktop prompt of %lu ended by the session (SAS, lock or logoff)\n", Session->SecurePromptBrokerPid);
+        SetEvent(Session->SecurePromptEnd);
+    }
+    LeaveCriticalSection(&SecDeskLock);
+
+    /* The thread returns within the broker's timeout plus slack at the latest */
+    if (WaitForSingleObject(SecDeskIdleEvent, SECDESK_MAX_TIMEOUT_MS + 2 * SECDESK_WATCHDOG_SLACK_MS) != WAIT_OBJECT_0)
+        ERR("Secure-desktop prompt thread did not return; going on\n");
+}
+
 BOOL
 StartSecureDesktopServer(VOID)
 {
@@ -312,6 +340,12 @@ StartSecureDesktopServer(VOID)
     RPC_STATUS Status;
 
     InitializeCriticalSection(&SecDeskLock);
+    SecDeskIdleEvent = CreateEventW(NULL, TRUE, TRUE, NULL);
+    if (!SecDeskIdleEvent)
+    {
+        ERR("Secure-desktop idle event failed (error %lu); no secure-desktop prompts in this session\n", GetLastError());
+        return TRUE;
+    }
 
     wc.lpfnWndProc = SecDeskBackdropProc;
     wc.hInstance = hAppInstance;
@@ -374,6 +408,9 @@ WlSecureDesktopBegin(
         return Error;
     }
 
+    if (!SecDeskIdleEvent)
+        return ERROR_NOT_READY;
+
     if (dwTimeoutMs < SECDESK_MIN_TIMEOUT_MS || dwTimeoutMs > SECDESK_MAX_TIMEOUT_MS)
         return ERROR_INVALID_PARAMETER;
 
@@ -426,6 +463,8 @@ WlSecureDesktopBegin(
     Session->SecurePromptBrokerPid = Pid;
     Session->SecurePromptTimeoutMs = dwTimeoutMs;
     Session->SecurePromptStart = GetTickCount();
+    ResetEvent(SecDeskIdleEvent);
+    Prompt->Generation = Session->SecurePromptGeneration;
 
     LeaveCriticalSection(&SecDeskLock);
 
@@ -463,8 +502,8 @@ WlSecureDesktopBegin(
          * switched for a moment */
         ERR("Secure-desktop prompt thread did not switch in time\n");
         EnterCriticalSection(&SecDeskLock);
-        if (Session->SecurePromptEnd == hEnd)
-            SetEvent(hEnd);
+        if (Session->SecurePromptBroker && Session->SecurePromptGeneration == Prompt->Generation)
+            SetEvent(Session->SecurePromptEnd);
         LeaveCriticalSection(&SecDeskLock);
         Switched = FALSE;
     }

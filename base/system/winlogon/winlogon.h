@@ -247,6 +247,7 @@ typedef struct _WLSESSION
     DWORD SecurePromptBrokerPid;
     DWORD SecurePromptTimeoutMs;
     DWORD SecurePromptStart; /* GetTickCount at Begin */
+    DWORD SecurePromptGeneration; /* bumped at every clear */
     LARGE_INTEGER LastLogon;
 
     /* Screen-saver informations */
@@ -342,6 +343,10 @@ StartRpcServer(VOID);
 /* secdesk.c */
 BOOL
 StartSecureDesktopServer(VOID);
+
+VOID
+SecDeskEndPromptAndWait(
+    IN PWLSESSION Session);
 
 /* sas.c */
 extern LUID LuidNone;
