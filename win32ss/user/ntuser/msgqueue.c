@@ -2336,7 +2336,9 @@ co_MsqPeekHardwareMessage(IN PTHREADINFO pti,
              {
                 MsqDestroyMessage(CurrentMessage);
                 ClearMsgBitsMask(pti, QS_Flags);
-                if (ptiTransfer && dwQEvent != HWMSG_TRANSFERRED)
+                /* A message aimed at this thread's window is not handed up to a thread above it */
+                if (ptiTransfer && dwQEvent != HWMSG_TRANSFERRED &&
+                    IntUipiIsThreadAllowed(pti->ppi, ptiTransfer, NULL))
                    MsqPostMessageEx(ptiTransfer, &msgOrig, TRUE, QS_Flags, HWMSG_TRANSFERRED, ExtraInfo, &Source);
              }
          }

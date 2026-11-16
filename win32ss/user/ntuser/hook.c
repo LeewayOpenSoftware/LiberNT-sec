@@ -1361,6 +1361,8 @@ co_HOOK_CallHooks( INT HookId,
                 TRACE("\nGlobal Hook posting to another Thread! %d\n",HookId );
                 Result = co_IntCallLowLevelHook(Hook, Code, wParam, lParam);
              }
+             /* A hook of another process is not called here; the day it is, the integrity
+              * test (IntUipiIsThreadAllowed of ptiHook->ppi against pti) must come with it */
              else if (ptiHook->ppi == pti->ppi)
              {
                 TRACE("\nGlobal Hook calling to another Thread! %d\n",HookId );
