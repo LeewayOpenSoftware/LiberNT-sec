@@ -11,6 +11,7 @@
 
 #include <seclogon_s.h>
 #include <wlsecdesk_c.h>
+#include <consentproto.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(seclogon);
 
@@ -1521,6 +1522,267 @@ done:
     return dwError;
 }
 
+/* The groups of a token: Administrators present and enabled */
+static
+BOOL
+TokenHasEnabledAdministrators(
+    _In_ HANDLE hToken)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    PTOKEN_GROUPS Groups = NULL;
+    PSID AdminsSid = NULL;
+    DWORD Length = 0, i;
+    BOOL Found = FALSE;
+
+    GetTokenInformation(hToken, TokenGroups, NULL, 0, &Length);
+    if (Length == 0 || (Groups = HeapAlloc(GetProcessHeap(), 0, Length)) == NULL)
+        return FALSE;
+    if (GetTokenInformation(hToken, TokenGroups, Groups, Length, &Length) &&
+        AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+                                 0, 0, 0, 0, 0, 0, &AdminsSid))
+    {
+        for (i = 0; i < Groups->GroupCount && !Found; i++)
+        {
+            Found = (Groups->Groups[i].Attributes & SE_GROUP_ENABLED) &&
+                    !(Groups->Groups[i].Attributes & SE_GROUP_USE_FOR_DENY_ONLY) &&
+                    EqualSid(Groups->Groups[i].Sid, AdminsSid);
+        }
+        FreeSid(AdminsSid);
+    }
+    HeapFree(GetProcessHeap(), 0, Groups);
+    return Found;
+}
+
+/* The token a logon will really run with (the linked one when the logon is split),
+ * accepted only if it is an administrator's */
+static
+DWORD
+AdministratorTokenOfLogon(
+    _In_ HANDLE hLogon,
+    _Out_ PHANDLE phUse)
+{
+    TOKEN_LINKED_TOKEN LogonLinked = { NULL };
+    DWORD Type = 0, Length;
+    HANDLE hUse = hLogon;
+
+    *phUse = NULL;
+    if (GetTokenDword(hLogon, TokenElevationType, &Type) && Type == TokenElevationTypeLimited)
+    {
+        if (!GetTokenInformation(hLogon, TokenLinkedToken, &LogonLinked, sizeof(LogonLinked), &Length) ||
+            LogonLinked.LinkedToken == NULL)
+        {
+            return ERROR_ACCESS_DENIED;
+        }
+        hUse = LogonLinked.LinkedToken;
+    }
+    if (!TokenHasEnabledAdministrators(hUse))
+    {
+        if (hUse != hLogon)
+            CloseHandle(hUse);
+        return ERROR_ACCESS_DENIED;
+    }
+    *phUse = hUse;
+    return ERROR_SUCCESS;
+}
+
+static INIT_ONCE ConsentInheritInit = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION ConsentInheritLock;
+
+static
+BOOL
+CALLBACK
+InitConsentInheritLock(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context)
+{
+    InitializeCriticalSection(&ConsentInheritLock);
+    return TRUE;
+}
+
+#define SECL_CREDENTIAL_TRIES 3
+
+static
+VOID
+SendVerdict(
+    _In_ HANDLE hVerdict,
+    _In_ CONSENT_VERDICT Verdict)
+{
+    ULONG Value = Verdict;
+    DWORD Written;
+    WriteFile(hVerdict, &Value, sizeof(Value), &Written, NULL);
+}
+
+/* Waits for one whole record, or for consent to be gone, within the prompt's timeout */
+static
+BOOL
+ReadRecord(
+    _In_ HANDLE hRecord,
+    _In_ HANDLE hConsent,
+    _In_ DWORD Start,
+    _Out_ PCONSENT_CREDENTIAL_RECORD Record)
+{
+    DWORD Available, Read;
+
+    for (;;)
+    {
+        if (!PeekNamedPipe(hRecord, NULL, 0, NULL, &Available, NULL))
+            return FALSE;
+        if (Available >= sizeof(*Record))
+            break;
+        if (WaitForSingleObject(hConsent, 100) == WAIT_OBJECT_0 ||
+            GetTickCount() - Start > CONSENT_TIMEOUT_MS)
+        {
+            return FALSE;
+        }
+    }
+    if (!ReadFile(hRecord, Record, sizeof(*Record), &Read, NULL) || Read != sizeof(*Record))
+        return FALSE;
+    /* Nothing from consent is trusted for its shape, SYSTEM or not */
+    if (Record->Magic != CONSENT_RECORD_MAGIC ||
+        Record->UserLength >= CONSENT_MAX_USER || Record->DomainLength >= CONSENT_MAX_DOMAIN ||
+        Record->PasswordLength >= CONSENT_MAX_PASSWORD)
+    {
+        return FALSE;
+    }
+    Record->User[Record->UserLength] = UNICODE_NULL;
+    Record->Domain[Record->DomainLength] = UNICODE_NULL;
+    Record->Password[Record->PasswordLength] = UNICODE_NULL;
+    return TRUE;
+}
+
+/* consent.exe in its credentials mode: the record pipe carries the typed credentials to
+ * this service, the verdict pipe its answer; only this service logs on and counts the
+ * tries. Only the consent process inherits its two ends, under one lock, because this
+ * is the only process start of the service with handle inheritance on. */
+static
+DWORD
+AskCredentials(
+    _In_ DWORD SessionId,
+    _In_ PCWSTR DesktopPath,
+    _In_ PCWSTR Account,
+    _In_ PCWSTR FinalPath,
+    _In_ PCWSTR CommandLine,
+    _In_ DWORD_PTR hwndOwner,
+    _Out_ PHANDLE phToken,
+    _Out_ PBOOL Allowed)
+{
+    SECURITY_ATTRIBUTES NoInherit = { sizeof(SECURITY_ATTRIBUTES), NULL, FALSE };
+    HANDLE hSelf = NULL, hSystem = NULL, hRecRead = NULL, hRecWrite = NULL, hVerRead = NULL, hVerWrite = NULL;
+    STARTUPINFOW StartupInfo = { sizeof(StartupInfo) };
+    PROCESS_INFORMATION ProcessInfo = { 0 };
+    CONSENT_CREDENTIAL_RECORD Record;
+    WCHAR Exe[MAX_PATH];
+    PWSTR Cmd = NULL;
+    SIZE_T CmdChars;
+    DWORD Start, Tries, dwError = ERROR_SUCCESS;
+    HANDLE hLogon, hUse;
+
+    *phToken = NULL;
+    *Allowed = FALSE;
+    InitOnceExecuteOnce(&ConsentInheritInit, InitConsentInheritLock, NULL, NULL);
+
+    if (!GetSystemDirectoryW(Exe, _countof(Exe)) ||
+        FAILED(StringCchCatW(Exe, _countof(Exe), L"\\consent.exe")))
+    {
+        return ERROR_BAD_PATHNAME;
+    }
+
+    if (!CreatePipe(&hRecRead, &hRecWrite, &NoInherit, sizeof(Record)) ||
+        !CreatePipe(&hVerRead, &hVerWrite, &NoInherit, sizeof(ULONG)) ||
+        !SetHandleInformation(hRecWrite, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) ||
+        !SetHandleInformation(hVerRead, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+    {
+        dwError = GetLastError();
+        goto done;
+    }
+
+    CmdChars = wcslen(Exe) + wcslen(Account) + wcslen(FinalPath) + (CommandLine ? wcslen(CommandLine) : 0) + 96;
+    Cmd = HeapAlloc(GetProcessHeap(), 0, CmdChars * sizeof(WCHAR));
+    if (Cmd == NULL)
+    {
+        dwError = ERROR_NOT_ENOUGH_MEMORY;
+        goto done;
+    }
+    StringCchPrintfW(Cmd, CmdChars, L"\"%ls\" %Ix \"%ls\" \"%ls\" /cred:%Iu,%Iu %ls", Exe, hwndOwner, Account, FinalPath,
+                     (ULONG_PTR)hRecWrite, (ULONG_PTR)hVerRead, CommandLine ? CommandLine : L"");
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &hSelf) ||
+        !DuplicateTokenEx(hSelf, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenPrimary, &hSystem) ||
+        !SetTokenInformation(hSystem, TokenSessionId, &SessionId, sizeof(SessionId)))
+    {
+        dwError = GetLastError();
+        goto done;
+    }
+
+    StartupInfo.lpDesktop = (LPWSTR)DesktopPath;
+    EnterCriticalSection(&ConsentInheritLock);
+    if (!CreateProcessAsUserW(hSystem, Exe, Cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT,
+                              NULL, NULL, &StartupInfo, &ProcessInfo))
+    {
+        dwError = GetLastError();
+    }
+    /* The service's copies of consent's ends go at once, so nothing else can inherit them */
+    CloseHandle(hRecWrite);
+    hRecWrite = NULL;
+    CloseHandle(hVerRead);
+    hVerRead = NULL;
+    LeaveCriticalSection(&ConsentInheritLock);
+    if (dwError != ERROR_SUCCESS)
+        goto done;
+
+    Start = GetTickCount();
+    for (Tries = 0; Tries < SECL_CREDENTIAL_TRIES; )
+    {
+        if (!ReadRecord(hRecRead, ProcessInfo.hProcess, Start, &Record))
+            break; /* consent gone, timeout, or a malformed record: a decline */
+        if (Record.Answer != IDYES)
+        {
+            SecureZeroMemory(&Record, sizeof(Record));
+            break; /* the user declined */
+        }
+        if (!LogonUser(Record.User, Record.DomainLength ? Record.Domain : NULL, Record.Password,
+                       LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hLogon))
+        {
+            SecureZeroMemory(&Record, sizeof(Record));
+            Tries++;
+            SendVerdict(hVerWrite, Tries < SECL_CREDENTIAL_TRIES ? ConsentVerdictWrongPassword : ConsentVerdictRefused);
+            continue;
+        }
+        SecureZeroMemory(&Record, sizeof(Record));
+        if (AdministratorTokenOfLogon(hLogon, &hUse) != ERROR_SUCCESS)
+        {
+            CloseHandle(hLogon);
+            Tries++;
+            SendVerdict(hVerWrite, Tries < SECL_CREDENTIAL_TRIES ? ConsentVerdictCannotApprove : ConsentVerdictRefused);
+            continue;
+        }
+        if (hUse != hLogon)
+            CloseHandle(hLogon);
+        *phToken = hUse;
+        *Allowed = TRUE;
+        SendVerdict(hVerWrite, ConsentVerdictOk);
+        break;
+    }
+    if (Tries >= SECL_CREDENTIAL_TRIES)
+        dwError = ERROR_ACCESS_DENIED;
+
+    if (WaitForSingleObject(ProcessInfo.hProcess, 5000) != WAIT_OBJECT_0)
+    {
+        TerminateProcess(ProcessInfo.hProcess, IDNO);
+        WaitForSingleObject(ProcessInfo.hProcess, 5000);
+    }
+    CloseHandle(ProcessInfo.hThread);
+    CloseHandle(ProcessInfo.hProcess);
+
+done:
+    if (hRecRead != NULL) CloseHandle(hRecRead);
+    if (hRecWrite != NULL) CloseHandle(hRecWrite);
+    if (hVerRead != NULL) CloseHandle(hVerRead);
+    if (hVerWrite != NULL) CloseHandle(hVerWrite);
+    if (hSystem != NULL) CloseHandle(hSystem);
+    if (hSelf != NULL) CloseHandle(hSelf);
+    if (Cmd != NULL) HeapFree(GetProcessHeap(), 0, Cmd);
+    return dwError;
+}
+
 void
 __stdcall
 SeclCreateProcessElevatedW(
@@ -1667,10 +1929,7 @@ SeclCreateProcessElevatedW(
             goto done;
         }
         if (Credentials)
-        {
-            /* The exchange with consent.exe arrives with the next commit */
-            dwError = ERROR_ELEVATION_REQUIRED;
-        }
+            dwError = AskCredentials(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &hElevated, &Allowed);
         else
             dwError = AskConsent(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
         /* consent.exe is gone here on every path (AskConsent waits for it or ends it) */
