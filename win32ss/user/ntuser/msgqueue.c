@@ -793,6 +793,13 @@ co_MsqInsertMouseMessage(MSG* Msg, DWORD flags, ULONG_PTR dwExtraInfo, BOOL Hook
           return TRUE;
        }
 
+       /* An injected mouse message stops here when its window is above the injector */
+       if ((flags & LLMHF_INJECTED) &&
+           !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, pti, pwnd))
+       {
+          return TRUE;
+       }
+
        MessageQueue->ptiMouse = pti;
 
        if (Msg->message == WM_MOUSEMOVE)
@@ -2329,7 +2336,9 @@ co_MsqPeekHardwareMessage(IN PTHREADINFO pti,
              {
                 MsqDestroyMessage(CurrentMessage);
                 ClearMsgBitsMask(pti, QS_Flags);
-                if (ptiTransfer && dwQEvent != HWMSG_TRANSFERRED)
+                /* A message aimed at this thread's window is not handed up to a thread above it */
+                if (ptiTransfer && dwQEvent != HWMSG_TRANSFERRED &&
+                    IntUipiIsThreadAllowed(pti->ppi, ptiTransfer, NULL))
                    MsqPostMessageEx(ptiTransfer, &msgOrig, TRUE, QS_Flags, HWMSG_TRANSFERRED, ExtraInfo, &Source);
              }
          }

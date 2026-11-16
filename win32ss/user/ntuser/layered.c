@@ -490,6 +490,9 @@ NtUserSetLayeredWindowAttributes(HWND hwnd,
       goto Exit;
    }
 
+   if (!IntUipiCheckWindowChange(pWnd))
+      goto Exit;
+
    Ret = IntSetLayeredWindowAttributes(pWnd, crKey, bAlpha, dwFlags);
 Exit:
    TRACE("Leave NtUserSetLayeredWindowAttributes, ret=%i\n", Ret);

@@ -2784,7 +2784,7 @@ IntGetProcessIntegrity(PEPROCESS Process)
     return Rid;
 }
 
-static ULONG FASTCALL
+ULONG FASTCALL
 IntUipiGetTargetIntegrity(PPROCESSINFO ppiTarget, PWND Window)
 {
     PEPROCESS Process;
@@ -2804,6 +2804,26 @@ IntUipiGetTargetIntegrity(PPROCESSINFO ppiTarget, PWND Window)
         }
     }
     return IntGetProcessIntegrity(ppiTarget->peProcess);
+}
+
+/* The caller may drive the target thread's input (injected input, a hook on it, an attach):
+ * its integrity is not below the target's, or its token carries UIAccess */
+BOOL FASTCALL
+IntUipiIsThreadAllowed(PPROCESSINFO ppiCaller, PTHREADINFO ptiTarget, PWND Window)
+{
+    PTOKEN Token;
+    BOOLEAN UiAccess;
+
+    if (!ppiCaller || !ptiTarget || !ptiTarget->ppi || ppiCaller == ptiTarget->ppi)
+        return TRUE;
+    if (IntGetProcessIntegrity(ppiCaller->peProcess) >= IntUipiGetTargetIntegrity(ptiTarget->ppi, Window))
+        return TRUE;
+    if (!ppiCaller->peProcess)
+        return FALSE;
+    Token = PsReferencePrimaryToken(ppiCaller->peProcess);
+    UiAccess = !!(Token->TokenFlags & TOKEN_UIACCESS);
+    PsDereferencePrimaryToken(Token);
+    return UiAccess;
 }
 
 static PUSER_MSG_FILTER
@@ -2952,6 +2972,19 @@ IntUipiCheckWindow(HWND hWnd, UINT Msg)
     if (!Window)
         return TRUE;
     if (!IntUipiIsAllowed(gptiCurrent ? gptiCurrent->ppi : NULL, Window->head.pti->ppi, Window, Msg))
+    {
+        EngSetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* The window-changing calls (show, enable, move, text, styles, region, placement,
+ * properties): a window of a process above the caller is not changed from below */
+BOOL FASTCALL
+IntUipiCheckWindowChange(PWND Window)
+{
+    if (!IntUipiIsThreadAllowed(gptiCurrent ? gptiCurrent->ppi : NULL, Window->head.pti, Window))
     {
         EngSetLastError(ERROR_ACCESS_DENIED);
         return FALSE;

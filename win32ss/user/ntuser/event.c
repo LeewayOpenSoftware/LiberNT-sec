@@ -218,7 +218,13 @@ IntNotifyWinEvent(
                 pEH->head.pti->rpdesk != ptiCurrent->rpdesk ) ) // Same as hooks.
         {
            UserRefObjectCo(pEH, &Ref);
-           if (pEH->Flags & WINEVENT_INCONTEXT)
+           if ((pEH->Flags & WINEVENT_INCONTEXT) &&
+               !IntUipiIsThreadAllowed(pEH->head.pti->ppi, ptiCurrent, NULL))
+           {
+              /* This thread does not load the module of an event hook set from below it */
+              TRACE("In-context event hook of a lower thread skipped, Event 0x%x\n", Event);
+           }
+           else if (pEH->Flags & WINEVENT_INCONTEXT)
            {
               TRACE("In       Event 0x%x, idObject %d hwnd %p\n", Event, idObject, pWnd ? UserHMGetHandle(pWnd) : NULL);
               co_IntCallEventProc( UserHMGetHandle(pEH),

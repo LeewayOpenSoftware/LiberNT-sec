@@ -1257,6 +1257,18 @@ IntSetOwner(HWND hWnd, HWND hWndNewOwner)
       goto Error;
    }
 
+   /* An owner above the window's thread or the caller would share its input queue with them,
+    * and a caller below the window may not change its owner */
+   if ((WndNewOwner &&
+        (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewOwner->head.pti, WndNewOwner) ||
+         !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewOwner->head.pti, WndNewOwner))) ||
+       !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, Wnd->head.pti, Wnd))
+   {
+      EngSetLastError(ERROR_ACCESS_DENIED);
+      ret = NULL;
+      goto Error;
+   }
+
    /* if parent belongs to a different thread and the window isn't */
    /* top-level, attach the two threads */
    IntProcessOwnerSwap(Wnd, WndNewOwner, WndOldOwner);
@@ -1322,6 +1334,17 @@ co_IntSetParent(PWND Wnd, PWND WndNewParent)
        NTUSER_DPI_CONTEXT_GET_AWARENESS(Wnd->DpiContext) != NTUSER_DPI_CONTEXT_GET_AWARENESS(WndNewParent->DpiContext))
    {
       EngSetLastError(ERROR_INVALID_STATE);
+      return NULL;
+   }
+
+   /* A parent above the window's thread or the caller would share its input queue with them,
+    * and a caller below the window may not move it */
+   if ((!UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent) &&
+        (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewParent->head.pti, WndNewParent) ||
+         !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewParent->head.pti, WndNewParent))) ||
+       !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, Wnd->head.pti, Wnd))
+   {
+      EngSetLastError(ERROR_ACCESS_DENIED);
       return NULL;
    }
 
@@ -2570,6 +2593,16 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
                  OwnerWindow = OwnerWindow->spwndParent;
        }
     }
+
+   /* An owner or a parent above the creator would share its input queue with it */
+   if ((OwnerWindow && !IntUipiIsThreadAllowed(pti->ppi, OwnerWindow->head.pti, OwnerWindow)) ||
+       (ParentWindow && !UserIsDesktopWindow(ParentWindow) && !UserIsMessageWindow(ParentWindow) &&
+        !IntUipiIsThreadAllowed(pti->ppi, ParentWindow->head.pti, ParentWindow)))
+   {
+       EngSetLastError(ERROR_ACCESS_DENIED);
+       ParentWindow = NULL; /* not referenced yet, cleanup must not release it */
+       goto cleanup;
+   }
 
    /* Fix the position and the size of the window */
    if (ParentWindow)
@@ -4306,6 +4339,12 @@ co_IntSetWindowLongPtr(HWND hWnd, DWORD Index, LONG_PTR NewValue, BOOL Ansi, ULO
 
    UserRefObjectCo(Window, &Ref);
 
+   if (!IntUipiCheckWindowChange(Window))
+   {
+      OldValue = 0;
+      goto Exit;
+   }
+
    if ((INT)Index >= 0)
    {
       if ((Index + Size) > Window->cbwndExtra)
@@ -5000,7 +5039,7 @@ NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
 
    UserEnterExclusive();
 
-   if(!(Wnd = UserGetWindowObject(hWnd)))
+   if(!(Wnd = UserGetWindowObject(hWnd)) || !IntUipiCheckWindowChange(Wnd))
    {
       UserLeave();
       return FALSE;

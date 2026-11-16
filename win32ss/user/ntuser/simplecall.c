@@ -893,8 +893,12 @@ NtUserCallTwoParam(
         }
 
         case TWOPARAM_ROUTINE_ENABLEWINDOW:
-            Ret = IntEnableWindow((HWND)Param1, (BOOL)Param2);
+        {
+            /* IntEnableWindow is shared with win32k's own callers; the caller is judged here */
+            PWND pWnd = UserGetWindowObject((HWND)Param1);
+            Ret = pWnd && IntUipiCheckWindowChange(pWnd) && IntEnableWindow((HWND)Param1, (BOOL)Param2);
             break;
+        }
 
         case TWOPARAM_ROUTINE_SHOWOWNEDPOPUPS:
         {

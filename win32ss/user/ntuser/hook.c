@@ -10,6 +10,9 @@
  */
 
 #include <win32k.h>
+
+/* msgqueue.c; declared the same way where it is used elsewhere */
+PWND FASTCALL IntTopLevelWindowFromPoint(INT x, INT y);
 DBG_DEFAULT_CHANNEL(UserHook);
 
 typedef struct _HOOKPACK
@@ -1196,6 +1199,10 @@ co_HOOK_CallHooks( INT HookId,
     BOOL Local = FALSE, Global = FALSE;
     LRESULT Result = 0;
     USER_REFERENCE_ENTRY Ref;
+    PTHREADINFO ptiLLTarget = NULL; /* the thread that receives this low-level input */
+    PWND pwndLLTarget = NULL;
+    PTHREADINFO ptiLLForeground = NULL; /* mouse: the thread that holds the foreground */
+    PWND pwndLLForeground = NULL;
 
     ASSERT(WH_MINHOOK <= HookId && HookId <= WH_MAXHOOK);
 
@@ -1233,6 +1240,43 @@ co_HOOK_CallHooks( INT HookId,
     {
        TRACE("Global Hooker %d\n", HookId);
        Global = TRUE;
+    }
+
+    /* Low-level input is not shown to a hook of a process below the thread that
+     * receives it: for a key the focus window of the active queue, for the mouse
+     * the capture window or the window under the cursor, and the foreground window */
+    if (HookId == WH_KEYBOARD_LL)
+    {
+       PUSER_MESSAGE_QUEUE pQueue = IntGetFocusMessageQueue();
+       if (pQueue)
+       {
+          pwndLLTarget = pQueue->spwndFocus ? pQueue->spwndFocus : pQueue->spwndActive;
+          ptiLLTarget = pwndLLTarget ? pwndLLTarget->head.pti : pQueue->ptiKeyboard;
+       }
+    }
+    else if (HookId == WH_MOUSE_LL && lParam)
+    {
+       PMSLLHOOKSTRUCT pMouse = (PMSLLHOOKSTRUCT)lParam;
+       HWND hwndCapture = IntGetCaptureWindow();
+       PUSER_MESSAGE_QUEUE pfgQueue;
+       pwndLLTarget = hwndCapture ? UserGetWindowObject(hwndCapture) : NULL;
+       /* The top-level window is enough: its children belong to the same thread */
+       if (!pwndLLTarget)
+          pwndLLTarget = IntTopLevelWindowFromPoint(pMouse->pt.x, pMouse->pt.y);
+       /* An empty area gives the desktop window: nothing receives the event there */
+       if (pwndLLTarget && UserIsDesktopWindow(pwndLLTarget))
+          pwndLLTarget = NULL;
+       ptiLLTarget = pwndLLTarget ? pwndLLTarget->head.pti : NULL;
+
+       /* A higher-integrity foreground window (the consent prompt) hides the whole mouse
+        * stream from a lower hook, as Windows does; the point target alone misses the moves
+        * that land just off the window - its shaped corners or shadow - while it is foreground */
+       pfgQueue = IntGetFocusMessageQueue();
+       if (pfgQueue)
+       {
+          pwndLLForeground = pfgQueue->spwndActive ? pfgQueue->spwndActive : pfgQueue->spwndFocus;
+          ptiLLForeground = pwndLLForeground ? pwndLLForeground->head.pti : NULL;
+       }
     }
 
     if ( !Local && !Global ) goto Exit; // No work!
@@ -1346,6 +1390,17 @@ co_HOOK_CallHooks( INT HookId,
              TRACE("Next Hook %p, %p\n", ptiHook->rpdesk, pdo);
              continue;
           }
+
+          /* Skipped silently; the chain goes on with the next hook */
+          if ((HookId == WH_KEYBOARD_LL &&
+               !IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLTarget, pwndLLTarget)) ||
+              (HookId == WH_MOUSE_LL &&
+               (!IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLTarget, pwndLLTarget) ||
+                !IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLForeground, pwndLLForeground))))
+          {
+             TRACE("Low-level hook of a lower process not shown this input\n");
+             continue;
+          }
           UserRefObjectCo(Hook, &Ref);
 
           if (ptiHook != pti )
@@ -1361,6 +1416,8 @@ co_HOOK_CallHooks( INT HookId,
                 TRACE("\nGlobal Hook posting to another Thread! %d\n",HookId );
                 Result = co_IntCallLowLevelHook(Hook, Code, wParam, lParam);
              }
+             /* A hook of another process is not called here; the day it is, the integrity
+              * test (IntUipiIsThreadAllowed of ptiHook->ppi against pti) must come with it */
              else if (ptiHook->ppi == pti->ppi)
              {
                 TRACE("\nGlobal Hook calling to another Thread! %d\n",HookId );
@@ -1600,6 +1657,13 @@ NtUserSetWindowsHookEx( HINSTANCE Mod,
 
        if (ptiHook->ppi != pti->ppi)
        {
+          /* The hook's module would be loaded by that thread */
+          if (!IntUipiIsThreadAllowed(pti->ppi, ptiHook, NULL))
+          {
+             EngSetLastError(ERROR_ACCESS_DENIED);
+             goto Cleanup; // Return NULL
+          }
+
           if ( !Mod &&
               (HookId == WH_GETMESSAGE ||
                HookId == WH_CALLWNDPROC ||

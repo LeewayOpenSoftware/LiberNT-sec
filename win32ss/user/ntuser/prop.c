@@ -248,6 +248,11 @@ NtUserRemoveProp(
         goto Exit;
     }
 
+    if (!IntUipiCheckWindowChange(Window))
+    {
+        goto Exit;
+    }
+
     Data = UserRemoveProp(Window, Atom, FALSE);
     if (Data != NULL && IntCompositionIsFrameAtom(Atom))
         IntCompositionDamageWindowMetadata(Window);
@@ -275,6 +280,12 @@ NtUserSetProp(
 
     Window = UserGetWindowObject(hWnd);
     if (Window == NULL)
+    {
+        Ret = FALSE;
+        goto Exit;
+    }
+
+    if (!IntUipiCheckWindowChange(Window))
     {
         Ret = FALSE;
         goto Exit;
