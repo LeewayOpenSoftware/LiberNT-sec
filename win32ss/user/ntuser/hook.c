@@ -10,6 +10,9 @@
  */
 
 #include <win32k.h>
+
+/* msgqueue.c; declared the same way where it is used elsewhere */
+PWND FASTCALL IntTopLevelWindowFromPoint(INT x, INT y);
 DBG_DEFAULT_CHANNEL(UserHook);
 
 typedef struct _HOOKPACK
@@ -1196,6 +1199,8 @@ co_HOOK_CallHooks( INT HookId,
     BOOL Local = FALSE, Global = FALSE;
     LRESULT Result = 0;
     USER_REFERENCE_ENTRY Ref;
+    PTHREADINFO ptiLLTarget = NULL; /* the thread that receives this low-level input */
+    PWND pwndLLTarget = NULL;
 
     ASSERT(WH_MINHOOK <= HookId && HookId <= WH_MAXHOOK);
 
@@ -1233,6 +1238,29 @@ co_HOOK_CallHooks( INT HookId,
     {
        TRACE("Global Hooker %d\n", HookId);
        Global = TRUE;
+    }
+
+    /* Low-level input is not shown to a hook of a process below the thread that
+     * receives it: for a key the focus window of the active queue, for the mouse
+     * the capture window or the window under the cursor of this event */
+    if (HookId == WH_KEYBOARD_LL)
+    {
+       PUSER_MESSAGE_QUEUE pQueue = IntGetFocusMessageQueue();
+       if (pQueue)
+       {
+          pwndLLTarget = pQueue->spwndFocus ? pQueue->spwndFocus : pQueue->spwndActive;
+          ptiLLTarget = pwndLLTarget ? pwndLLTarget->head.pti : pQueue->ptiKeyboard;
+       }
+    }
+    else if (HookId == WH_MOUSE_LL && lParam)
+    {
+       PMSLLHOOKSTRUCT pMouse = (PMSLLHOOKSTRUCT)lParam;
+       HWND hwndCapture = IntGetCaptureWindow();
+       pwndLLTarget = hwndCapture ? UserGetWindowObject(hwndCapture) : NULL;
+       /* The top-level window is enough: its children belong to the same thread */
+       if (!pwndLLTarget)
+          pwndLLTarget = IntTopLevelWindowFromPoint(pMouse->pt.x, pMouse->pt.y);
+       ptiLLTarget = pwndLLTarget ? pwndLLTarget->head.pti : NULL;
     }
 
     if ( !Local && !Global ) goto Exit; // No work!
@@ -1344,6 +1372,14 @@ co_HOOK_CallHooks( INT HookId,
           if ( (pti->TIF_flags & TIF_DISABLEHOOKS) || (ptiHook->TIF_flags & TIF_INCLEANUP))
           {
              TRACE("Next Hook %p, %p\n", ptiHook->rpdesk, pdo);
+             continue;
+          }
+
+          /* Skipped silently; the chain goes on with the next hook */
+          if ((HookId == WH_KEYBOARD_LL || HookId == WH_MOUSE_LL) &&
+              !IntUipiIsThreadAllowed(ptiHook->ppi, ptiLLTarget, pwndLLTarget))
+          {
+             TRACE("Low-level hook of a lower process not shown this input\n");
              continue;
           }
           UserRefObjectCo(Hook, &Ref);
