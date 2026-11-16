@@ -1257,6 +1257,16 @@ IntSetOwner(HWND hWnd, HWND hWndNewOwner)
       goto Error;
    }
 
+   /* An owner above the window's thread or the caller would share its input queue with them */
+   if (WndNewOwner &&
+       (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewOwner->head.pti, NULL) ||
+        !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewOwner->head.pti, NULL)))
+   {
+      EngSetLastError(ERROR_ACCESS_DENIED);
+      ret = NULL;
+      goto Error;
+   }
+
    /* if parent belongs to a different thread and the window isn't */
    /* top-level, attach the two threads */
    IntProcessOwnerSwap(Wnd, WndNewOwner, WndOldOwner);
@@ -1322,6 +1332,15 @@ co_IntSetParent(PWND Wnd, PWND WndNewParent)
        NTUSER_DPI_CONTEXT_GET_AWARENESS(Wnd->DpiContext) != NTUSER_DPI_CONTEXT_GET_AWARENESS(WndNewParent->DpiContext))
    {
       EngSetLastError(ERROR_INVALID_STATE);
+      return NULL;
+   }
+
+   /* A parent above the window's thread or the caller would share its input queue with them */
+   if (!UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent) &&
+       (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewParent->head.pti, NULL) ||
+        !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewParent->head.pti, NULL)))
+   {
+      EngSetLastError(ERROR_ACCESS_DENIED);
       return NULL;
    }
 
@@ -2570,6 +2589,15 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
                  OwnerWindow = OwnerWindow->spwndParent;
        }
     }
+
+   /* An owner or a parent above the creator would share its input queue with it */
+   if ((OwnerWindow && !IntUipiIsThreadAllowed(pti->ppi, OwnerWindow->head.pti, NULL)) ||
+       (ParentWindow && !UserIsDesktopWindow(ParentWindow) && !UserIsMessageWindow(ParentWindow) &&
+        !IntUipiIsThreadAllowed(pti->ppi, ParentWindow->head.pti, NULL)))
+   {
+       EngSetLastError(ERROR_ACCESS_DENIED);
+       goto cleanup;
+   }
 
    /* Fix the position and the size of the window */
    if (ParentWindow)
