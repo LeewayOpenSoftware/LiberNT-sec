@@ -458,6 +458,83 @@ WatchDesktopGrant(
     return TRUE;
 }
 
+/* A profile loaded for a started process stays loaded until that process ends: userenv
+ * drops the hive at a reference count of zero, and a process that has not opened HKCU
+ * yet holds no reference of its own */
+typedef struct _PROFILE_HOLD
+{
+    HANDLE hWait;
+    HANDLE hProcess;
+    HANDLE hToken;
+    HANDLE hProfile;
+    LONG Owners;
+} PROFILE_HOLD, *PPROFILE_HOLD;
+
+static
+VOID
+FinishProfileHold(
+    _In_ PPROFILE_HOLD Hold)
+{
+    if (InterlockedDecrement(&Hold->Owners) != 0)
+        return;
+    UnregisterWait(Hold->hWait);
+    UnloadUserProfile(Hold->hToken, Hold->hProfile);
+    CloseHandle(Hold->hToken);
+    CloseHandle(Hold->hProcess);
+    HeapFree(GetProcessHeap(), 0, Hold);
+}
+
+static
+VOID
+CALLBACK
+ProfileHoldProcessExited(
+    _In_ PVOID Context,
+    _In_ BOOLEAN TimedOut)
+{
+    UNREFERENCED_PARAMETER(TimedOut);
+    FinishProfileHold(Context);
+}
+
+/* Keeps hProfile (loaded on hToken) until hProcess exits; FALSE leaves it with the caller */
+static
+BOOL
+WatchProfile(
+    _In_ HANDLE hToken,
+    _In_ HANDLE hProfile,
+    _In_ HANDLE hProcess)
+{
+    PPROFILE_HOLD Hold;
+
+    Hold = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Hold));
+    if (Hold == NULL)
+        return FALSE;
+    if (!DuplicateHandle(GetCurrentProcess(), hProcess, GetCurrentProcess(), &Hold->hProcess,
+                         SYNCHRONIZE, FALSE, 0))
+    {
+        HeapFree(GetProcessHeap(), 0, Hold);
+        return FALSE;
+    }
+    if (!DuplicateHandle(GetCurrentProcess(), hToken, GetCurrentProcess(), &Hold->hToken,
+                         0, FALSE, DUPLICATE_SAME_ACCESS))
+    {
+        CloseHandle(Hold->hProcess);
+        HeapFree(GetProcessHeap(), 0, Hold);
+        return FALSE;
+    }
+    Hold->hProfile = hProfile;
+    Hold->Owners = 2;
+    if (!RegisterWaitForSingleObject(&Hold->hWait, Hold->hProcess, ProfileHoldProcessExited,
+                                     Hold, INFINITE, WT_EXECUTEONLYONCE))
+    {
+        CloseHandle(Hold->hToken);
+        CloseHandle(Hold->hProcess);
+        HeapFree(GetProcessHeap(), 0, Hold);
+        return FALSE;
+    }
+    FinishProfileHold(Hold);
+    return TRUE;
+}
+
 
 void __RPC_FAR * __RPC_USER midl_user_allocate(SIZE_T len)
 {
@@ -790,6 +867,8 @@ SeclCreateProcessWithLogonW(
 
     if (Grant && WatchDesktopGrant(Grant, ProcessInfo.hProcess))
         Grant = NULL;
+    if (ProfileInfo.hProfile != NULL && WatchProfile(hToken, ProfileInfo.hProfile, ProcessInfo.hProcess))
+        ProfileInfo.hProfile = NULL;
 
     /* Return process info to the caller */
     if (pResponse != NULL)
@@ -2018,6 +2097,8 @@ SeclCreateProcessElevatedW(
 
     if (Grant && WatchDesktopGrant(Grant, ProcessInfo.hProcess))
         Grant = NULL;
+    if (ProfileInfo.hProfile != NULL && WatchProfile(hElevated, ProfileInfo.hProfile, ProcessInfo.hProcess))
+        ProfileInfo.hProfile = NULL;
 
     /* The caller may wait for and query the process, nothing more */
     if (!DuplicateHandle(GetCurrentProcess(), ProcessInfo.hProcess, hCallerProcess,
