@@ -1260,6 +1260,9 @@ co_HOOK_CallHooks( INT HookId,
        /* The top-level window is enough: its children belong to the same thread */
        if (!pwndLLTarget)
           pwndLLTarget = IntTopLevelWindowFromPoint(pMouse->pt.x, pMouse->pt.y);
+       /* An empty area gives the desktop window: nothing receives the event there */
+       if (pwndLLTarget && UserIsDesktopWindow(pwndLLTarget))
+          pwndLLTarget = NULL;
        ptiLLTarget = pwndLLTarget ? pwndLLTarget->head.pti : NULL;
     }
 
