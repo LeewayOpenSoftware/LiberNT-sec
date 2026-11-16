@@ -250,11 +250,14 @@ static LRESULT CALLBACK KeyboardProc(int Code, WPARAM wParam, LPARAM lParam)
 static LRESULT CALLBACK MouseProc(int Code, WPARAM wParam, LPARAM lParam)
 {
     const MSLLHOOKSTRUCT *Mouse = (const MSLLHOOKSTRUCT *)lParam;
-    RECT Prompt;
 
-    /* Pointer movement and clicks by a person over the prompt, not the ones this program injects */
-    if (Code == HC_ACTION && !(Mouse->flags & LLMHF_INJECTED) && g_Consent &&
-        GetWindowRect(g_Consent, &Prompt) && PtInRect(&Prompt, Mouse->pt))
+    /* Pointer movement and clicks by a person over the prompt, not the ones this program injects.
+       Count only when the prompt is the top-level window actually UNDER the pointer - the real
+       'input over the prompt' condition, matching the keyboard leg's GetForegroundWindow check.
+       PtInRect was too coarse: it also counted moves whose top-level window was the requester
+       itself, which merely overlaps the prompt's rectangle during the creation race. */
+    if (Code == HC_ACTION && !(Mouse->flags & LLMHF_INJECTED) &&
+        g_Consent && GetAncestor(WindowFromPoint(Mouse->pt), GA_ROOT) == g_Consent)
         InterlockedIncrement(&g_MouseSeen);
     return CallNextHookEx(NULL, Code, wParam, lParam);
 }
@@ -345,6 +348,33 @@ static void ProbeP(void)
     /* The keyboard hook stays for the whole check; it counts keys a person types into the prompt */
     KeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandleW(NULL), 0);
     MouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseProc, GetModuleHandleW(NULL), 0);
+
+    /* P6 positive control: prove this Medium process's hit-test can actually resolve the prompt,
+       so a later mouse count of 0 means 'looked and saw none', not 'blind'. The P6 mouse leak
+       check relies on WindowFromPoint; if that cannot see the prompt from Medium, the mouse leg
+       would silently pass. Retry briefly to ride out the prompt's creation/Z-order race. */
+    if (MouseHook)
+    {
+        RECT PromptRect;
+        HWND HitRoot = NULL;
+        int i;
+        for (i = 0; i < 20; i++)
+        {
+            if (GetWindowRect(g_Consent, &PromptRect))
+            {
+                POINT Center;
+                Center.x = (PromptRect.left + PromptRect.right) / 2;
+                Center.y = (PromptRect.top + PromptRect.bottom) / 2;
+                HitRoot = GetAncestor(WindowFromPoint(Center), GA_ROOT);
+                if (HitRoot == g_Consent)
+                    break;
+            }
+            Sleep(25);
+        }
+        Report(HitRoot == g_Consent,
+               "P6 positive control: WindowFromPoint over the prompt center resolves to the prompt (hit %p, prompt %p)",
+               (PVOID)HitRoot, (PVOID)g_Consent);
+    }
 
     /* P1: messages */
     SetLastError(0);
