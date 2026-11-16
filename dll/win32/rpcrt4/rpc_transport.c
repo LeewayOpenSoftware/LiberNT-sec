@@ -67,6 +67,10 @@ typedef struct _RpcConnection_np
     IO_STATUS_BLOCK io_status;
     HANDLE event_cache;
     BOOL read_closed;
+#ifdef __REACTOS__
+    /* The endpoint has no pipe yet: its name must not exist, or it is the pipe of another program */
+    BOOL first_instance;
+#endif
 } RpcConnection_np;
 
 static RpcConnection *rpcrt4_conn_np_alloc(void)
@@ -350,11 +354,14 @@ static RPC_STATUS rpcrt4_conn_create_pipe(RpcConnection *conn)
     SecurityAttributes.lpSecurityDescriptor = PipeSecDesc;
     SecurityAttributes.bInheritHandle = FALSE;
 
-    connection->pipe = CreateNamedPipeA(connection->listen_pipe, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+    connection->pipe = CreateNamedPipeA(connection->listen_pipe, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+                                        (connection->first_instance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
                                         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE,
                                         PIPE_UNLIMITED_INSTANCES,
                                         RPC_MAX_PACKET_SIZE, RPC_MAX_PACKET_SIZE, 5000, &SecurityAttributes);
+    ErrCode = GetLastError();
     HeapFree(GetProcessHeap(), 0, PipeSecDesc);
+    SetLastError(ErrCode);
 #else
     connection->pipe = CreateNamedPipeA(connection->listen_pipe, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                                         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE,
@@ -364,6 +371,11 @@ static RPC_STATUS rpcrt4_conn_create_pipe(RpcConnection *conn)
     if (connection->pipe == INVALID_HANDLE_VALUE)
     {
         WARN("CreateNamedPipe failed with error %ld\n", GetLastError());
+#ifdef __REACTOS__
+        /* The name is in use by another program: do not join its pipe, now or at a later try */
+        if (connection->first_instance && GetLastError() == ERROR_ACCESS_DENIED)
+            return RPC_S_DUPLICATE_ENDPOINT;
+#endif
         if (GetLastError() == ERROR_FILE_EXISTS)
         {
             return RPC_S_DUPLICATE_ENDPOINT;
@@ -374,6 +386,9 @@ static RPC_STATUS rpcrt4_conn_create_pipe(RpcConnection *conn)
         }
     }
 
+#ifdef __REACTOS__
+    connection->first_instance = FALSE;
+#endif
     return RPC_S_OK;
 }
 
@@ -495,6 +510,9 @@ static RPC_STATUS rpcrt4_protseq_ncalrpc_open_endpoint(RpcServerProtseq* protseq
       return r;
 
   ((RpcConnection_np*)Connection)->listen_pipe = ncalrpc_pipe_name(Connection->Endpoint);
+#ifdef __REACTOS__
+  ((RpcConnection_np*)Connection)->first_instance = TRUE;
+#endif
   r = rpcrt4_conn_create_pipe(Connection);
 
   EnterCriticalSection(&protseq->cs);
@@ -599,6 +617,7 @@ static RPC_STATUS rpcrt4_protseq_ncacn_np_open_endpoint(RpcServerProtseq *protse
 
 #ifdef __REACTOS__
   ((RpcConnection_np*)Connection)->listen_pipe = ncacn_pipe_name(NULL, Connection->Endpoint);
+  ((RpcConnection_np*)Connection)->first_instance = TRUE;
 #else
   ((RpcConnection_np*)Connection)->listen_pipe = ncacn_pipe_name(Connection->Endpoint);
 #endif
