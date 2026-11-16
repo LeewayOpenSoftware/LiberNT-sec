@@ -2365,6 +2365,19 @@ SeTokenCanImpersonate(
         goto Quit;
     }
 
+    /* A filtered process does not impersonate an unfiltered token of its own user
+     * either: by construction that is the fuller one, whatever groups or
+     * privileges the filter took (another user's token is judged above) */
+    if ((ProcessToken->TokenFlags & TOKEN_LUA) &&
+        !(TokenToImpersonate->TokenFlags & TOKEN_LUA) &&
+        RtlEqualSid(ProcessToken->UserAndGroups[0].Sid,
+                    TokenToImpersonate->UserAndGroups[0].Sid))
+    {
+        DPRINT1("Cannot impersonate an unfiltered token of the same user from a filtered process!\n");
+        CanImpersonate = FALSE;
+        goto Quit;
+    }
+
     /*
      * Deny impersonation for the server if it wants to impersonate a client
      * beyond what the impersonation level originally permits.
