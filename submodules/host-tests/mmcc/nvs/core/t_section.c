@@ -1051,6 +1051,129 @@ SectionCopyOnWriteOwnerLimit(void)
     WorldDestroy(&World);
 }
 
+typedef struct _COW_CHARGE_MUTATOR
+{
+    LONG64 Used;
+    ULONG Charges;
+    ULONG Returns;
+    ULONG Mutate;
+    PMI_ADDRESS_SPACE Space;
+    ULONG64 Address;
+} COW_CHARGE_MUTATOR;
+
+static BOOLEAN
+CowChargeMutateCharge(_In_ PVOID Owner, _In_ LONG64 Pages)
+{
+    COW_CHARGE_MUTATOR *Ctx = Owner;
+    PMI_PTE Slot;
+    ULONG TableFrame;
+    MI_PTE Pte;
+    ULONG Protection;
+
+    Ctx->Charges++;
+    Ctx->Used += Pages;
+    if (Ctx->Mutate)
+    {
+        Protection = (Ctx->Mutate & 2) ? MI_PROT_WRITECOPY : MI_PROT_READONLY;
+        Ctx->Mutate = 0;
+        Slot = MiPtLookup(Ctx->Space, Ctx->Address, &TableFrame);
+        Pte = MiArchPteRead(Slot);
+        if (Protection == MI_PROT_READONLY)
+        {
+            MiArchPteWrite(Slot, MiArchPteMakeLeaf((ULONG64)MiArchPteFrame(Pte),
+                                                   MI_PROT_READONLY,
+                                                   MiArchPteLeafFlags(Pte)));
+        }
+        else
+        {
+            MiArchPteWrite(Slot, MiArchPteSetAccessed(Pte, FALSE));
+        }
+        CHECK(MiArchPteRead(Slot) != Pte);
+    }
+    return TRUE;
+}
+
+static VOID
+CowChargeMutateReturn(_In_ PVOID Owner, _In_ LONG64 Pages)
+{
+    COW_CHARGE_MUTATOR *Ctx = Owner;
+
+    Ctx->Returns++;
+    Ctx->Used -= Pages;
+}
+
+/* A copy-on-write charge whose owner mutates the charged PTE mid-charge.
+ * Mode 1 turns the leaf read-only: the write faults, the charge is returned,
+ * nothing stays accounted, and the fault does not count as a COW fault.
+ * Mode 2 clears the accessed bit (a real state change that stays a valid COW
+ * PTE): the first charge is returned when the change is detected and the
+ * retry charges again, so the write completes with the charge re-taken and
+ * the end state retained (Used 2, one COW fault). */
+static
+void
+SectionCopyOnWriteChargePteChange(void)
+{
+    TEST_WORLD World;
+    TEST_FILE File;
+    MI_ADDRESS_SPACE A;
+    PMI_SEGMENT Segment;
+    COW_CHARGE_MUTATOR Ctx = { 0 };
+    ULONG64 BaseA = 0;
+    NTSTATUS Status;
+
+    WorldCreate(&World, 1024, 1, 100000);
+    WorldAttachPageFile(&World, 256);
+    FileCreate(&File, 0x10000);
+    SpaceCreate(&World, 0, &A);
+    World.System.ChargeOwnerCommit = CowChargeMutateCharge;
+    World.System.ReturnOwnerCommit = CowChargeMutateReturn;
+    A.CommitOwner = &Ctx;
+    Ctx.Space = &A;
+
+    CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, 0x10000, MI_PROT_READONLY, &TestFileOps,
+                                     &File, NULL, 0, &Segment)));
+    CHECK(NT_SUCCESS(Map(&A, Segment, &BaseA, 0, 0, MI_PROT_WRITECOPY)));
+    MiSegmentDereference(Segment);
+
+    CHECK(UserRead64(&World, 0, BaseA + 0x2000, &Status) == *(ULONG64 *)(File.Data + 0x2000));
+
+    Ctx.Address = BaseA + 0x2000;
+    Ctx.Mutate = TRUE;
+    CHECK(UserWrite64(&World, 0, Ctx.Address, 0x5151) == STATUS_ACCESS_VIOLATION);
+    CHECK(Ctx.Charges == 1);
+    CHECK(Ctx.Returns == 1);
+    CHECK(Ctx.Used == 0);
+    CHECK(MI_ATOMIC_READ64(&A.CopyOnWriteFaults) == 0);
+
+    CHECK(UserRead64(&World, 0, BaseA + 0x4000, &Status) == *(ULONG64 *)(File.Data + 0x4000));
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, BaseA + 0x4000, 0x5252)));
+    CHECK(Ctx.Charges == 2);
+    CHECK(Ctx.Returns == 1);
+    CHECK(Ctx.Used == 1);
+    CHECK(MI_ATOMIC_READ64(&A.CopyOnWriteFaults) == 1);
+
+    CHECK(UserRead64(&World, 0, BaseA + 0x6000, &Status) == *(ULONG64 *)(File.Data + 0x6000));
+    Ctx.Address = BaseA + 0x6000;
+    Ctx.Mutate = 2;
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, Ctx.Address, 0x5353)));
+    CHECK(Ctx.Charges == 4);
+    CHECK(Ctx.Returns == 2);
+    CHECK(Ctx.Used == 2);
+    CHECK(MI_ATOMIC_READ64(&A.CopyOnWriteFaults) == 2);
+    CHECK(UserRead64(&World, 0, BaseA + 0x6000, &Status) == 0x5353);
+
+    CHECK(NT_SUCCESS(MiUnmapView(&A, BaseA)));
+    CHECK(Ctx.Used == 0);
+    CHECK(Ctx.Returns >= 2);
+    World.System.ChargeOwnerCommit = NULL;
+    World.System.ReturnOwnerCommit = NULL;
+    SpaceDestroy(&World, 0, &A);
+
+    WorldExpectClean(&World, 1024);
+    FileDestroy(&File);
+    WorldDestroy(&World);
+}
+
 static
 void
 SectionSystemSpaceView(void)
@@ -2209,6 +2332,7 @@ TestSection(void)
     SectionCopyOnWrite();
     SectionCopyOnWriteOwnerCharge();
     SectionCopyOnWriteOwnerLimit();
+    SectionCopyOnWriteChargePteChange();
     SectionSystemSpaceView();
     SectionViewOutlivesOwner();
     SectionUnusedCache();
