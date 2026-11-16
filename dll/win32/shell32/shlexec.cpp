@@ -641,8 +641,7 @@ again:
                              hwnd, RunAsDlgProc, (LPARAM)&data);
     if (dlgret == IDOK && data.Name)
     {
-        // The elevation path: a split administrator's logon runs with its full token
-        if (CreateProcessWithLogonW(data.Name, data.Domain, data.Password, data.LogonFlags | SECL_LOGON_ELEVATE,
+        if (CreateProcessWithLogonW(data.Name, data.Domain, data.Password, data.LogonFlags,
                                     NULL, Cmd, CreationFlags, Env, Dir, pSI, pPI))
             error = ERROR_SUCCESS;
         else
