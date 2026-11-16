@@ -18,11 +18,13 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define WIN32_NO_STATUS
 #include <windef.h>
 #include <winbase.h>
 #include <winuser.h>
+#include <winreg.h>
 #include <rpc.h>
 #include <pseh/pseh2.h>
 #include <seclogon_c.h>
@@ -491,17 +493,201 @@ static void ProbeP(void)
         CloseBrokerCall(Thread, &Call);
 }
 
+/* P10: what the limited side can do to an elevated process of the same user, and to its token */
+static DWORD QueryTokenDword(HANDLE Token, int Class)
+{
+    DWORD Value = 0xFFFFFFFF, Length;
+
+    if (!GetTokenInformation(Token, Class, &Value, sizeof(Value), &Length))
+        Value = 0xFFFFFFFF;
+    return Value;
+}
+
+static DWORD OpenSystemKeyForWrite(void)
+{
+    HKEY Key;
+    DWORD Error;
+
+    /* Only the access is asked for; nothing is written */
+    Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM", 0, KEY_SET_VALUE | KEY_CREATE_SUB_KEY, &Key);
+    if (Error == ERROR_SUCCESS)
+        RegCloseKey(Key);
+    return Error;
+}
+
+/* The second impersonation rule rests on the limited mark staying on every copy of a limited token */
+static void ProbeOwnCopies(void)
+{
+    static const struct { DWORD Flags; const char *Name; } Filters[] =
+    {
+        { 0, "no change asked" },
+        { DISABLE_MAX_PRIVILEGE, "privileges removed" },
+    };
+    HANDLE Own, Copy;
+    DWORD Type;
+    UINT i;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &Own))
+    {
+        Info("P10 own token could not be opened for copies, error %lu; not checked", GetLastError());
+        return;
+    }
+    if (DuplicateTokenEx(Own, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenImpersonation, &Copy))
+    {
+        Type = QueryTokenDword(Copy, TokenElevationType);
+        Report(Type == TokenElevationTypeLimited, "P10 copy of the limited token: elevation type %lu (3 = limited)", Type);
+        CloseHandle(Copy);
+    }
+    else
+    {
+        Info("P10 DuplicateTokenEx on the own token failed, error %lu; not checked", GetLastError());
+    }
+    for (i = 0; i < _countof(Filters); i++)
+    {
+        if (CreateRestrictedToken(Own, Filters[i].Flags, 0, NULL, 0, NULL, 0, NULL, &Copy))
+        {
+            Type = QueryTokenDword(Copy, TokenElevationType);
+            Report(Type == TokenElevationTypeLimited,
+                   "P10 filtered copy of the limited token (%s): elevation type %lu (3 = limited)", Filters[i].Name, Type);
+            CloseHandle(Copy);
+        }
+        else
+        {
+            Info("P10 CreateRestrictedToken (%s) failed, error %lu; not checked", Filters[i].Name, GetLastError());
+        }
+    }
+    CloseHandle(Own);
+}
+
+static void ProbeT(DWORD ProcessId)
+{
+    static const struct { DWORD Access; const char *Name; } Rights[] =
+    {
+        { PROCESS_VM_WRITE, "PROCESS_VM_WRITE" },
+        { PROCESS_VM_OPERATION, "PROCESS_VM_OPERATION" },
+        { PROCESS_CREATE_THREAD, "PROCESS_CREATE_THREAD" },
+        { PROCESS_DUP_HANDLE, "PROCESS_DUP_HANDLE" },
+        { PROCESS_SET_INFORMATION, "PROCESS_SET_INFORMATION" },
+        { PROCESS_SUSPEND_RESUME, "PROCESS_SUSPEND_RESUME" },
+        { PROCESS_VM_READ, "PROCESS_VM_READ" },
+        { PROCESS_QUERY_INFORMATION, "PROCESS_QUERY_INFORMATION" },
+    };
+    SID_IDENTIFIER_AUTHORITY LabelAuthority = { { 0, 0, 0, 0, 0, 16 } };
+    TOKEN_MANDATORY_LABEL Label;
+    HANDLE Process, Token = NULL, Copy = NULL, ThreadToken;
+    PSID Medium = NULL;
+    DWORD Error, Before, After, Level, Type;
+    UINT i;
+
+    ProbeOwnCopies();
+
+    for (i = 0; i < _countof(Rights); i++)
+    {
+        Process = OpenProcess(Rights[i].Access, FALSE, ProcessId);
+        Error = Process ? ERROR_SUCCESS : GetLastError();
+        Report(Process == NULL && Error == ERROR_ACCESS_DENIED, "P10 OpenProcess(%s) on process %lu: %s, error %lu",
+               Rights[i].Name, ProcessId, Process ? "GRANTED" : "refused", Error);
+        if (Process)
+            CloseHandle(Process);
+    }
+
+    /* Reported only: the reference system has to be measured on this right first. The process is not ended. */
+    Process = OpenProcess(PROCESS_TERMINATE, FALSE, ProcessId);
+    Error = Process ? ERROR_SUCCESS : GetLastError();
+    Info("P10 OpenProcess(PROCESS_TERMINATE): %s, error %lu (the right is not used)", Process ? "granted" : "refused", Error);
+    if (Process)
+        CloseHandle(Process);
+
+    /* The chain: limited query right, token, copy, lower integrity, impersonate, use */
+    Before = OpenSystemKeyForWrite();
+    if (Before == ERROR_SUCCESS)
+        Info("P10 this process can already open HKLM\\SYSTEM for writing; the registry step says nothing here");
+
+    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+    if (!Process)
+    {
+        Error = GetLastError();
+        if (Error == ERROR_INVALID_PARAMETER)
+            Report(FALSE, "P10 chain: process %lu does not exist; give the id of a running elevated process", ProcessId);
+        else
+            Report(TRUE, "P10 chain stopped at step 1: OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) error %lu", Error);
+        return;
+    }
+    Info("P10 chain step 1: limited query right on the process granted");
+
+    if (!OpenProcessToken(Process, TOKEN_DUPLICATE | TOKEN_QUERY, &Token))
+    {
+        Report(TRUE, "P10 chain stopped at step 2: OpenProcessToken(TOKEN_DUPLICATE | TOKEN_QUERY) error %lu", GetLastError());
+        goto Done;
+    }
+    Type = QueryTokenDword(Token, TokenElevationType);
+    Info("P10 chain step 2: token opened; elevation type %lu (2 = full), elevated %lu", Type,
+         QueryTokenDword(Token, TokenElevation));
+    if (Type == TokenElevationTypeLimited)
+    {
+        Report(FALSE, "P10 chain: process %lu is not elevated; give the id of an elevated process of this user", ProcessId);
+        goto Done;
+    }
+
+    if (!DuplicateTokenEx(Token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenImpersonation, &Copy))
+    {
+        Report(TRUE, "P10 chain stopped at step 3: DuplicateTokenEx error %lu", GetLastError());
+        goto Done;
+    }
+    Info("P10 chain step 3: impersonation copy with full access granted");
+
+    if (!AllocateAndInitializeSid(&LabelAuthority, 1, SECURITY_MANDATORY_MEDIUM_RID, 0, 0, 0, 0, 0, 0, 0, &Medium))
+    {
+        Info("P10 chain: the label could not be built, error %lu; not checked further", GetLastError());
+        goto Done;
+    }
+    Label.Label.Sid = Medium;
+    Label.Label.Attributes = SE_GROUP_INTEGRITY;
+    if (!SetTokenInformation(Copy, TokenIntegrityLevel, &Label, sizeof(Label) + GetLengthSid(Medium)))
+        Info("P10 chain step 4: lowering the integrity of the copy failed, error %lu; going on", GetLastError());
+    else
+        Info("P10 chain step 4: integrity of the copy lowered to medium");
+
+    if (!SetThreadToken(NULL, Copy))
+    {
+        Report(TRUE, "P10 chain stopped at step 5: SetThreadToken error %lu", GetLastError());
+        goto Done;
+    }
+    Level = 0xFFFFFFFF;
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &ThreadToken))
+    {
+        Level = QueryTokenDword(ThreadToken, TokenImpersonationLevel);
+        CloseHandle(ThreadToken);
+    }
+    After = OpenSystemKeyForWrite();
+    RevertToSelf();
+    /* Identification at most is the wanted result; the registry step shows what a higher level is worth */
+    Report(Level <= (DWORD)SecurityIdentification && (After != ERROR_SUCCESS || Before == ERROR_SUCCESS),
+           "P10 chain step 5: thread token level %lu (1 = identification, 2 = impersonation); "
+           "HKLM\\SYSTEM for writing: before %lu, with the copy %lu (5 = refused)", Level, Before, After);
+
+Done:
+    if (Medium)
+        FreeSid(Medium);
+    if (Copy)
+        CloseHandle(Copy);
+    if (Token)
+        CloseHandle(Token);
+    CloseHandle(Process);
+}
+
 int wmain(int argc, WCHAR *argv[])
 {
-    BOOL DoN = TRUE, DoP = TRUE;
+    BOOL DoN = TRUE, DoP = TRUE, DoT = FALSE;
 
     if (argc > 1)
     {
         DoN = (argv[1][0] == L'n' || argv[1][0] == L'N');
         DoP = (argv[1][0] == L'p' || argv[1][0] == L'P');
-        if (!DoN && !DoP)
+        DoT = ((argv[1][0] == L't' || argv[1][0] == L'T') && argc > 2);
+        if (!DoN && !DoP && !DoT)
         {
-            printf("usage: uacprobe [n|p]\n");
+            printf("usage: uacprobe [n|p|t <id of an elevated process of this user>]\n");
             return 100;
         }
     }
@@ -517,6 +703,8 @@ int wmain(int argc, WCHAR *argv[])
         ProbeN();
     if (DoP)
         ProbeP();
+    if (DoT)
+        ProbeT(wcstoul(argv[2], NULL, 10));
 
     printf("DONE: %d FAIL\n", g_Failures);
     return g_Failures;
