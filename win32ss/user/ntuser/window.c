@@ -2600,6 +2600,7 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
         !IntUipiIsThreadAllowed(pti->ppi, ParentWindow->head.pti, ParentWindow)))
    {
        EngSetLastError(ERROR_ACCESS_DENIED);
+       ParentWindow = NULL; /* not referenced yet, cleanup must not release it */
        goto cleanup;
    }
 
