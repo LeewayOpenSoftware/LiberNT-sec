@@ -32,7 +32,13 @@ static KSPIN_LOCK NsiProviderLock;
 static LIST_ENTRY NsiZombieList;
 static BOOLEAN NsiReady;
 
-static IO_CSQ_INSERT_IRP NsiCsqInsertIrp;
+/* How many change requests may wait on one provider: from one file object, and
+ * in all. A requester keeps one per registration, so the first limit is far
+ * above honest use; the second bounds the memory and the walks of the queue */
+#define NSI_MAX_PENDING_PER_FILE 64
+#define NSI_MAX_PENDING_PER_PROVIDER 4096
+
+static IO_CSQ_INSERT_IRP_EX NsiCsqInsertIrp;
 static IO_CSQ_REMOVE_IRP NsiCsqRemoveIrp;
 static IO_CSQ_PEEK_NEXT_IRP NsiCsqPeekNextIrp;
 static IO_CSQ_ACQUIRE_LOCK NsiCsqAcquireLock;
@@ -152,14 +158,33 @@ NsiCheckSizes(
     return STATUS_SUCCESS;
 }
 
-static VOID NTAPI
+/* Called with the queue lock held: the count and the insertion are one step */
+static NTSTATUS NTAPI
 NsiCsqInsertIrp(
     _In_ PIO_CSQ Csq,
-    _In_ PIRP Irp)
+    _In_ PIRP Irp,
+    _In_ PVOID InsertContext)
 {
     PNSI_PROVIDER Provider = CONTAINING_RECORD(Csq, NSI_PROVIDER, Csq);
+    PFILE_OBJECT FileObject = IoGetCurrentIrpStackLocation(Irp)->FileObject;
+    PLIST_ENTRY Entry;
+    ULONG Total = 0, SameFile = 0;
+
+    UNREFERENCED_PARAMETER(InsertContext);
+
+    for (Entry = Provider->PendingIrps.Flink; Entry != &Provider->PendingIrps; Entry = Entry->Flink)
+    {
+        PIRP Queued = CONTAINING_RECORD(Entry, IRP, Tail.Overlay.ListEntry);
+
+        Total++;
+        if (IoGetCurrentIrpStackLocation(Queued)->FileObject == FileObject)
+            SameFile++;
+    }
+    if (Total >= NSI_MAX_PENDING_PER_PROVIDER || SameFile >= NSI_MAX_PENDING_PER_FILE)
+        return STATUS_QUOTA_EXCEEDED;
 
     InsertTailList(&Provider->PendingIrps, &Irp->Tail.Overlay.ListEntry);
+    return STATUS_SUCCESS;
 }
 
 static VOID NTAPI
@@ -230,6 +255,41 @@ NsiCsqCompleteCanceledIrp(
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 }
 
+/* Move the queued requests of Owner (all of them if Owner is NULL) to Taken, in
+ * one walk of the queue. This is IoCsqRemoveNextIrp for many requests at once:
+ * that call starts its search at the head of the queue for every request it
+ * removes. A request whose cancel routine is already gone is being cancelled:
+ * its cancel routine takes it off the queue and completes it, it is left alone */
+static VOID
+NsiTakePendingIrps(
+    _In_ PNSI_PROVIDER Provider,
+    _In_opt_ PVOID Owner,
+    _Inout_ PLIST_ENTRY Taken)
+{
+    PLIST_ENTRY Entry, Next;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Provider->PendingLock, &OldIrql);
+    for (Entry = Provider->PendingIrps.Flink; Entry != &Provider->PendingIrps; Entry = Next)
+    {
+        PIRP Irp = CONTAINING_RECORD(Entry, IRP, Tail.Overlay.ListEntry);
+
+        Next = Entry->Flink;
+        if (Owner != NULL &&
+            IoGetCurrentIrpStackLocation(Irp)->FileObject != (PFILE_OBJECT)Owner &&
+            IoGetCurrentIrpStackLocation(Irp)->DeviceObject != (PDEVICE_OBJECT)Owner)
+        {
+            continue;
+        }
+        if (IoSetCancelRoutine(Irp, NULL) == NULL)
+            continue;
+        RemoveEntryList(Entry);
+        Irp->Tail.Overlay.DriverContext[3] = NULL;
+        InsertTailList(Taken, Entry);
+    }
+    KeReleaseSpinLock(&Provider->PendingLock, OldIrql);
+}
+
 static VOID
 NsiDrainPendingIrps(
     _In_ PNSI_PROVIDER Provider,
@@ -248,8 +308,7 @@ NsiDrainPendingIrps(
      * never ended. A request that arrives after this point is for the next
      * change */
     InitializeListHead(&Drained);
-    while ((Irp = IoCsqRemoveNextIrp(&Provider->Csq, FileObject)) != NULL)
-        InsertTailList(&Drained, &Irp->Tail.Overlay.ListEntry);
+    NsiTakePendingIrps(Provider, FileObject, &Drained);
 
     while (!IsListEmpty(&Drained))
     {
@@ -295,7 +354,7 @@ NsiRegisterProvider(
     KeInitializeEvent(&New->Released, NotificationEvent, FALSE);
     InitializeListHead(&New->PendingIrps);
     KeInitializeSpinLock(&New->PendingLock);
-    Status = IoCsqInitialize(&New->Csq, NsiCsqInsertIrp, NsiCsqRemoveIrp, NsiCsqPeekNextIrp,
+    Status = IoCsqInitializeEx(&New->Csq, NsiCsqInsertIrp, NsiCsqRemoveIrp, NsiCsqPeekNextIrp,
                              NsiCsqAcquireLock, NsiCsqReleaseLock, NsiCsqCompleteCanceledIrp);
     if (!NT_SUCCESS(Status))
     {
@@ -373,18 +432,25 @@ NsiRequestChangeNotificationKm(
     _In_ PIRP Irp)
 {
     PNSI_PROVIDER Provider = NsiReferenceProvider(Module, Table);
+    NTSTATUS Status;
 
     if (Provider == NULL)
         return STATUS_NOT_FOUND;
-    IoMarkIrpPending(Irp);
-    IoCsqInsertIrp(&Provider->Csq, Irp, NULL);
+    /* The queue marks the request pending, also when it then refuses it */
+    Status = IoCsqInsertIrpEx(&Provider->Csq, Irp, NULL, NULL);
     NsiDereferenceProvider(Provider);
+    if (!NT_SUCCESS(Status))
+    {
+        /* Not queued: the caller completes it, so it must not look pending */
+        IoGetCurrentIrpStackLocation(Irp)->Control &= ~SL_PENDING_RETURNED;
+        return Status;
+    }
     return STATUS_PENDING;
 }
 
 /* Cancel every queued change-notification IRP whose owner matches Owner: a
  * PFILE_OBJECT (handle cleanup) or a PDEVICE_OBJECT (driver unload). Removal is
- * cancel-safe via IoCsqRemoveNextIrp; the IRPs are completed only after both the
+ * cancel-safe (NsiTakePendingIrps); the IRPs are completed only after both the
  * provider and the queue locks are dropped, so a caller completion routine cannot
  * re-enter NSI under NsiProviderLock. */
 static VOID
@@ -404,8 +470,7 @@ NsiCancelChangeNotificationsByOwner(
     {
         PNSI_PROVIDER Provider = CONTAINING_RECORD(Entry, NSI_PROVIDER, ListEntry);
 
-        while ((Irp = IoCsqRemoveNextIrp(&Provider->Csq, Owner)) != NULL)
-            InsertTailList(&Cancelled, &Irp->Tail.Overlay.ListEntry);
+        NsiTakePendingIrps(Provider, Owner, &Cancelled);
     }
     KeReleaseSpinLock(&NsiProviderLock, OldIrql);
 
