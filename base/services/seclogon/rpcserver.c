@@ -13,6 +13,7 @@
 #include <wlsecdesk_c.h>
 #include <consentproto.h>
 #include <ndk/psfuncs.h>
+#include <ndk/obfuncs.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(seclogon);
 
@@ -1891,6 +1892,10 @@ SeclCreateProcessElevatedW(
     LPPROC_THREAD_ATTRIBUTE_LIST Attributes = NULL;
     SIZE_T AttributesSize = 0;
     DWORD_PTR DebugPort = 0;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    UNICODE_STRING DosDevices;
+    HANDLE hDosDevices = NULL;
+    NTSTATUS Status;
     WCHAR FinalPath[MAX_PATH], Account[512], ProfileUser[256];
     PROFILEINFOW ProfileInfo = { sizeof(ProfileInfo) };
     PWSTR CommandLine = NULL;
@@ -2142,6 +2147,26 @@ SeclCreateProcessElevatedW(
         CloseHandle(ProcessInfo.hThread);
         CloseHandle(ProcessInfo.hProcess);
         ERR("The elevated process of requester %lu carried a debug port: ended\n", CallerPid);
+        dwError = ERROR_ACCESS_DENIED;
+        goto done;
+    }
+    /* The child took its DOS device map from its parent, and a requester may set its own map
+     * without any privilege (a C: of its choosing): the elevated process gets the global map
+     * before it runs, as a process of a clean session has */
+    RtlInitUnicodeString(&DosDevices, L"\\??");
+    InitializeObjectAttributes(&ObjectAttributes, &DosDevices, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    Status = NtOpenDirectoryObject(&hDosDevices, DIRECTORY_TRAVERSE, &ObjectAttributes);
+    if (NT_SUCCESS(Status))
+    {
+        Status = NtSetInformationProcess(ProcessInfo.hProcess, ProcessDeviceMap, &hDosDevices, sizeof(hDosDevices));
+        NtClose(hDosDevices);
+    }
+    if (!NT_SUCCESS(Status))
+    {
+        TerminateProcess(ProcessInfo.hProcess, ERROR_ACCESS_DENIED);
+        CloseHandle(ProcessInfo.hThread);
+        CloseHandle(ProcessInfo.hProcess);
+        ERR("The elevated process of requester %lu could not get the global device map: Status 0x%08lx\n", CallerPid, Status);
         dwError = ERROR_ACCESS_DENIED;
         goto done;
     }
