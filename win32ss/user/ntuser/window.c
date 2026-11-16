@@ -1257,10 +1257,12 @@ IntSetOwner(HWND hWnd, HWND hWndNewOwner)
       goto Error;
    }
 
-   /* An owner above the window's thread or the caller would share its input queue with them */
-   if (WndNewOwner &&
-       (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewOwner->head.pti, NULL) ||
-        !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewOwner->head.pti, NULL)))
+   /* An owner above the window's thread or the caller would share its input queue with them,
+    * and a caller below the window may not change its owner */
+   if ((WndNewOwner &&
+        (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewOwner->head.pti, WndNewOwner) ||
+         !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewOwner->head.pti, WndNewOwner))) ||
+       !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, Wnd->head.pti, Wnd))
    {
       EngSetLastError(ERROR_ACCESS_DENIED);
       ret = NULL;
@@ -1335,10 +1337,12 @@ co_IntSetParent(PWND Wnd, PWND WndNewParent)
       return NULL;
    }
 
-   /* A parent above the window's thread or the caller would share its input queue with them */
-   if (!UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent) &&
-       (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewParent->head.pti, NULL) ||
-        !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewParent->head.pti, NULL)))
+   /* A parent above the window's thread or the caller would share its input queue with them,
+    * and a caller below the window may not move it */
+   if ((!UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent) &&
+        (!IntUipiIsThreadAllowed(Wnd->head.pti->ppi, WndNewParent->head.pti, WndNewParent) ||
+         !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, WndNewParent->head.pti, WndNewParent))) ||
+       !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, Wnd->head.pti, Wnd))
    {
       EngSetLastError(ERROR_ACCESS_DENIED);
       return NULL;
@@ -2591,9 +2595,9 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
     }
 
    /* An owner or a parent above the creator would share its input queue with it */
-   if ((OwnerWindow && !IntUipiIsThreadAllowed(pti->ppi, OwnerWindow->head.pti, NULL)) ||
+   if ((OwnerWindow && !IntUipiIsThreadAllowed(pti->ppi, OwnerWindow->head.pti, OwnerWindow)) ||
        (ParentWindow && !UserIsDesktopWindow(ParentWindow) && !UserIsMessageWindow(ParentWindow) &&
-        !IntUipiIsThreadAllowed(pti->ppi, ParentWindow->head.pti, NULL)))
+        !IntUipiIsThreadAllowed(pti->ppi, ParentWindow->head.pti, ParentWindow)))
    {
        EngSetLastError(ERROR_ACCESS_DENIED);
        goto cleanup;
