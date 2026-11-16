@@ -9,6 +9,7 @@
  *
  *   uacprobe n     the broker refuses a desktop other than the caller's default one (error 740 or 5)
  *   uacprobe p     messages, input, hooks and window calls do not reach the prompt
+ *   uacprobe d     an elevated child does not inherit the requester's DOS device map
  *   uacprobe       both
  *
  * Each check prints one line starting with PASS or FAIL. Check p leaves the prompt
@@ -52,6 +53,8 @@ void __RPC_USER midl_user_free(void __RPC_FAR * ptr)
 typedef struct _BROKER_CALL
 {
     PCWSTR Desktop;             /* NULL: the caller's own desktop */
+    PCWSTR Image;               /* NULL: a harmless cmd.exe by full path */
+    PCWSTR CommandLine;
     DWORD Error;
     SECL_RESPONSE Response;
 } BROKER_CALL;
@@ -114,13 +117,21 @@ static DWORD WINAPI BrokerThread(LPVOID Parameter)
 
     /* A harmless program by its full path: if a check fails, this is all that gets started elevated */
     Call->Error = ERROR_BAD_PATHNAME;
-    Length = GetSystemDirectoryW(Image, MAX_PATH - 9);
-    if (Length == 0 || Length >= MAX_PATH - 9)
-        return 0;
-    lstrcatW(Image, L"\\cmd.exe");
-    wsprintfW(CommandLine, L"\"%s\" /c exit", Image);
-    Request.ApplicationName = Image;
-    Request.CommandLine = CommandLine;
+    if (Call->Image != NULL)
+    {
+        Request.ApplicationName = (WCHAR *)Call->Image;
+        Request.CommandLine = (WCHAR *)Call->CommandLine;
+    }
+    else
+    {
+        Length = GetSystemDirectoryW(Image, MAX_PATH - 9);
+        if (Length == 0 || Length >= MAX_PATH - 9)
+            return 0;
+        lstrcatW(Image, L"\\cmd.exe");
+        wsprintfW(CommandLine, L"\"%s\" /c exit", Image);
+        Request.ApplicationName = Image;
+        Request.CommandLine = CommandLine;
+    }
     Request.dwShowCmd = SW_HIDE;
     Request.dwCreationFlags = CREATE_NO_WINDOW;
     Request.dwDesktopInherited = (Call->Desktop == NULL);
@@ -155,6 +166,15 @@ static HANDLE StartBrokerCall(BROKER_CALL *Call, PCWSTR Desktop)
 {
     ZeroMemory(Call, sizeof(*Call));
     Call->Desktop = Desktop;
+    return CreateThread(NULL, 0, BrokerThread, Call, 0, NULL);
+}
+
+/* Elevate a named image (its own desktop); used by the device-map check */
+static HANDLE StartBrokerImage(BROKER_CALL *Call, PCWSTR Image, PCWSTR CommandLine)
+{
+    ZeroMemory(Call, sizeof(*Call));
+    Call->Image = Image;
+    Call->CommandLine = CommandLine;
     return CreateThread(NULL, 0, BrokerThread, Call, 0, NULL);
 }
 
@@ -700,18 +720,162 @@ Done:
     CloseHandle(Process);
 }
 
+/* Just enough of the native API to give this process a private DOS device map. Declared here
+ * (not via <ndk/...>) to keep this a plain win32 test; ntdll carries the symbols. */
+typedef LONG NTSTATUS_;
+typedef struct _UNICODE_STRING_ { USHORT Length; USHORT MaximumLength; PWSTR Buffer; } UNICODE_STRING_;
+typedef struct _OBJECT_ATTRIBUTES_ {
+    ULONG Length; HANDLE RootDirectory; UNICODE_STRING_ *ObjectName;
+    ULONG Attributes; PVOID SecurityDescriptor; PVOID SecurityQualityOfService;
+} OBJECT_ATTRIBUTES_;
+#define OBJ_CASE_INSENSITIVE_ 0x40
+#define DIRECTORY_ACCESS_ 0x0007
+#define SYMBOLIC_LINK_ALL_ 0x000F0001
+#define ProcessDeviceMap_ 23
+
+NTSTATUS_ NTAPI NtCreateDirectoryObject(PHANDLE, ACCESS_MASK, OBJECT_ATTRIBUTES_ *);
+NTSTATUS_ NTAPI NtCreateSymbolicLinkObject(PHANDLE, ACCESS_MASK, OBJECT_ATTRIBUTES_ *, UNICODE_STRING_ *);
+NTSTATUS_ NTAPI NtSetInformationProcess(HANDLE, ULONG, PVOID, ULONG);
+NTSTATUS_ NTAPI NtClose(HANDLE);
+
+#define PROBE_D_DRIVE   L"X:"
+#define PROBE_D_TARGET  L"\\Device\\LiberNtUacProbeSentinel"
+
+static void InitUnicode(UNICODE_STRING_ *String, PWSTR Text)
+{
+    String->Length = (USHORT)(lstrlenW(Text) * sizeof(WCHAR));
+    String->MaximumLength = String->Length + sizeof(WCHAR);
+    String->Buffer = Text;
+}
+
+/* The requester: redirect X: in this process's own device map, then elevate a copy of
+ * this program through the broker and read what it found. */
+static void ProbeD(void)
+{
+    OBJECT_ATTRIBUTES_ DirAttr = { 0 }, LinkAttr = { 0 };
+    UNICODE_STRING_ LinkName, TargetName;
+    HANDLE Directory = NULL, Link = NULL, Thread;
+    BROKER_CALL Call;
+    WCHAR Self[MAX_PATH], CommandLine[MAX_PATH + 24], Resolved[MAX_PATH];
+    NTSTATUS_ Status;
+    DWORD Exit = 200;
+
+    /* Captured before the map is changed, so the full path still resolves */
+    if (GetModuleFileNameW(NULL, Self, _countof(Self)) == 0)
+    {
+        Report(FALSE, "P11 could not read own image path, error %lu", GetLastError());
+        return;
+    }
+    wsprintfW(CommandLine, L"\"%s\" dchild", Self);
+
+    DirAttr.Length = sizeof(DirAttr);
+    DirAttr.Attributes = OBJ_CASE_INSENSITIVE_;
+    Status = NtCreateDirectoryObject(&Directory, DIRECTORY_ACCESS_, &DirAttr);
+    if (Status < 0)
+    {
+        Report(FALSE, "P11 could not create a device-map directory, status 0x%08lx", (ULONG)Status);
+        return;
+    }
+    InitUnicode(&LinkName, PROBE_D_DRIVE);
+    InitUnicode(&TargetName, PROBE_D_TARGET);
+    LinkAttr.Length = sizeof(LinkAttr);
+    LinkAttr.RootDirectory = Directory;
+    LinkAttr.ObjectName = &LinkName;
+    LinkAttr.Attributes = OBJ_CASE_INSENSITIVE_;
+    Status = NtCreateSymbolicLinkObject(&Link, SYMBOLIC_LINK_ALL_, &LinkAttr, &TargetName);
+    if (Status < 0)
+    {
+        Report(FALSE, "P11 could not create the X: symlink, status 0x%08lx", (ULONG)Status);
+        NtClose(Directory);
+        return;
+    }
+    Status = NtSetInformationProcess(GetCurrentProcess(), ProcessDeviceMap_, &Directory, sizeof(Directory));
+    if (Status < 0)
+    {
+        Info("P11 SKIP: this build does not let a process set its own device map (status 0x%08lx); nothing to inherit", (ULONG)Status);
+        NtClose(Link); NtClose(Directory);
+        return;
+    }
+    /* Confirm the requester now resolves X: to the planted target (missing names fall back to the global map) */
+    if (QueryDosDeviceW(PROBE_D_DRIVE, Resolved, _countof(Resolved)) == 0 || lstrcmpiW(Resolved, PROBE_D_TARGET) != 0)
+    {
+        Info("P11 SKIP: the planted X: did not take in the requester; not testing");
+        NtClose(Link); NtClose(Directory);
+        return;
+    }
+
+    printf("ACTION: answer the prompt with Yes so the elevated child can check its device map. Waiting up to %u seconds.\n", ANSWER_MS / 1000);
+    fflush(stdout);
+    Thread = StartBrokerImage(&Call, Self, CommandLine);
+    if (Thread == NULL)
+    {
+        Report(FALSE, "P11 could not start the broker call thread");
+        NtClose(Link); NtClose(Directory);
+        return;
+    }
+    if (WaitForSingleObject(Thread, ANSWER_MS) != WAIT_OBJECT_0)
+    {
+        Report(FALSE, "P11 the broker call did not end (prompt not answered?)");
+        CloseBrokerCall(Thread, &Call);
+        NtClose(Link); NtClose(Directory);
+        return;
+    }
+    if (Call.Error != ERROR_SUCCESS || Call.Response.hProcess == 0)
+    {
+        Info("P11 SKIP: the elevated child was not created (broker error %lu); answer Yes to run this check", Call.Error);
+        CloseBrokerCall(Thread, &Call);
+        NtClose(Link); NtClose(Directory);
+        return;
+    }
+    if (WaitForSingleObject((HANDLE)Call.Response.hProcess, 30000) != WAIT_OBJECT_0 ||
+        !GetExitCodeProcess((HANDLE)Call.Response.hProcess, &Exit))
+    {
+        Report(FALSE, "P11 could not read the elevated child's result");
+    }
+    else
+    {
+        /* child: 0 = did not see the planted X: (map was reset), 1 = inherited it, 2 = could not check */
+        if (Exit == 2)
+            Info("P11 the elevated child could not query its device map; inconclusive");
+        else
+            Report(Exit == 0, "P11 device map: the elevated child %s the requester's X: redirection",
+                   Exit == 0 ? "did NOT inherit" : "INHERITED");
+    }
+    CloseBrokerCall(Thread, &Call);
+    NtClose(Link);
+    NtClose(Directory);
+}
+
+/* The elevated child: it must not see the requester's planted X:. No console; the result is the exit code. */
+static int ProbeDChild(void)
+{
+    WCHAR Resolved[MAX_PATH];
+    DWORD Length = QueryDosDeviceW(PROBE_D_DRIVE, Resolved, _countof(Resolved));
+    if (Length == 0)
+    {
+        /* X: does not resolve at all: the planted map was not inherited */
+        return (GetLastError() == ERROR_FILE_NOT_FOUND) ? 0 : 2;
+    }
+    return (lstrcmpiW(Resolved, PROBE_D_TARGET) == 0) ? 1 : 0;
+}
+
 int wmain(int argc, WCHAR *argv[])
 {
-    BOOL DoN = TRUE, DoP = TRUE, DoT = FALSE;
+    BOOL DoN = TRUE, DoP = TRUE, DoT = FALSE, DoD = FALSE;
+
+    /* The elevated child runs first and on its own: it is NOT the limited side and prints nothing */
+    if (argc > 1 && lstrcmpW(argv[1], L"dchild") == 0)
+        return ProbeDChild();
 
     if (argc > 1)
     {
         DoN = (argv[1][0] == L'n' || argv[1][0] == L'N');
         DoP = (argv[1][0] == L'p' || argv[1][0] == L'P');
+        DoD = (argv[1][0] == L'd' || argv[1][0] == L'D');
         DoT = ((argv[1][0] == L't' || argv[1][0] == L'T') && argc > 2);
-        if (!DoN && !DoP && !DoT)
+        if (!DoN && !DoP && !DoT && !DoD)
         {
-            printf("usage: uacprobe [n|p|t <id of an elevated process of this user>]\n");
+            printf("usage: uacprobe [n|p|d|t <id of an elevated process of this user>]\n");
             return 100;
         }
     }
@@ -729,6 +893,8 @@ int wmain(int argc, WCHAR *argv[])
         ProbeP();
     if (DoT)
         ProbeT(wcstoul(argv[2], NULL, 10));
+    if (DoD)
+        ProbeD();
 
     printf("DONE: %d FAIL\n", g_Failures);
     return g_Failures;
