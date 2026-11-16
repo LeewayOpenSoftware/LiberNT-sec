@@ -31,12 +31,15 @@ BOOL WINAPI UnlockWindowStation(HWINSTA hWinSta);
 static CRITICAL_SECTION SecDeskLock;
 static const WCHAR SecDeskBackdropClass[] = L"WinlogonSecurePromptBackdrop";
 
-/* What the prompt thread works with; owned by the thread once it runs */
+/* What the prompt thread works with. Shared by Begin and the thread through a
+ * reference count; the session state it stands behind is cleared by the thread
+ * alone once the thread runs. */
 typedef struct _SECDESK_PROMPT
 {
+    LONG Refs;
     PWLSESSION Session;
     HANDLE hBroker;     /* the broker's process: its end ends the prompt */
-    HANDLE hEnd;        /* set by End, or by Begin when the switch failed */
+    HANDLE hEnd;        /* set by End, or by Begin when it gave up waiting */
     HANDLE hReady;      /* set by the thread once switched, or once it gave up */
     DWORD TimeoutMs;
     BOOL Switched;
@@ -133,6 +136,18 @@ SecDeskClear(
 }
 
 static
+VOID
+SecDeskPromptRelease(
+    _In_ PSECDESK_PROMPT Prompt)
+{
+    if (InterlockedDecrement(&Prompt->Refs) == 0)
+    {
+        CloseHandle(Prompt->hReady);
+        HeapFree(GetProcessHeap(), 0, Prompt);
+    }
+}
+
+static
 LRESULT
 CALLBACK
 SecDeskBackdropProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -155,7 +170,10 @@ SecDeskBackdropProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 /* The one way back, used by every path: the backdrop goes, the user's desktop
  * returns, the window station is unlocked. Each step is tried even if the one
- * before failed, so nothing stays half done. */
+ * before failed, so nothing stays half done. The unlock is unconditional because
+ * nothing else in winlogon locks the window station today (sas.c, winlogon.c,
+ * wlx.c); the day the lock screen uses that lock, the previous state must be
+ * kept and restored here instead. */
 static
 VOID
 SecDeskReturn(
@@ -172,7 +190,8 @@ SecDeskReturn(
 
 /* One thread per prompt: it owns the backdrop window, holds the switch, and
  * returns when the broker says End, when the broker's process ends, or when
- * the broker's own timeout plus slack has passed. */
+ * the broker's own timeout plus slack has passed. On every path, success or
+ * failure, this thread is the one that clears the session state. */
 static
 DWORD
 WINAPI
@@ -193,7 +212,9 @@ SecDeskPromptThread(
         goto Failed;
     }
 
-    hwndBackdrop = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+    /* Not topmost: the prompt the broker starts afterwards must come above it.
+     * Never activated: it must not take the keyboard from the prompt. */
+    hwndBackdrop = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                                    SecDeskBackdropClass, L"",
                                    WS_POPUP,
                                    0, 0,
@@ -267,14 +288,18 @@ SecDeskPromptThread(
     SecDeskClear(Session);
     LeaveCriticalSection(&SecDeskLock);
 
-    CloseHandle(Prompt->hReady);
-    HeapFree(GetProcessHeap(), 0, Prompt);
+    SecDeskPromptRelease(Prompt);
     return 0;
 
 Failed:
+    /* Nothing is held. The state is ours to clear, then Begin may read the answer. */
+    EnterCriticalSection(&SecDeskLock);
+    SecDeskClear(Session);
+    LeaveCriticalSection(&SecDeskLock);
+
     Prompt->Switched = FALSE;
     SetEvent(Prompt->hReady);
-    /* Begin owns the state and the structure on this path */
+    SecDeskPromptRelease(Prompt);
     return 0;
 }
 
@@ -340,6 +365,7 @@ WlSecureDesktopBegin(
     PSECDESK_PROMPT Prompt;
     HANDLE hBroker, hEnd, hReady, hThread;
     DWORD Pid, Error;
+    BOOL Switched;
 
     Error = SecDeskCheckCaller(hBinding, &Pid);
     if (Error != ERROR_SUCCESS)
@@ -370,6 +396,20 @@ WlSecureDesktopBegin(
 
     EnterCriticalSection(&SecDeskLock);
 
+    /* Only a logged-on, unlocked session gets a prompt: the return switches to the
+     * user's desktop and unlocks the window station, which must never undo a lock,
+     * a logon dialog or the screen saver. Read as the SAS code reads it. */
+    if (Session->LogonState != STATE_LOGGED_ON)
+    {
+        LeaveCriticalSection(&SecDeskLock);
+        CloseHandle(hEnd);
+        CloseHandle(hReady);
+        HeapFree(GetProcessHeap(), 0, Prompt);
+        CloseHandle(hBroker);
+        ERR("Secure-desktop Begin from %lu refused: the session is not logged on and unlocked (state %d)\n", Pid, Session->LogonState);
+        return ERROR_NOT_READY;
+    }
+
     if (Session->SecurePromptBroker)
     {
         LeaveCriticalSection(&SecDeskLock);
@@ -389,6 +429,7 @@ WlSecureDesktopBegin(
 
     LeaveCriticalSection(&SecDeskLock);
 
+    Prompt->Refs = 2; /* this call and the thread */
     Prompt->Session = Session;
     Prompt->hBroker = hBroker;
     Prompt->hEnd = hEnd;
@@ -396,26 +437,41 @@ WlSecureDesktopBegin(
     Prompt->TimeoutMs = dwTimeoutMs;
 
     hThread = CreateThread(NULL, 0, SecDeskPromptThread, Prompt, 0, NULL);
-    if (hThread)
+    if (!hThread)
     {
-        /* The thread answers within the switch wait, or the prompt is not held */
-        if (WaitForSingleObject(hReady, SECDESK_SWITCH_WAIT_MS) != WAIT_OBJECT_0)
-        {
-            ERR("Secure-desktop prompt thread did not switch in time\n");
-            SetEvent(hEnd);
-            Prompt->Switched = FALSE;
-        }
-        CloseHandle(hThread);
-    }
-
-    if (!hThread || !Prompt->Switched)
-    {
-        /* Nothing is held: the thread has given up (or never ran) and left the state to us */
+        /* No thread: this call owns everything */
+        ERR("Secure-desktop prompt thread could not be created (error %lu)\n", GetLastError());
         EnterCriticalSection(&SecDeskLock);
         SecDeskClear(Session);
         LeaveCriticalSection(&SecDeskLock);
         CloseHandle(hReady);
         HeapFree(GetProcessHeap(), 0, Prompt);
+        return ERROR_GEN_FAILURE;
+    }
+    CloseHandle(hThread);
+
+    /* From here the thread owns the session state. This call only reads the
+     * answer once it is there and drops its reference. */
+    if (WaitForSingleObject(hReady, SECDESK_SWITCH_WAIT_MS) == WAIT_OBJECT_0)
+    {
+        Switched = Prompt->Switched;
+    }
+    else
+    {
+        /* The thread is late: tell it to return as soon as it has switched; the
+         * slot stays busy until it has really returned, the desktop may still be
+         * switched for a moment */
+        ERR("Secure-desktop prompt thread did not switch in time\n");
+        EnterCriticalSection(&SecDeskLock);
+        if (Session->SecurePromptEnd == hEnd)
+            SetEvent(hEnd);
+        LeaveCriticalSection(&SecDeskLock);
+        Switched = FALSE;
+    }
+    SecDeskPromptRelease(Prompt);
+
+    if (!Switched)
+    {
         ERR("Secure-desktop Begin from %lu: the switch failed, the request is refused\n", Pid);
         return ERROR_GEN_FAILURE;
     }
