@@ -1138,7 +1138,7 @@ SectionCopyOnWriteChargePteChange(void)
     CHECK(UserRead64(&World, 0, BaseA + 0x2000, &Status) == *(ULONG64 *)(File.Data + 0x2000));
 
     Ctx.Address = BaseA + 0x2000;
-    Ctx.Mutate = TRUE;
+    Ctx.Mutate = 1;
     CHECK(UserWrite64(&World, 0, Ctx.Address, 0x5151) == STATUS_ACCESS_VIOLATION);
     CHECK(Ctx.Charges == 1);
     CHECK(Ctx.Returns == 1);
