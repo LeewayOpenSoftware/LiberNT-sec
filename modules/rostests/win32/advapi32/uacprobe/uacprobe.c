@@ -404,6 +404,26 @@ static void ProbeP(void)
         }
     }
 
+    /* P9: a window owned by the prompt, and a child window inside it. Either would share the prompt's
+     * input state, and the child could cover the prompt's text. Neither is shown; both are removed at once. */
+    if (Open)
+    {
+        SetLastError(0);
+        Cover = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 8, 8, g_Consent, NULL, GetModuleHandleW(NULL), NULL);
+        Error = GetLastError();
+        Report(Cover == NULL, "P9 CreateWindowEx with the prompt as owner: %s, error %lu", Cover ? "CREATED" : "refused", Error);
+        if (Cover)
+            DestroyWindow(Cover);
+
+        SetLastError(0);
+        Cover = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 8, 8, g_Consent, NULL, GetModuleHandleW(NULL), NULL);
+        Error = GetLastError();
+        Report(Cover == NULL, "P9 CreateWindowEx with the prompt as parent: %s, error %lu", Cover ? "CREATED" : "refused", Error);
+        if (Cover)
+            DestroyWindow(Cover);
+        Open = StillAsking(Thread);
+    }
+
     /* P4: window calls: hide, disable, move, rename */
     if (Open)
     {
