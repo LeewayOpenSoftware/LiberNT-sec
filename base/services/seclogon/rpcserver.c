@@ -10,6 +10,7 @@
 #include "precomp.h"
 
 #include <seclogon_s.h>
+#include <wlsecdesk_c.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(seclogon);
 
@@ -888,10 +889,155 @@ InitPendingPromptLock(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context)
     return TRUE;
 }
 
+/* The winlogon of the caller's session holds the secure desktop around the prompt. The answer
+ * of Begin is never trusted alone: consent.exe is started on WinSta0\Winlogon by that fixed
+ * name, and the binding asks for identification only. Any failure refuses the request. */
+#define SECL_SECURE_DESKTOP L"WinSta0\\Winlogon"
+
+static
+DWORD
+SecureDesktopBegin(
+    _In_ DWORD SessionId,
+    _In_ DWORD TimeoutMs,
+    _Out_ handle_t *phBinding)
+{
+    RPC_SECURITY_QOS Qos = { RPC_C_SECURITY_QOS_VERSION, RPC_C_QOS_CAPABILITIES_DEFAULT,
+                             RPC_C_QOS_IDENTITY_STATIC, RPC_C_IMP_LEVEL_IDENTIFY };
+    WCHAR Endpoint[64];
+    RPC_WSTR StringBinding = NULL;
+    handle_t hBinding = NULL;
+    DWORD dwError;
+
+    *phBinding = NULL;
+    StringCchPrintfW(Endpoint, _countof(Endpoint), L"wlsecdesk-%lu", SessionId);
+    if (RpcStringBindingComposeW(NULL, (RPC_WSTR)L"ncalrpc", NULL, (RPC_WSTR)Endpoint, NULL, &StringBinding) != RPC_S_OK)
+        return ERROR_ACCESS_DENIED;
+    if (RpcBindingFromStringBindingW(StringBinding, &hBinding) != RPC_S_OK)
+    {
+        RpcStringFreeW(&StringBinding);
+        return ERROR_ACCESS_DENIED;
+    }
+    RpcStringFreeW(&StringBinding);
+    /* Identification only: whatever answers must not get to act as the service */
+    RpcBindingSetAuthInfoExW(hBinding, NULL, RPC_C_AUTHN_LEVEL_CONNECT, RPC_C_AUTHN_WINNT, NULL, 0, &Qos);
+
+    RpcTryExcept
+    {
+        dwError = WlSecureDesktopBegin(hBinding, TimeoutMs);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        dwError = RpcExceptionCode();
+    }
+    RpcEndExcept;
+
+    if (dwError != ERROR_SUCCESS)
+    {
+        RpcBindingFree(&hBinding);
+        return dwError;
+    }
+    *phBinding = hBinding;
+    return ERROR_SUCCESS;
+}
+
+static
+VOID
+SecureDesktopEnd(
+    _In_ handle_t hBinding)
+{
+    DWORD dwError;
+
+    RpcTryExcept
+    {
+        dwError = WlSecureDesktopEnd(hBinding);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        dwError = RpcExceptionCode();
+    }
+    RpcEndExcept;
+    if (dwError != ERROR_SUCCESS)
+        ERR("The secure desktop could not be released: Error %lu (winlogon returns on its own)\n", dwError);
+    RpcBindingFree(&hBinding);
+}
+
+/* Declined or timed-out requests are counted per process and per logon session: a
+ * process that just declined waits a few seconds, three in a minute wait a minute.
+ * A request the user answers with Yes resets both. */
+#define SECL_DECLINE_HOLD_MS     (3 * 1000)
+#define SECL_DECLINE_WINDOW_MS   (60 * 1000)
+#define SECL_DECLINE_LIMIT       3
+#define SECL_DECLINE_ENTRIES     32
+
+typedef struct _DECLINE_ENTRY
+{
+    DWORD Pid;
+    LUID LogonId;
+    DWORD Tick;
+} DECLINE_ENTRY;
+
+static DECLINE_ENTRY DeclineRing[SECL_DECLINE_ENTRIES];
+static ULONG DeclineNext;
+
+/* Called with PendingPromptLock held */
+static
+BOOL
+IsRequestLimited(
+    _In_ DWORD Pid,
+    _In_ PLUID LogonId)
+{
+    DWORD Now = GetTickCount(), ByPid = 0, ByLogon = 0;
+    ULONG i;
+
+    for (i = 0; i < SECL_DECLINE_ENTRIES; i++)
+    {
+        if (DeclineRing[i].Tick == 0 || Now - DeclineRing[i].Tick > SECL_DECLINE_WINDOW_MS)
+            continue;
+        if (DeclineRing[i].Pid == Pid)
+        {
+            ByPid++;
+            if (Now - DeclineRing[i].Tick < SECL_DECLINE_HOLD_MS)
+                return TRUE;
+        }
+        if (RtlEqualLuid(&DeclineRing[i].LogonId, LogonId))
+            ByLogon++;
+    }
+    return ByPid >= SECL_DECLINE_LIMIT || ByLogon >= SECL_DECLINE_LIMIT;
+}
+
+static
+VOID
+RecordRequestResult(
+    _In_ DWORD Pid,
+    _In_ PLUID LogonId,
+    _In_ BOOL Declined)
+{
+    ULONG i;
+
+    EnterCriticalSection(&PendingPromptLock);
+    if (Declined)
+    {
+        DeclineRing[DeclineNext].Pid = Pid;
+        DeclineRing[DeclineNext].LogonId = *LogonId;
+        DeclineRing[DeclineNext].Tick = GetTickCount() | 1;
+        DeclineNext = (DeclineNext + 1) % SECL_DECLINE_ENTRIES;
+    }
+    else
+    {
+        for (i = 0; i < SECL_DECLINE_ENTRIES; i++)
+        {
+            if (DeclineRing[i].Pid == Pid || RtlEqualLuid(&DeclineRing[i].LogonId, LogonId))
+                DeclineRing[i].Tick = 0;
+        }
+    }
+    LeaveCriticalSection(&PendingPromptLock);
+}
+
 /* One prompt per logon session at a time */
 static
 PPENDING_PROMPT
 BeginPrompt(
+    _In_ DWORD CallerPid,
     _In_ PLUID LogonId)
 {
     PLIST_ENTRY Entry;
@@ -899,6 +1045,11 @@ BeginPrompt(
 
     InitOnceExecuteOnce(&PendingPromptInit, InitPendingPromptLock, NULL, NULL);
     EnterCriticalSection(&PendingPromptLock);
+    if (IsRequestLimited(CallerPid, LogonId))
+    {
+        LeaveCriticalSection(&PendingPromptLock);
+        return NULL;
+    }
     for (Entry = PendingPromptList.Flink; Entry != &PendingPromptList; Entry = Entry->Flink)
     {
         Prompt = CONTAINING_RECORD(Entry, PENDING_PROMPT, ListEntry);
@@ -1383,6 +1534,8 @@ SeclCreateProcessElevatedW(
     DWORD SessionId = 0, OwnSession = 0, CallerPid = 0, Policy = 0, Length, dwError;
     DWORD_PTR hwndOwner = 0;
     BOOL Allowed = FALSE, SameSession = FALSE;
+    handle_t hSecureDesktop = NULL;
+    PCWSTR ConsentDesktop;
 
     TRACE("SeclCreateProcessElevatedW(%p %p %p)\n", hBinding, pRequest, pResponse);
 
@@ -1442,11 +1595,26 @@ SeclCreateProcessElevatedW(
     {
         DWORD OwnerPid = 0;
 
-        Prompt = BeginPrompt(&LogonId);
+        Prompt = BeginPrompt(CallerPid, &LogonId);
         if (Prompt == NULL)
         {
             dwError = ERROR_BUSY;
             goto done;
+        }
+
+        /* The policy is the broker's to read; the prompt goes to the secure desktop when it says so,
+         * and a secure desktop that cannot be held refuses the request (no quieter prompt instead) */
+        ConsentDesktop = Desktop;
+        if (ReadPolicyDword(L"PromptOnSecureDesktop", 0) != 0)
+        {
+            dwError = SecureDesktopBegin(SessionId, CONSENT_TIMEOUT_MS, &hSecureDesktop);
+            if (dwError != ERROR_SUCCESS)
+            {
+                ERR("The secure desktop of session %lu could not be held: Error %lu\n", SessionId, dwError);
+                dwError = ERROR_ACCESS_DENIED;
+                goto done;
+            }
+            ConsentDesktop = SECL_SECURE_DESKTOP;
         }
         if (pRequest->hwndOwner != 0 && IsWindow((HWND)pRequest->hwndOwner) &&
             GetWindowThreadProcessId((HWND)pRequest->hwndOwner, &OwnerPid) && OwnerPid == CallerPid)
@@ -1458,9 +1626,16 @@ SeclCreateProcessElevatedW(
             dwError = ERROR_ACCESS_DENIED;
             goto done;
         }
-        dwError = AskConsent(SessionId, Desktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
+        dwError = AskConsent(SessionId, ConsentDesktop, Account, FinalPath, pRequest->CommandLine, hwndOwner, &Allowed);
+        /* consent.exe is gone here on every path (AskConsent waits for it or ends it) */
+        if (hSecureDesktop != NULL)
+        {
+            SecureDesktopEnd(hSecureDesktop);
+            hSecureDesktop = NULL;
+        }
         if (dwError != ERROR_SUCCESS)
             goto done;
+        RecordRequestResult(CallerPid, &LogonId, !Allowed);
         if (!Allowed)
         {
             dwError = ERROR_CANCELLED;
@@ -1534,6 +1709,8 @@ SeclCreateProcessElevatedW(
     CloseHandle(ProcessInfo.hProcess);
 
 done:
+    if (hSecureDesktop != NULL)
+        SecureDesktopEnd(hSecureDesktop);
     if (dwError != ERROR_SUCCESS)
         ERR("Elevation request of process %lu (session %lu, policy %lu) ends with Error %lu\n", CallerPid, SessionId, Policy, dwError);
     if (hImage != NULL)

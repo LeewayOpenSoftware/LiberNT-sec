@@ -1,10 +1,12 @@
 
-include_directories(${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl)
+include_directories(${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl ${CMAKE_CURRENT_BINARY_DIR})
 add_rpc_files(server ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl/seclogon.idl)
+add_rpc_files(client ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl/wlsecdesk.idl)
 spec2def(seclogon.dll seclogon.spec ADD_IMPORTLIB)
 
 list(APPEND SOURCE
     rpcserver.c
+    ${CMAKE_CURRENT_BINARY_DIR}/wlsecdesk_c.c
     seclogon.c
     precomp.h)
 
