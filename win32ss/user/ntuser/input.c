@@ -1421,7 +1421,7 @@ NtUserAttachThreadInput(
     IN BOOL fAttach)
 {
   NTSTATUS Status;
-  PTHREADINFO pti, ptiTo;
+  PTHREADINFO pti, ptiTo, ptiCurrent;
   BOOL Ret = FALSE;
 
   UserEnterExclusive();
@@ -1437,6 +1437,15 @@ NtUserAttachThreadInput(
      goto Exit;
   }
 
+  /* An attached thread shares its input state, so neither may be above the caller */
+  ptiCurrent = PsGetCurrentThreadWin32Thread();
+  if (!IntUipiIsThreadAllowed(ptiCurrent->ppi, pti, NULL) ||
+      !IntUipiIsThreadAllowed(ptiCurrent->ppi, ptiTo, NULL))
+  {
+     EngSetLastError(ERROR_ACCESS_DENIED);
+     goto Exit;
+  }
+
   Status = UserAttachThreadInput( pti, ptiTo, fAttach);
   if (!NT_SUCCESS(Status))
   {
@@ -1449,6 +1458,23 @@ Exit:
   TRACE("Leave NtUserAttachThreadInput, ret=%d\n",Ret);
   UserLeave();
   return Ret;
+}
+
+/* Whether an injected event may go where it would land now: the focus window's thread for a key
+ * (the choice ProcessKeyEvent makes), the foreground window's thread for the mouse; the window
+ * under the pointer is tested again when the mouse message is queued */
+static BOOL
+IntUipiInjectionAllowed(PTHREADINFO ptiCaller, BOOL bKeyboard)
+{
+    PUSER_MESSAGE_QUEUE pQueue = IntGetFocusMessageQueue();
+    PWND Wnd;
+    PTHREADINFO ptiTarget;
+
+    if (!pQueue)
+        return TRUE;
+    Wnd = (bKeyboard && pQueue->spwndFocus) ? pQueue->spwndFocus : pQueue->spwndActive;
+    ptiTarget = Wnd ? Wnd->head.pti : (bKeyboard ? pQueue->ptiKeyboard : pQueue->ptiMouse);
+    return IntUipiIsThreadAllowed(ptiCaller->ppi, ptiTarget, Wnd);
 }
 
 /*
@@ -1523,6 +1549,15 @@ NtUserSendInput(
         {
             SetLastNtError(Status);
             goto cleanup;
+        }
+
+        /* Input for a thread of higher integrity is dropped before it touches any state,
+         * and counted as sent, as on Windows */
+        if ((SafeInput.type == INPUT_MOUSE || SafeInput.type == INPUT_KEYBOARD) &&
+            !IntUipiInjectionAllowed(pti, SafeInput.type == INPUT_KEYBOARD))
+        {
+            uRet++;
+            continue;
         }
 
         switch (SafeInput.type)

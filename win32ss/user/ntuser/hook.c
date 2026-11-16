@@ -1600,6 +1600,13 @@ NtUserSetWindowsHookEx( HINSTANCE Mod,
 
        if (ptiHook->ppi != pti->ppi)
        {
+          /* The hook's module would be loaded by that thread */
+          if (!IntUipiIsThreadAllowed(pti->ppi, ptiHook, NULL))
+          {
+             EngSetLastError(ERROR_ACCESS_DENIED);
+             goto Cleanup; // Return NULL
+          }
+
           if ( !Mod &&
               (HookId == WH_GETMESSAGE ||
                HookId == WH_CALLWNDPROC ||

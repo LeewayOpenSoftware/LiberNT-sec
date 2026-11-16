@@ -793,6 +793,13 @@ co_MsqInsertMouseMessage(MSG* Msg, DWORD flags, ULONG_PTR dwExtraInfo, BOOL Hook
           return TRUE;
        }
 
+       /* An injected mouse message stops here when its window is above the injector */
+       if ((flags & LLMHF_INJECTED) &&
+           !IntUipiIsThreadAllowed(((PTHREADINFO)PsGetCurrentThreadWin32Thread())->ppi, pti, pwnd))
+       {
+          return TRUE;
+       }
+
        MessageQueue->ptiMouse = pti;
 
        if (Msg->message == WM_MOUSEMOVE)

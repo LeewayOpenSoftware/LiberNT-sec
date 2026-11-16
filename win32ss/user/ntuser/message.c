@@ -2784,7 +2784,7 @@ IntGetProcessIntegrity(PEPROCESS Process)
     return Rid;
 }
 
-static ULONG FASTCALL
+ULONG FASTCALL
 IntUipiGetTargetIntegrity(PPROCESSINFO ppiTarget, PWND Window)
 {
     PEPROCESS Process;
@@ -2804,6 +2804,26 @@ IntUipiGetTargetIntegrity(PPROCESSINFO ppiTarget, PWND Window)
         }
     }
     return IntGetProcessIntegrity(ppiTarget->peProcess);
+}
+
+/* The caller may drive the target thread's input (injected input, a hook on it, an attach):
+ * its integrity is not below the target's, or its token carries UIAccess */
+BOOL FASTCALL
+IntUipiIsThreadAllowed(PPROCESSINFO ppiCaller, PTHREADINFO ptiTarget, PWND Window)
+{
+    PTOKEN Token;
+    BOOLEAN UiAccess;
+
+    if (!ppiCaller || !ptiTarget || !ptiTarget->ppi || ppiCaller == ptiTarget->ppi)
+        return TRUE;
+    if (IntGetProcessIntegrity(ppiCaller->peProcess) >= IntUipiGetTargetIntegrity(ptiTarget->ppi, Window))
+        return TRUE;
+    if (!ppiCaller->peProcess)
+        return FALSE;
+    Token = PsReferencePrimaryToken(ppiCaller->peProcess);
+    UiAccess = !!(Token->TokenFlags & TOKEN_UIACCESS);
+    PsDereferencePrimaryToken(Token);
+    return UiAccess;
 }
 
 static PUSER_MSG_FILTER
