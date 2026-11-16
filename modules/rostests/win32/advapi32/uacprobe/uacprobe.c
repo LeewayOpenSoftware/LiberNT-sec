@@ -10,6 +10,8 @@
  *   uacprobe n     the broker refuses a desktop other than the caller's default one (error 740 or 5)
  *   uacprobe p     messages, input, hooks and window calls do not reach the prompt
  *   uacprobe d     an elevated child does not inherit the requester's DOS device map
+ *   uacprobe s     with PromptOnSecureDesktop=1: SwitchDesktop(Default) is refused and the prompt
+ *                  on the Winlogon desktop is out of reach of a Medium process (L7/L8)
  *   uacprobe       both
  *
  * Each check prints one line starting with PASS or FAIL. Check p leaves the prompt
@@ -537,6 +539,111 @@ static void ProbeP(void)
         CloseBrokerCall(Thread, &Call);
 }
 
+/* S: the secure desktop (PromptOnSecureDesktop=1). The prompt is on WinSta0\\Winlogon, a desktop
+ * no user program can open, and the window station is locked while it is up, so a Medium process
+ * can neither switch the input back to its own desktop nor reach the dialog. Run it with
+ * PromptOnSecureDesktop=1; if a prompt shows up on this desktop the policy is not 1 and it reports
+ * INFO, not FAIL (that case is `uacprobe p`). */
+static void ProbeS(void)
+{
+    BROKER_CALL Call;
+    HANDLE Thread;
+    HDESK Default, Winlogon;
+    HWND Prompt;
+    DWORD Start, Error;
+    BOOL Switched, Open;
+
+    Thread = StartBrokerCall(&Call, NULL);
+    if (!Thread)
+    {
+        Report(FALSE, "S: cannot start the broker call (error %lu)", GetLastError());
+        return;
+    }
+
+    /* The prompt is on another desktop, so its window does not appear here; wait for it to come up.
+     * If one does appear here, the secure desktop is not in force. */
+    Start = GetTickCount();
+    while (GetTickCount() - Start < APPEAR_MS && WaitForSingleObject(Thread, 200) == WAIT_TIMEOUT)
+    {
+        if ((Prompt = FindConsent()) != NULL)
+        {
+            Info("S: a prompt is on THIS desktop; PromptOnSecureDesktop is not 1. Use `uacprobe p`. Answer it No.");
+            WaitForSingleObject(Thread, ANSWER_MS);
+            CloseBrokerCall(Thread, &Call);
+            return;
+        }
+        if (GetTickCount() - Start >= SETTLE_MS)
+            break;
+    }
+    if (WaitForSingleObject(Thread, 0) == WAIT_OBJECT_0)
+    {
+        Report(FALSE, "S: the broker answered %lu before the prompt could be probed", Call.Error);
+        CloseBrokerCall(Thread, &Call);
+        return;
+    }
+
+    /* L7: a Medium process holds DESKTOP_SWITCHDESKTOP on Default (the logon SID ACE), so it can
+     * open it; the switch must still be refused because winlogon locked the window station and only
+     * the logon process may switch on a locked station. A switch that succeeds is the leak L7 looks for. */
+    SetLastError(0);
+    Default = OpenDesktopW(L"Default", 0, FALSE, DESKTOP_SWITCHDESKTOP);
+    if (Default)
+    {
+        SetLastError(0);
+        Switched = SwitchDesktop(Default);
+        Error = GetLastError();
+        Open = StillAsking(Thread);
+        Report(!Switched && Open, "L7 SwitchDesktop(Default) while the prompt holds the station: %s, error %lu, prompt %s",
+               Switched ? "SWITCHED" : "refused", Error, Open ? "still open" : "gone");
+        CloseDesktop(Default);
+    }
+    else
+    {
+        Info("L7 OpenDesktop(Default, DESKTOP_SWITCHDESKTOP) failed (error %lu); the switch was not tried", GetLastError());
+    }
+
+    /* L8a: the Winlogon desktop itself: its ACL admits SYSTEM only, so a Medium process cannot open it. */
+    SetLastError(0);
+    Winlogon = OpenDesktopW(L"Winlogon", 0, FALSE, DESKTOP_SWITCHDESKTOP | DESKTOP_READOBJECTS);
+    Error = GetLastError();
+    Report(Winlogon == NULL, "L8 OpenDesktop(Winlogon): %s, error %lu",
+           Winlogon ? "OPENED" : "refused", Error);
+    if (Winlogon)
+    {
+        Switched = SwitchDesktop(Winlogon);
+        Report(!Switched, "L8 SwitchDesktop(Winlogon) after it opened: %s", Switched ? "SWITCHED" : "refused");
+        CloseDesktop(Winlogon);
+    }
+
+    /* L8b: the dialog is on the secure desktop, so it is not reachable from here at all. */
+    Prompt = FindConsent();
+    Open = StillAsking(Thread);
+    Report(Prompt == NULL && Open, "L8 the prompt window from this desktop: %s, prompt %s",
+           Prompt ? "FOUND" : "not found", Open ? "still open" : "gone");
+
+    /* The end: only a person answers, on the secure desktop, with No. */
+    if (WaitForSingleObject(Thread, 0) == WAIT_TIMEOUT)
+    {
+        printf("ACTION: answer the prompt on the secure desktop with No. Waiting up to %u seconds.\n",
+               ANSWER_MS / 1000);
+        fflush(stdout);
+        WaitForSingleObject(Thread, ANSWER_MS);
+    }
+    if (WaitForSingleObject(Thread, 0) == WAIT_TIMEOUT)
+    {
+        Report(FALSE, "L7/L8 the broker call did not end");
+    }
+    else
+    {
+        Report(Call.Error != ERROR_SUCCESS && Call.Response.dwProcessId == 0,
+               "L7/L8 end of the request: broker answered %lu (1223 = cancelled), process id %lu",
+               Call.Error, Call.Response.dwProcessId);
+    }
+
+    g_Consent = NULL;
+    CloseBrokerCall(Thread, &Call);
+}
+
 /* P10: what the limited side can do to an elevated process of the same user, and to its token */
 static DWORD QueryTokenDword(HANDLE Token, int Class)
 {
@@ -861,7 +968,7 @@ static int ProbeDChild(void)
 
 int wmain(int argc, WCHAR *argv[])
 {
-    BOOL DoN = TRUE, DoP = TRUE, DoT = FALSE, DoD = FALSE;
+    BOOL DoN = TRUE, DoP = TRUE, DoT = FALSE, DoD = FALSE, DoS = FALSE;
 
     /* The elevated child runs first and on its own: it is NOT the limited side and prints nothing */
     if (argc > 1 && lstrcmpW(argv[1], L"dchild") == 0)
@@ -872,10 +979,11 @@ int wmain(int argc, WCHAR *argv[])
         DoN = (argv[1][0] == L'n' || argv[1][0] == L'N');
         DoP = (argv[1][0] == L'p' || argv[1][0] == L'P');
         DoD = (argv[1][0] == L'd' || argv[1][0] == L'D');
+        DoS = (argv[1][0] == L's' || argv[1][0] == L'S');
         DoT = ((argv[1][0] == L't' || argv[1][0] == L'T') && argc > 2);
-        if (!DoN && !DoP && !DoT && !DoD)
+        if (!DoN && !DoP && !DoT && !DoD && !DoS)
         {
-            printf("usage: uacprobe [n|p|d|t <id of an elevated process of this user>]\n");
+            printf("usage: uacprobe [n|p|s|d|t <id of an elevated process of this user>]\n");
             return 100;
         }
     }
@@ -891,6 +999,8 @@ int wmain(int argc, WCHAR *argv[])
         ProbeN();
     if (DoP)
         ProbeP();
+    if (DoS)
+        ProbeS();
     if (DoT)
         ProbeT(wcstoul(argv[2], NULL, 10));
     if (DoD)
