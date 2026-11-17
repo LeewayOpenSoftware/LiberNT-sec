@@ -15,10 +15,13 @@
 #define TEST_PASSWORD   L"Lnt!LgGroups#2026q"
 
 /* Exit codes reported by the unprivileged child process. */
-#define CHILD_DENIED            0   /* logon denied - the fix works */
-#define CHILD_INJECTED          1   /* Administrators was injected - VULNERABLE */
-#define CHILD_STRIPPED          2   /* logon succeeded but group absent - also safe */
-#define CHILD_SETUP_FAILED      3   /* could not run the scenario - skip */
+/* Distinctive exit codes so a child that never ran its routine (exited the
+ * framework code), exited 0, or was killed on timeout cannot pass vacuously. */
+#define CHILD_DENIED            0x4C470010  /* good: the bad outcome did not happen */
+#define CHILD_INJECTED          0x4C470011  /* VULNERABLE: the bad outcome happened */
+#define CHILD_STRIPPED          0x4C470012  /* logon ok but the SID absent - also safe */
+#define CHILD_SETUP_FAILED      0x4C470013  /* could not set up the scenario - skip */
+#define CHILD_TIMEOUT           0x4C470014  /* child did not finish in time - fail */
 
 static
 NET_API_STATUS
@@ -377,8 +380,15 @@ SpawnUnprivilegedChild(
     if (CreateProcessAsUserW(Restricted, NULL, CommandLine, NULL, NULL, FALSE,
                              CREATE_NO_WINDOW, NULL, NULL, &StartupInfo, &ProcessInfo))
     {
-        WaitForSingleObject(ProcessInfo.hProcess, 30000);
-        GetExitCodeProcess(ProcessInfo.hProcess, &ExitCode);
+        if (WaitForSingleObject(ProcessInfo.hProcess, 30000) == WAIT_TIMEOUT)
+        {
+            TerminateProcess(ProcessInfo.hProcess, CHILD_TIMEOUT);
+            ExitCode = CHILD_TIMEOUT;
+        }
+        else
+        {
+            GetExitCodeProcess(ProcessInfo.hProcess, &ExitCode);
+        }
         CloseHandle(ProcessInfo.hThread);
         CloseHandle(ProcessInfo.hProcess);
     }
@@ -483,8 +493,11 @@ START_TEST(LogonUserLocalGroups)
                 Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, Groups->Groups[0].Sid, &HasAdmin);
                 if (NT_SUCCESS(Status))
                     ok(HasAdmin, "trusted caller: Administrators should be present\n");
+                else if (Status == STATUS_NONE_MAPPED || Status == STATUS_NO_SUCH_USER ||
+                         Status == STATUS_LOGON_FAILURE || Status == STATUS_ACCOUNT_RESTRICTION)
+                    skip("trusted logon: test account not usable here (0x%08lx)\n", Status);
                 else
-                    skip("trusted logon failed (test user not usable in this image?): 0x%08lx\n", Status);
+                    ok(FALSE, "trusted logon unexpectedly rejected: 0x%08lx\n", Status);
                 FreeSid(Groups->Groups[0].Sid);
                 HeapFree(GetProcessHeap(), 0, Groups);
             }
@@ -492,13 +505,17 @@ START_TEST(LogonUserLocalGroups)
             /* Bounded adversarial leg. */
             TestMalformedGroups(LsaHandle, AuthPackage);
 
-            /* lsass must still answer after the malformed inputs. */
-            Status = LsaInteractiveLogon(LsaHandle, AuthPackage, NULL, NULL, NULL);
-            /* Any logon NTSTATUS means lsass answered the request after the
-             * adversarial inputs (it did not crash); the credential need not be
-             * valid in this environment. A dropped port would be the failure. */
-            ok(Status != STATUS_PORT_DISCONNECTED,
-               "lsass alive after adversarial cases: 0x%08lx\n", Status);
+            /* lsass must still answer after the malformed inputs. A positive
+             * probe on the same handle (not a logon, whose credential may be
+             * invalid here) confirms lsass did not crash. */
+            {
+                LSA_STRING ProbeName;
+                ULONG ProbePkg = 0;
+
+                RtlInitString(&ProbeName, MSV1_0_PACKAGE_NAME);
+                ok(NT_SUCCESS(LsaLookupAuthenticationPackage(LsaHandle, &ProbeName, &ProbePkg)),
+                   "lsass alive after adversarial cases\n");
+            }
         }
 
         LsaDeregisterLogonProcess(LsaHandle);
@@ -513,13 +530,12 @@ START_TEST(LogonUserLocalGroups)
     ChildResult = SpawnUnprivilegedChild(L"LocalGroupsChild");
     if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
     {
-        skip("could not run unprivileged LocalGroups child (result %d)\n", ChildResult);
+        skip("could not run unprivileged LocalGroups child (0x%x)\n", ChildResult);
     }
     else
     {
-        ok(ChildResult != CHILD_INJECTED,
-           "unprivileged caller injected Administrators via LocalGroups (EoP)\n");
-        trace("LocalGroups child result: %d (0=denied,2=stripped)\n", ChildResult);
+        ok(ChildResult == CHILD_DENIED || ChildResult == CHILD_STRIPPED,
+           "unprivileged LocalGroups (Administrators) EoP: expected denied/stripped, got 0x%x\n", ChildResult);
     }
 
     /* Connect-trust check: an unprivileged caller's connection is untrusted, so
@@ -527,27 +543,25 @@ START_TEST(LogonUserLocalGroups)
     ChildResult = SpawnUnprivilegedChild(L"ConnectTrustChild");
     if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
     {
-        skip("could not run unprivileged connect-trust child (result %d)\n", ChildResult);
+        skip("could not run unprivileged connect-trust child (0x%x)\n", ChildResult);
     }
     else
     {
-        ok(ChildResult != CHILD_INJECTED,
-           "unprivileged caller was granted a trusted-only package call\n");
-        trace("connect-trust child result: %d (0=denied)\n", ChildResult);
+        ok(ChildResult == CHILD_DENIED || ChildResult == CHILD_STRIPPED,
+           "unprivileged trusted-only package call: expected denied, got 0x%x\n", ChildResult);
     }
 
     /* Regression guard: an unprivileged caller must still be able to LogonUser
      * (the benign logon-session groups advapi32 supplies are allowed). */
     ChildResult = SpawnUnprivilegedChild(L"LogonUserChild");
-    if (ChildResult < 0)
+    if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
     {
-        skip("could not run unprivileged LogonUser child (result %d)\n", ChildResult);
+        skip("could not run unprivileged LogonUser child (0x%x)\n", ChildResult);
     }
     else
     {
-        ok(ChildResult != CHILD_INJECTED,
-           "unprivileged LogonUser got ERROR_PRIVILEGE_NOT_HELD (regression)\n");
-        trace("LogonUser child result: %d (0=logon ok,2=other failure)\n", ChildResult);
+        ok(ChildResult == CHILD_DENIED || ChildResult == CHILD_STRIPPED,
+           "unprivileged LogonUser blocked with ERROR_PRIVILEGE_NOT_HELD (regression), got 0x%x\n", ChildResult);
     }
 
     /* An unprivileged caller supplying a foreign logon SID must not receive it
@@ -555,13 +569,12 @@ START_TEST(LogonUserLocalGroups)
     ChildResult = SpawnUnprivilegedChild(L"ForeignLogonChild");
     if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
     {
-        skip("could not run unprivileged foreign-logon child (result %d)\n", ChildResult);
+        skip("could not run unprivileged foreign-logon child (0x%x)\n", ChildResult);
     }
     else
     {
-        ok(ChildResult != CHILD_INJECTED,
-           "unprivileged caller obtained a foreign logon SID in its token\n");
-        trace("foreign-logon child result: %d (0=substituted/absent)\n", ChildResult);
+        ok(ChildResult == CHILD_DENIED || ChildResult == CHILD_STRIPPED,
+           "unprivileged foreign logon SID: expected substituted/absent, got 0x%x\n", ChildResult);
     }
 
     NetUserDel(NULL, TEST_USER);
