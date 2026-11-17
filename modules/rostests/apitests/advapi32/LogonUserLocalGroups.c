@@ -304,19 +304,34 @@ int
 RunLogonUserChild(VOID)
 {
     HANDLE Token = NULL;
+    DWORD Err;
 
+    /* A wrong password must reach authentication (ERROR_LOGON_FAILURE), not be
+     * blocked before it with ERROR_PRIVILEGE_NOT_HELD (the connect refusal). */
     SetLastError(0xdeadbeef);
-    if (LogonUserW(TEST_USER, L".", TEST_PASSWORD, LOGON32_LOGON_NETWORK,
+    if (LogonUserW(TEST_USER, L".", L"wrong-" TEST_PASSWORD, LOGON32_LOGON_NETWORK,
                    LOGON32_PROVIDER_DEFAULT, &Token))
     {
         if (Token != NULL)
             CloseHandle(Token);
-        return CHILD_DENIED;                 /* 0: logon succeeded - correct */
+        return CHILD_STRIPPED;               /* unexpected: wrong pw accepted */
     }
+    Err = GetLastError();
+    if (Err == ERROR_PRIVILEGE_NOT_HELD)
+        return CHILD_INJECTED;               /* 1314: blocked before auth - the bug */
+    if (Err != ERROR_LOGON_FAILURE)
+        return CHILD_STRIPPED;               /* some other environment error */
 
-    if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD)
-        return CHILD_INJECTED;               /* 1: 1314 - the regression */
-    return CHILD_STRIPPED;                    /* 2: other failure (env/auth) */
+    /* The correct password must then succeed. */
+    Token = NULL;
+    SetLastError(0xdeadbeef);
+    if (!LogonUserW(TEST_USER, L".", TEST_PASSWORD, LOGON32_LOGON_NETWORK,
+                    LOGON32_PROVIDER_DEFAULT, &Token))
+        return (GetLastError() == ERROR_PRIVILEGE_NOT_HELD) ? CHILD_INJECTED : CHILD_STRIPPED;
+
+    if (Token != NULL)
+        CloseHandle(Token);
+    return CHILD_DENIED;                      /* 0: reached auth and logon works */
 }
 
 /* Spawn this same test exe with a restricted (SeTcb-removed) primary token so

@@ -139,7 +139,22 @@ OpenLogonLsaHandle(VOID)
     if (!NT_SUCCESS(Status))
     {
         TRACE("LsaRegisterLogonProcess failed (Status 0x%08lx)\n", Status);
-        goto done;
+
+        /*
+         * Registering as a logon process requires SeTcbPrivilege; the LSA
+         * refuses the trusted connection without it. Fall back to an untrusted
+         * connection in that case only, so LogonUser still works (the LSA then
+         * accepts only benign logon-session groups). Any other failure is real.
+         */
+        if (Status != STATUS_PORT_CONNECTION_REFUSED)
+            goto done;
+
+        Status = LsaConnectUntrusted(&LsaHandle);
+        if (!NT_SUCCESS(Status))
+        {
+            TRACE("LsaConnectUntrusted failed (Status 0x%08lx)\n", Status);
+            goto done;
+        }
     }
 
     RtlInitAnsiString((PANSI_STRING)&PackageName,

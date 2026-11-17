@@ -815,6 +815,7 @@ LsapCopyLocalGroups(
     PSID SrcSid, DstSid;
     ULONG SidLength;
     ULONG AllocatedSids = 0;
+    BOOLEAN SeenLogonSid = FALSE;
     ULONG i;
     NTSTATUS Status;
 
@@ -906,11 +907,27 @@ LsapCopyLocalGroups(
          * attach another session's logon SID (which would grant that session's
          * window-station/desktop access). Any other SID is an injection attempt.
          */
-        if (!TrustedCaller && !LsapIsLocalGroupSid(DstSid))
+        if (!TrustedCaller)
         {
-            if (LsapIsLogonGroupSid(DstSid))
+            if (LsapIsLocalGroupSid(DstSid))
+            {
+                /* Normalise attributes: do not honor caller-chosen ones. */
+                LocalGroups->Groups[i].Attributes =
+                    SE_GROUP_MANDATORY | SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT;
+            }
+            else if (LsapIsLogonGroupSid(DstSid))
             {
                 PSID FreshSid = NULL;
+
+                /* At most one logon SID from an untrusted caller. */
+                if (SeenLogonSid)
+                {
+                    ERR("Untrusted caller supplied more than one logon SID; denying\n");
+                    RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
+                    Status = STATUS_PRIVILEGE_NOT_HELD;
+                    goto done;
+                }
+                SeenLogonSid = TRUE;
 
                 Status = LsapAllocateFreshLogonSid(&FreshSid);
                 if (!NT_SUCCESS(Status))
@@ -921,6 +938,9 @@ LsapCopyLocalGroups(
 
                 RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
                 DstSid = FreshSid;
+                LocalGroups->Groups[i].Attributes =
+                    SE_GROUP_MANDATORY | SE_GROUP_ENABLED |
+                    SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_LOGON_ID;
             }
             else
             {
