@@ -266,6 +266,7 @@ KMT_TESTFUNC Test_KeXState;
 KMT_TESTFUNC Test_KeSwitchSelfWake;
 KMT_TESTFUNC Test_KeTrapDebugRegisters;
 KMT_TESTFUNC Test_KeTrapFilterX87;
+KMT_TESTFUNC Test_KeKvaShadow;
 KMT_TESTFUNC Test_KeStandbySteal;
 #endif
 KMT_TESTFUNC Test_KeDeferredReady;
@@ -766,6 +767,7 @@ const KMT_TEST TestList[] =
     { "KeSwitchSelfWake",                   Test_KeSwitchSelfWake },
     { "KeTrapDebugRegisters",               Test_KeTrapDebugRegisters },
     { "KeTrapFilterX87",                    Test_KeTrapFilterX87 },
+    { "KeKvaShadow",                        Test_KeKvaShadow },
     { "KeStandbySteal",                     Test_KeStandbySteal },
 #endif
     { "KeDeferredReady",                    Test_KeDeferredReady },
