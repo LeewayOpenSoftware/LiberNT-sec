@@ -106,6 +106,7 @@ KiInitializePcr(
     /* Set pointers to ourselves */
     Pcr->Self = (PKPCR)Pcr;
     Pcr->CurrentPrcb = &Pcr->Prcb;
+    Pcr->KvaShadow.Self = Pcr;
     Pcr->Prcb.Context = &Pcr->Prcb.ProcessorState.ContextFrame;
 
     /* Set the PCR Version */
@@ -309,6 +310,8 @@ KiInitializeProcessorBootStructures(
                     NmiStack);
 
     Pcr->Prcb.RspBase = (ULONG64)KernelStack;
+    Pcr->KvaShadow.KernelDirectoryTableBase = __readcr3();
+    Pcr->KvaShadow.UserDirectoryTableBase = Pcr->KvaShadow.KernelDirectoryTableBase;
 }
 
 CODE_SEG("INIT")

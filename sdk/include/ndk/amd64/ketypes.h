@@ -994,6 +994,21 @@ typedef struct _KPRCB
 #endif
 } KPRCB, *PKPRCB;
 
+typedef struct _KKVA_SHADOW_STATE
+{
+    ULONG64 KernelDirectoryTableBase;
+    ULONG64 UserDirectoryTableBase;
+    ULONG64 UserRspShadow;
+    ULONG64 SavedRax;
+    ULONG64 SavedRcx;
+    ULONG Vector;
+    ULONG ShadowFlags;
+    struct _KIPCR *Self;
+    UCHAR Reserved[4096 - 7 * sizeof(ULONG64)];
+} KKVA_SHADOW_STATE, *PKKVA_SHADOW_STATE;
+
+C_ASSERT(sizeof(KKVA_SHADOW_STATE) == 4096);
+
 //
 // Processor Control Region
 //
@@ -1038,7 +1053,11 @@ typedef struct _KIPCR
     // hack:
     ULONG ContextSwitches;
 
+    /* Private page-aligned tail (owner decision D-STATE, 2026-11-17) until KPRCB follows the Windows 11 layout */
+    DECLSPEC_ALIGN(4096) KKVA_SHADOW_STATE KvaShadow;
 } KIPCR, *PKIPCR;
+
+C_ASSERT((FIELD_OFFSET(KIPCR, KvaShadow) & 4095) == 0);
 
 //
 // TSS Definition

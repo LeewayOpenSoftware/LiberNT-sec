@@ -260,9 +260,10 @@ NTAPI
 KiSwapProcess(IN PKPROCESS NewProcess,
               IN PKPROCESS OldProcess)
 {
-#ifdef CONFIG_SMP
     PKIPCR Pcr = (PKIPCR)KeGetPcr();
+    ULONG64 DirectoryTableBase;
 
+#ifdef CONFIG_SMP
     if (NewProcess != OldProcess)
     {
         InterlockedOr64((PLONG64)&NewProcess->ActiveProcessors,
@@ -270,12 +271,17 @@ KiSwapProcess(IN PKPROCESS NewProcess,
     }
 #endif
 
-    /* Update CR3 */
 #if (NTDDI_VERSION >= NTDDI_LONGHORN)
-    __writecr3(NewProcess->DirectoryTableBase);
+    DirectoryTableBase = NewProcess->DirectoryTableBase;
 #else
-    __writecr3(NewProcess->DirectoryTableBase[0]);
+    DirectoryTableBase = NewProcess->DirectoryTableBase[0];
 #endif
+
+    Pcr->KvaShadow.KernelDirectoryTableBase = DirectoryTableBase;
+    Pcr->KvaShadow.UserDirectoryTableBase = DirectoryTableBase;
+
+    /* Update CR3 */
+    __writecr3(DirectoryTableBase);
 
 #ifdef CONFIG_SMP
     if (NewProcess != OldProcess)
