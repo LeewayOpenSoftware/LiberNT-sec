@@ -19,6 +19,7 @@ extern void func_InitiateShutdown(void);
 extern void func_ImpersonateRestricted(void);
 extern void func_IntegrityLabels(void);
 extern void func_LogonProcess(void);
+extern void func_LogonSpecialAccount(void);
 extern void func_LogonSession(void);
 extern void func_LogonSessionEnd(void);
 extern void func_LogonUserNetwork(void);
@@ -88,6 +89,7 @@ const struct test winetest_testlist[] =
     { "ImpersonateRestricted", func_ImpersonateRestricted },
     { "IntegrityLabels", func_IntegrityLabels },
     { "LogonProcess", func_LogonProcess },
+    { "LogonSpecialAccount", func_LogonSpecialAccount },
     { "LogonSession", func_LogonSession },
     { "LogonSessionEnd", func_LogonSessionEnd },
     { "LogonUserNetwork", func_LogonUserNetwork },
