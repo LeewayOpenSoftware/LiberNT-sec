@@ -157,13 +157,14 @@ KiKvaShadowExitFault:
     jmp KiUserIretqFault
 
 KiKvaShadowExitFaultSysret:
+    /* A sysretq faults at CPL 0 with the user RSP: the fault frame and the two pushes above are on the user stack */
+    mov edx, eax
     swapgs
     mov rax, gs:[PcKvaKernelDirectoryTableBase]
     mov cr3, rax
     mov rsp, gs:[PcRspBase]
     sub rsp, 48
     mov ecx, UNEXPECTED_KERNEL_MODE_TRAP
-    mov edx, 13
     xor r8d, r8d
     xor r9d, r9d
     mov qword ptr [rsp + 32], 0

@@ -1065,6 +1065,7 @@ typedef struct _KIPCR
 
 C_ASSERT((FIELD_OFFSET(KIPCR, KvaShadow) & 4095) == 0);
 C_ASSERT((FIELD_OFFSET(KIPCR, KvaShadowTransitionStack) & 4095) == 0);
+C_ASSERT(sizeof(((PKIPCR)0)->KvaShadowTransitionStack) == 4096);
 C_ASSERT(FIELD_OFFSET(KIPCR, KvaShadowExitIretq) < FIELD_OFFSET(KIPCR, KvaShadow));
 
 //

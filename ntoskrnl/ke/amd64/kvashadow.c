@@ -190,12 +190,20 @@ KiActivateKvaShadow(
     for (Index = 0; Index < 256; Index++)
     {
         if (Idt[Index].IstIndex != 0)
+        {
+            ASSERT(Index == 2 || Index == 8 || Index == 18);
             continue;
+        }
 
         Stub = (ULONG64)&KiKvaShadowVectorStubs[Index * KI_KVA_STUB_SIZE];
         Idt[Index].OffsetLow = Stub & 0xffff;
+        Idt[Index].Selector = KGDT64_R0_CODE;
+        Idt[Index].Reserved0 = 0;
+        Idt[Index].Type = 0x0e;
+        Idt[Index].Present = 1;
         Idt[Index].OffsetMiddle = (Stub >> 16) & 0xffff;
         Idt[Index].OffsetHigh = (ULONG)(Stub >> 32);
+        Idt[Index].Reserved1 = 0;
     }
 
     Pcr->KvaShadowExitIretq = KiKvaShadowExitIretq;

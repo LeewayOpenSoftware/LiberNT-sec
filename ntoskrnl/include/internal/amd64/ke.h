@@ -387,6 +387,7 @@ KeRegisterInterruptHandler(IN ULONG Vector,
 
     if (((PKIPCR)KeGetPcr())->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE)
     {
+        ASSERT(KeGetPcr()->IdtBase[Entry].IstIndex == 0);
         ((PKIPCR)KeGetPcr())->KvaShadowHandlers[Entry] = Handler;
         return;
     }
