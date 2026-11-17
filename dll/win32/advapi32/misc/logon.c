@@ -1378,6 +1378,21 @@ LogonUserW(
  */
 BOOL
 WINAPI
+LogonUserExExW(
+    _In_ LPCWSTR lpszUsername,
+    _In_opt_ LPCWSTR lpszDomain,
+    _In_opt_ LPCWSTR lpszPassword,
+    _In_ DWORD dwLogonType,
+    _In_ DWORD dwLogonProvider,
+    _In_opt_ PTOKEN_GROUPS pTokenGroups,
+    _Out_opt_ PHANDLE phToken,
+    _Out_opt_ PSID *ppLogonSid,
+    _Out_opt_ PVOID *ppProfileBuffer,
+    _Out_opt_ LPDWORD pdwProfileLength,
+    _Out_opt_ PQUOTA_LIMITS pQuotaLimits);
+
+BOOL
+WINAPI
 LogonUserExW(
     _In_ LPCWSTR lpszUsername,
     _In_opt_ LPCWSTR lpszDomain,
@@ -1390,6 +1405,42 @@ LogonUserExW(
     _Out_opt_ LPDWORD pdwProfileLength,
     _Out_opt_ PQUOTA_LIMITS pQuotaLimits)
 {
+    return LogonUserExExW(lpszUsername,
+                          lpszDomain,
+                          lpszPassword,
+                          dwLogonType,
+                          dwLogonProvider,
+                          NULL,
+                          phToken,
+                          ppLogonSid,
+                          ppProfileBuffer,
+                          pdwProfileLength,
+                          pQuotaLimits);
+}
+
+
+/*
+ * LogonUserExExW: like LogonUserExW, plus extra token groups (pTokenGroups). The groups are handed to LSA as the
+ * LocalGroups of the logon; lsasrv honours them for a trusted (SeTcb) caller only. For a Service logon whose
+ * password carries the SCM convention "_SC_<service name>" the service name is passed to LSA in the origin name
+ * (UTF-16LE bytes) so that lsasrv can derive the NT SERVICE SID and check the supplied one against it.
+ */
+BOOL
+WINAPI
+LogonUserExExW(
+    _In_ LPCWSTR lpszUsername,
+    _In_opt_ LPCWSTR lpszDomain,
+    _In_opt_ LPCWSTR lpszPassword,
+    _In_ DWORD dwLogonType,
+    _In_ DWORD dwLogonProvider,
+    _In_opt_ PTOKEN_GROUPS pTokenGroups,
+    _Out_opt_ PHANDLE phToken,
+    _Out_opt_ PSID *ppLogonSid,
+    _Out_opt_ PVOID *ppProfileBuffer,
+    _Out_opt_ LPDWORD pdwProfileLength,
+    _Out_opt_ PQUOTA_LIMITS pQuotaLimits)
+{
+    ULONG ExtraGroups = 0, g;
     SID_IDENTIFIER_AUTHORITY LocalAuthority = {SECURITY_LOCAL_SID_AUTHORITY};
     SID_IDENTIFIER_AUTHORITY SystemAuthority = {SECURITY_NT_AUTHORITY};
     PSID LogonSid = NULL;
@@ -1463,6 +1514,24 @@ LogonUserExW(
 
     RtlInitAnsiString((PANSI_STRING)&OriginName,
                       "Advapi32 Logon");
+
+    if (pTokenGroups != NULL)
+    {
+        if (pTokenGroups->GroupCount == 0 || pTokenGroups->GroupCount > 16)
+        {
+            Status = STATUS_INVALID_PARAMETER;
+            goto done;
+        }
+        ExtraGroups = pTokenGroups->GroupCount;
+
+        if (LogonType == Service && lpszPassword != NULL &&
+            _wcsnicmp(lpszPassword, L"_SC_", 4) == 0 && lpszPassword[4] != L'\0')
+        {
+            OriginName.Buffer = (PCHAR)(lpszPassword + 4);
+            OriginName.Length = (USHORT)(wcslen(lpszPassword + 4) * sizeof(WCHAR));
+            OriginName.MaximumLength = OriginName.Length + sizeof(WCHAR);
+        }
+    }
 
     RtlInitUnicodeString(&DomainName,
                          lpszDomain);
@@ -1555,15 +1624,17 @@ LogonUserExW(
     /* Allocate and set the token groups */
     TokenGroups = RtlAllocateHeap(RtlGetProcessHeap(),
                                   HEAP_ZERO_MEMORY,
-                                  sizeof(TOKEN_GROUPS) + ((2 - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES)));
+                                  sizeof(TOKEN_GROUPS) + ((2 + ExtraGroups - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES)));
     if (TokenGroups == NULL)
     {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto done;
     }
 
-    TokenGroups->GroupCount = 2;
+    TokenGroups->GroupCount = 2 + ExtraGroups;
     Groups = TokenGroups->Groups;
+    for (g = 0; g < ExtraGroups; g++)
+        Groups[2 + g] = pTokenGroups->Groups[g];
     Groups[0].Sid = LogonSid;
     Groups[0].Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED |
                            SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_LOGON_ID;

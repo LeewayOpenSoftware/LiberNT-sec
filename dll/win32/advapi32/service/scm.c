@@ -485,6 +485,10 @@ ChangeServiceConfig2A(SC_HANDLE hService,
             Info.psda = lpInfo;
             break;
 
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            Info.pssid = lpInfo;
+            break;
+
         case SERVICE_CONFIG_PRESHUTDOWN_INFO:
             Info.psps = lpInfo;
             break;
@@ -560,6 +564,10 @@ ChangeServiceConfig2W(SC_HANDLE hService,
 
         case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
             Info.psda = lpInfo;
+            break;
+
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            Info.pssid = lpInfo;
             break;
 
         case SERVICE_CONFIG_PRESHUTDOWN_INFO:
@@ -2792,6 +2800,7 @@ QueryServiceConfig2A(SC_HANDLE hService,
     SERVICE_FAILURE_ACTIONSA ServiceFailureActions;
     SERVICE_FAILURE_ACTIONS_FLAG FailureActionsFlag;
     SERVICE_DELAYED_AUTO_START_INFO DelayedAutoStartInfo;
+    SERVICE_SID_INFO ServiceSidInfo;
     SERVICE_PRESHUTDOWN_INFO PreshutdownInfo;
     SERVICE_TRIGGER_INFO TriggerInfo;
     LPBYTE lpTempBuffer;
@@ -2842,6 +2851,15 @@ QueryServiceConfig2A(SC_HANDLE hService,
             {
                 lpTempBuffer = (LPBYTE)&DelayedAutoStartInfo;
                 dwBufferSize = sizeof(SERVICE_DELAYED_AUTO_START_INFO);
+                bUseTempBuffer = TRUE;
+            }
+            break;
+
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            if ((lpBuffer == NULL) || (cbBufSize < sizeof(SERVICE_SID_INFO)))
+            {
+                lpTempBuffer = (LPBYTE)&ServiceSidInfo;
+                dwBufferSize = sizeof(SERVICE_SID_INFO);
                 bUseTempBuffer = TRUE;
             }
             break;
@@ -2956,6 +2974,7 @@ QueryServiceConfig2W(SC_HANDLE hService,
     SERVICE_FAILURE_ACTIONSW ServiceFailureActions;
     SERVICE_FAILURE_ACTIONS_FLAG FailureActionsFlag;
     SERVICE_DELAYED_AUTO_START_INFO DelayedAutoStartInfo;
+    SERVICE_SID_INFO ServiceSidInfo;
     SERVICE_PRESHUTDOWN_INFO PreshutdownInfo;
     SERVICE_TRIGGER_INFO TriggerInfo;
     LPBYTE lpTempBuffer;
@@ -3006,6 +3025,15 @@ QueryServiceConfig2W(SC_HANDLE hService,
             {
                 lpTempBuffer = (LPBYTE)&DelayedAutoStartInfo;
                 dwBufferSize = sizeof(SERVICE_DELAYED_AUTO_START_INFO);
+                bUseTempBuffer = TRUE;
+            }
+            break;
+
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            if ((lpBuffer == NULL) || (cbBufSize < sizeof(SERVICE_SID_INFO)))
+            {
+                lpTempBuffer = (LPBYTE)&ServiceSidInfo;
+                dwBufferSize = sizeof(SERVICE_SID_INFO);
                 bUseTempBuffer = TRUE;
             }
             break;
