@@ -606,7 +606,8 @@ SamValidateUser(
         {
             TRACE("SpecialAccount: LocalService\n");
 
-            if (LogonType != Service)
+            /* Special accounts skip the password: only a SeTcb caller (the SCM) may obtain them */
+            if (LogonType != Service || LogonPwdData == NULL || !LogonPwdData->TrustedClient)
                 return STATUS_LOGON_FAILURE;
 
             *UserInfoPtr = RtlAllocateHeap(RtlGetProcessHeap(),
@@ -622,7 +623,8 @@ SamValidateUser(
         {
             TRACE("SpecialAccount: NetworkService\n");
 
-            if (LogonType != Service)
+            /* Special accounts skip the password: only a SeTcb caller (the SCM) may obtain them */
+            if (LogonType != Service || LogonPwdData == NULL || !LogonPwdData->TrustedClient)
                 return STATUS_LOGON_FAILURE;
 
             *UserInfoPtr = RtlAllocateHeap(RtlGetProcessHeap(),

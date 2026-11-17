@@ -19,6 +19,7 @@ list(APPEND SOURCE
     InitiateShutdown.c
     IntegrityLabels.c
     LogonProcess.c
+    LogonSpecialAccount.c
     LogonSession.c
     LogonSessionEnd.c
     LogonUserNetwork.c
