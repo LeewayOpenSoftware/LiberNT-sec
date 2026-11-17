@@ -445,6 +445,106 @@ TestMalformedGroups(
     (void)NtAuth;
 }
 
+/* Does THIS process hold SeTcbPrivilege (present in its token, as lsasrv checks)? */
+static
+BOOLEAN
+HasSeTcb(VOID)
+{
+    HANDLE Token = NULL;
+    LUID Tcb;
+    PTOKEN_PRIVILEGES Privs;
+    DWORD Len = 0, i;
+    BOOLEAN Found = FALSE;
+
+    if (!LookupPrivilegeValueW(NULL, L"SeTcbPrivilege", &Tcb))
+        return FALSE;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &Token))
+        return FALSE;
+
+    GetTokenInformation(Token, TokenPrivileges, NULL, 0, &Len);
+    if (Len != 0)
+    {
+        Privs = HeapAlloc(GetProcessHeap(), 0, Len);
+        if (Privs != NULL)
+        {
+            if (GetTokenInformation(Token, TokenPrivileges, Privs, Len, &Len))
+            {
+                for (i = 0; i < Privs->PrivilegeCount; i++)
+                    if (Privs->Privileges[i].Luid.LowPart == Tcb.LowPart &&
+                        Privs->Privileges[i].Luid.HighPart == Tcb.HighPart)
+                    {
+                        Found = TRUE;
+                        break;
+                    }
+            }
+            HeapFree(GetProcessHeap(), 0, Privs);
+        }
+    }
+    CloseHandle(Token);
+    return Found;
+}
+
+/*
+ * Child entry run by a LocalSystem service (so it holds SeTcb): exercise the
+ * trusted-add positive control FOR REAL as SYSTEM and write the verdict to a
+ * file the launcher script then reports over COM1.
+ */
+static
+int
+RunSystemTrustedChild(VOID)
+{
+    LSA_STRING Name, PackageName;
+    LSA_OPERATIONAL_MODE Mode = 0;
+    HANDLE LsaHandle = NULL;
+    ULONG AuthPackage = 0;
+    PTOKEN_GROUPS Groups;
+    BOOL HasAdmin = FALSE;
+    NTSTATUS Status;
+    HANDLE File;
+    DWORD Written;
+    char Line[192];
+
+    /* The parent apitest deleted TEST_USER by now; recreate it (we are SYSTEM). */
+    AddUser();
+
+    RtlInitString(&Name, "ApiTestSysTrust");
+    Status = LsaRegisterLogonProcess(&Name, &LsaHandle, &Mode);
+    if (!NT_SUCCESS(Status))
+    {
+        StringCchPrintfA(Line, _countof(Line), "SYSTRUST RESULT FAIL register 0x%08lx\r\n", Status);
+    }
+    else
+    {
+        RtlInitString(&PackageName, MSV1_0_PACKAGE_NAME);
+        LsaLookupAuthenticationPackage(LsaHandle, &PackageName, &AuthPackage);
+        Groups = MakeAdminGroups();
+        if (Groups == NULL)
+        {
+            StringCchPrintfA(Line, _countof(Line), "SYSTRUST RESULT FAIL alloc\r\n");
+        }
+        else
+        {
+            Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, Groups->Groups[0].Sid, &HasAdmin);
+            if (NT_SUCCESS(Status) && HasAdmin)
+                StringCchPrintfA(Line, _countof(Line), "SYSTRUST RESULT PASS trusted-add honored (Administrators present)\r\n");
+            else
+                StringCchPrintfA(Line, _countof(Line), "SYSTRUST RESULT FAIL status 0x%08lx hasAdmin=%d\r\n", Status, HasAdmin);
+            FreeSid(Groups->Groups[0].Sid);
+            HeapFree(GetProcessHeap(), 0, Groups);
+        }
+        LsaDeregisterLogonProcess(LsaHandle);
+    }
+
+    File = CreateFileA("C:\\systrust.txt", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (File != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(File, Line, (DWORD)strlen(Line), &Written, NULL);
+        CloseHandle(File);
+    }
+    NetUserDel(NULL, TEST_USER);
+    return 0;
+}
+
 START_TEST(LogonUserLocalGroups)
 {
     LSA_STRING LogonProcessName, PackageName;
@@ -466,6 +566,8 @@ START_TEST(LogonUserLocalGroups)
         ExitProcess((UINT)RunLogonUserChild());
     if (wcsstr(GetCommandLineW(), L"ForeignLogonChild") != NULL)
         ExitProcess((UINT)RunForeignLogonChild());
+    if (wcsstr(GetCommandLineW(), L"SystemTrustedChild") != NULL)
+        ExitProcess((UINT)RunSystemTrustedChild());
 
     NetStatus = AddUser();
     if (NetStatus != NERR_Success)
@@ -486,18 +588,32 @@ START_TEST(LogonUserLocalGroups)
 
         if (NT_SUCCESS(Status))
         {
-            /* Positive control: a trusted caller MAY add groups (unchanged). */
+            /*
+             * Positive control: a trusted caller MAY add groups. Only meaningful
+             * if THIS process actually holds SeTcb; otherwise the gate rightly
+             * denies it and we must not read that as a failure. When this process
+             * lacks SeTcb (e.g. the lab autologon account), the control is run for
+             * real by the LocalSystem service leg (SCRIPT systrust). If we DO hold
+             * SeTcb and the add is rejected, that is a real regression - fail.
+             */
             Groups = MakeAdminGroups();
             if (Groups != NULL)
             {
-                Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, Groups->Groups[0].Sid, &HasAdmin);
-                if (NT_SUCCESS(Status))
-                    ok(HasAdmin, "trusted caller: Administrators should be present\n");
-                else if (Status == STATUS_NONE_MAPPED || Status == STATUS_NO_SUCH_USER ||
-                         Status == STATUS_LOGON_FAILURE || Status == STATUS_ACCOUNT_RESTRICTION)
-                    skip("trusted logon: test account not usable here (0x%08lx)\n", Status);
+                if (!HasSeTcb())
+                {
+                    skip("process lacks SeTcb; trusted-add positive control runs via the SYSTEM service leg (systrust)\n");
+                }
                 else
-                    ok(FALSE, "trusted logon unexpectedly rejected: 0x%08lx\n", Status);
+                {
+                    Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, Groups->Groups[0].Sid, &HasAdmin);
+                    if (NT_SUCCESS(Status))
+                        ok(HasAdmin, "trusted caller: Administrators should be present\n");
+                    else if (Status == STATUS_NONE_MAPPED || Status == STATUS_NO_SUCH_USER ||
+                             Status == STATUS_LOGON_FAILURE || Status == STATUS_ACCOUNT_RESTRICTION)
+                        skip("trusted logon: test account not usable here (0x%08lx)\n", Status);
+                    else
+                        ok(FALSE, "trusted logon unexpectedly rejected: 0x%08lx\n", Status);
+                }
                 FreeSid(Groups->Groups[0].Sid);
                 HeapFree(GetProcessHeap(), 0, Groups);
             }
