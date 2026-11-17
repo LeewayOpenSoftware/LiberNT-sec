@@ -479,6 +479,8 @@ KiInitializeKernelMachineDependent(
         Prcb->FeatureBits |= KF_NX_DISABLED;
     }
 
+    KiInitializeKvaShadow(Prcb, LoaderBlock);
+
 #if DBG
     /* Print applied kernel features/policies and boot CPU features */
     KiReportCpuFeatures(Prcb);

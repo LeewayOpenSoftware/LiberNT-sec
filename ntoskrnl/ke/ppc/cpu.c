@@ -114,3 +114,12 @@ KiQueryProcessorTopology(
     *RecordCount = 0;
     *SetCount = 0;
 }
+
+NTSTATUS
+NTAPI
+KiQueryKernelVaShadowInformation(
+    _Out_ PULONG Flags)
+{
+    *Flags = 0;
+    return STATUS_NOT_IMPLEMENTED;
+}

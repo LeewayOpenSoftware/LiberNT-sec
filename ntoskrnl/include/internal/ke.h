@@ -1277,6 +1277,11 @@ VOID
 NTAPI
 KiInitMachineDependent(VOID);
 
+NTSTATUS
+NTAPI
+KiQueryKernelVaShadowInformation(
+    _Out_ PULONG Flags);
+
 VOID
 NTAPI
 KxFreezeExecution(

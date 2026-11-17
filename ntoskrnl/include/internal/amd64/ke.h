@@ -510,6 +510,7 @@ VOID KiGetCacheInformation(VOID);
 VOID KiSetProcessorType(VOID);
 ULONG64 KiGetFeatureBits(VOID);
 VOID KiInitializeCpuFeatures(VOID);
+VOID NTAPI KiInitializeKvaShadow(_In_ PKPRCB Prcb, _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
 ULONG NTAPI KiAmd64QueryEffectiveMHz(_In_ ULONG ProcessorNumber);
 #define KiQueryEffectiveProcessorMhz(Number) KiAmd64QueryEffectiveMHz(Number)
 /* Current page table root, as recorded in a crash dump header. */

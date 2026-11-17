@@ -89,6 +89,54 @@ TestHandleCount(VOID)
     RtlFreeHeap(RtlGetProcessHeap(), 0, Buffer);
 }
 
+static
+VOID
+TestKernelVaShadow(VOID)
+{
+    ULONG Buffer[2];
+    ULONG Flags, Length;
+    NTSTATUS Status;
+
+    Buffer[0] = Buffer[1] = 0xAAAAAAAA;
+    Length = 0x55555555;
+    Status = NtQuerySystemInformation(SystemKernelVaShadowInformation, Buffer, sizeof(ULONG), &Length);
+    if (Status == STATUS_NOT_IMPLEMENTED)
+    {
+        skip("SystemKernelVaShadowInformation is not implemented on this architecture\n");
+        return;
+    }
+    ok_hex(Status, STATUS_SUCCESS);
+    ok_eq_ulong(Length, (ULONG)sizeof(ULONG));
+    ok_eq_hex(Buffer[1], 0xAAAAAAAA);
+    Flags = Buffer[0];
+    ok((Flags & 0x20) != 0, "KvaShadowRequiredAvailable is clear, flags 0x%lx\n", Flags);
+    ok((Flags & 0x01) != 0 || (Flags & 0x0E) == 0,
+       "Shadow is disabled but mode bits are set, flags 0x%lx\n", Flags);
+    ok((Flags & 0x08) == 0 || (Flags & 0x04) != 0,
+       "KvaShadowInvpcid is set without KvaShadowPcid, flags 0x%lx\n", Flags);
+    ok((Flags & 0xFFFFC000) == 0, "Reserved bits are set, flags 0x%lx\n", Flags);
+
+    Buffer[0] = Buffer[1] = 0xAAAAAAAA;
+    Length = 0x55555555;
+    Status = NtQuerySystemInformation(SystemKernelVaShadowInformation, Buffer, 0, &Length);
+    ok_hex(Status, STATUS_INFO_LENGTH_MISMATCH);
+    ok_eq_ulong(Length, (ULONG)sizeof(ULONG));
+    ok_eq_hex(Buffer[0], 0xAAAAAAAA);
+
+    Length = 0x55555555;
+    Status = NtQuerySystemInformation(SystemKernelVaShadowInformation, Buffer, sizeof(ULONG) - 1, &Length);
+    ok_hex(Status, STATUS_INFO_LENGTH_MISMATCH);
+    ok_eq_ulong(Length, (ULONG)sizeof(ULONG));
+    ok_eq_hex(Buffer[0], 0xAAAAAAAA);
+
+    Length = 0x55555555;
+    Status = NtQuerySystemInformation(SystemKernelVaShadowInformation, Buffer, sizeof(Buffer), &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    ok_eq_ulong(Length, (ULONG)sizeof(ULONG));
+    ok_eq_hex(Buffer[0], Flags);
+    ok_eq_hex(Buffer[1], 0xAAAAAAAA);
+}
+
 START_TEST(NtQuerySystemInformation)
 {
     NTSTATUS Status;
@@ -134,4 +182,6 @@ START_TEST(NtQuerySystemInformation)
     if (NT_SUCCESS(Status))
         ok(Modules->NumberOfModules != 0, "No kernel modules reported\n");
     RtlFreeHeap(RtlGetProcessHeap(), 0, Modules);
+
+    TestKernelVaShadow();
 }

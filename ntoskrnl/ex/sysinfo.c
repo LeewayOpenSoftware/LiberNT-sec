@@ -4037,6 +4037,23 @@ ExpQueryProcessIdInformation(
     return Status;
 }
 
+QSI_DEF(SystemKernelVaShadowInformation)
+{
+    SYSTEM_KERNEL_VA_SHADOW_INFORMATION Information;
+    NTSTATUS Status;
+
+    *ReqSize = sizeof(Information);
+    if (Size < sizeof(Information))
+        return STATUS_INFO_LENGTH_MISMATCH;
+
+    Status = KiQueryKernelVaShadowInformation(&Information.KvaShadowFlags);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    *(PSYSTEM_KERNEL_VA_SHADOW_INFORMATION)Buffer = Information;
+    return STATUS_SUCCESS;
+}
+
 /* Query/Set Calls Table */
 typedef
 struct _QSSI_CALLS
@@ -4151,6 +4168,7 @@ CallQS[] =
     // Win10 RS4 and later (gaps in between stay NULL and fail
     // with STATUS_NOT_IMPLEMENTED)
     SI_QX(SystemPhysicalMemoryInformation),
+    SI_QX(SystemKernelVaShadowInformation),
 };
 
 C_ASSERT(SystemBasicInformation == 0);

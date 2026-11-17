@@ -1725,3 +1725,13 @@ KeSaveStateForHibernate(IN PKPROCESSOR_STATE State)
     /* Capture the control state */
     KiSaveProcessorControlState(State);
 }
+
+NTSTATUS
+NTAPI
+KiQueryKernelVaShadowInformation(
+    _Out_ PULONG Flags)
+{
+    /* TODO: report whether the processor requires the shadow address space */
+    *Flags = 0;
+    return STATUS_NOT_IMPLEMENTED;
+}

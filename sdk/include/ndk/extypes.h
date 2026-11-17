@@ -1873,6 +1873,27 @@ typedef struct _SYSTEM_PHYSICAL_MEMORY_INFORMATION
     ULONGLONG HighestPhysicalAddress;
 } SYSTEM_PHYSICAL_MEMORY_INFORMATION, *PSYSTEM_PHYSICAL_MEMORY_INFORMATION;
 
+typedef struct _SYSTEM_KERNEL_VA_SHADOW_INFORMATION
+{
+    union
+    {
+        ULONG KvaShadowFlags;
+        struct
+        {
+            ULONG KvaShadowEnabled : 1;
+            ULONG KvaShadowUserGlobal : 1;
+            ULONG KvaShadowPcid : 1;
+            ULONG KvaShadowInvpcid : 1;
+            ULONG KvaShadowRequired : 1;
+            ULONG KvaShadowRequiredAvailable : 1;
+            ULONG InvalidPteBit : 6;
+            ULONG L1DataCacheFlushSupported : 1;
+            ULONG L1TerminalFaultMitigationPresent : 1;
+            ULONG Reserved : 18;
+        };
+    };
+} SYSTEM_KERNEL_VA_SHADOW_INFORMATION, *PSYSTEM_KERNEL_VA_SHADOW_INFORMATION;
+
 //
 // Firmware variable attributes
 //

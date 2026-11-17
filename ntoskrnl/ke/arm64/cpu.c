@@ -1142,3 +1142,12 @@ KiDisplayBugCheckRegisterState(
         KiDisplayAndLogBugCheckString(Line);
     }
 }
+
+NTSTATUS
+NTAPI
+KiQueryKernelVaShadowInformation(
+    _Out_ PULONG Flags)
+{
+    *Flags = 0;
+    return STATUS_NOT_IMPLEMENTED;
+}
