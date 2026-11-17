@@ -58,6 +58,7 @@ KiIsKvaShadowRequired(
 
     if (Prcb->CpuVendor == CPU_INTEL && Prcb->CpuType == 6)
     {
+        /* KiSetProcessorType stores (ExtendedModel << 4 | Model) << 8 | Stepping for Intel family 6 */
         switch ((UCHAR)(Prcb->CpuStep >> 8))
         {
             case 0x1C:
@@ -69,7 +70,31 @@ KiIsKvaShadowRequired(
         }
     }
 
+    /* Every other processor, an unknown vendor included, is treated as affected */
     return TRUE;
+}
+
+CODE_SEG("INIT")
+static
+BOOLEAN
+KiIsLoadOptionPresent(
+    _In_ PCSTR Options,
+    _In_ PCSTR Option)
+{
+    SIZE_T Length = strlen(Option);
+    PCSTR Current;
+
+    for (Current = Options; *Current != ANSI_NULL; Current++)
+    {
+        if ((Current == Options || Current[-1] == ' ' || Current[-1] == '/') &&
+            _strnicmp(Current, Option, Length) == 0 &&
+            (Current[Length] == ' ' || Current[Length] == '/' || Current[Length] == ANSI_NULL))
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
 }
 
 CODE_SEG("INIT")
@@ -101,11 +126,11 @@ KiInitializeKvaShadow(
     KiKvaShadowState.PcidAllowed = TRUE;
     if (Options != NULL)
     {
-        if (strstr(Options, "KVASHADOW=ON"))
+        if (KiIsLoadOptionPresent(Options, "KVASHADOW=ON"))
             KiKvaShadowState.Policy = KiKvaShadowPolicyOn;
-        else if (strstr(Options, "KVASHADOW=AUTO"))
+        else if (KiIsLoadOptionPresent(Options, "KVASHADOW=AUTO"))
             KiKvaShadowState.Policy = KiKvaShadowPolicyAuto;
-        if (strstr(Options, "KVASHADOWPCID=OFF"))
+        if (KiIsLoadOptionPresent(Options, "KVASHADOWPCID=OFF"))
             KiKvaShadowState.PcidAllowed = FALSE;
     }
 
