@@ -38,6 +38,41 @@ ULONGLONG BootCycles, BootCyclesEnd;
 
 BOOLEAN KiHvApicMsrs;
 
+static BOOLEAN KiSmepDisabledByBootOption = FALSE;
+
+static
+BOOLEAN
+KiBootOptionPresent(
+    _In_opt_ PCSTR CommandLine,
+    _In_ PCSTR Option)
+{
+    SIZE_T Length = strlen(Option);
+    PCSTR Scan;
+
+    if (CommandLine == NULL)
+        return FALSE;
+
+    for (Scan = CommandLine; *Scan != ANSI_NULL; ++Scan)
+    {
+        CHAR Before;
+        CHAR After;
+
+        if (_strnicmp(Scan, Option, Length) != 0)
+            continue;
+
+        Before = (Scan == CommandLine) ? ' ' : Scan[-1];
+        After = Scan[Length];
+
+        if ((Before == ' ' || Before == '/') &&
+            (After == ' ' || After == '/' || After == ANSI_NULL))
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 void KiInitializeSegments();
 void KiSystemCallEntry64();
 void KiSystemCallEntry32();
@@ -214,6 +249,18 @@ KiInitializeCpu(PKIPCR Pcr)
     {
         /* Enable CR4.OSXSAVE[Bit 18] */
         __writecr4(__readcr4() | CR4_XSAVE);
+    }
+
+    /* Enable SMEP (CR4.SMEP) when the CPU reports it and NOSMEP was not given */
+    if (KiBootOptionPresent(KeLoaderBlock != NULL ? KeLoaderBlock->LoadOptions : NULL,
+                            "NOSMEP"))
+    {
+        KiSmepDisabledByBootOption = TRUE;
+    }
+
+    if ((FeatureBits & KF_SMEP) && !KiSmepDisabledByBootOption)
+    {
+        __writecr4(__readcr4() | CR4_SMEP);
     }
 
     /* LDT is unused */

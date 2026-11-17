@@ -176,6 +176,8 @@ typedef enum
 #define CR4_XMMEXCPT            0x400
 #define CR4_CHANNELS            0x800
 #define CR4_XSAVE               0x40000
+#define CR4_SMEP                0x100000
+#define CR4_SMAP                0x200000
 
 //
 // DR7
