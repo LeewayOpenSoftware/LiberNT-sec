@@ -136,8 +136,6 @@ KiInitializePcr(
     /* Set TssBase */
     Pcr->TssBase = TssBase;
 
-    Pcr->Prcb.RspBase = Pcr->TssBase->Rsp0; // FIXME
-
     /* Set DPC Stack */
     Pcr->Prcb.DpcStack = DpcStack;
 
@@ -309,6 +307,8 @@ KiInitializeProcessorBootStructures(
                     KernelStack,
                     DoubleFaultStack,
                     NmiStack);
+
+    Pcr->Prcb.RspBase = (ULONG64)KernelStack;
 }
 
 CODE_SEG("INIT")

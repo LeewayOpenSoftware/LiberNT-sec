@@ -214,7 +214,7 @@ KiSwapContextResume(
 
     /* Setup ring 0 stack pointer */
     Pcr->TssBase->Rsp0 = (ULONG64)NewThread->InitialStack;
-    Pcr->Prcb.RspBase = Pcr->TssBase->Rsp0;
+    Pcr->Prcb.RspBase = (ULONG64)NewThread->InitialStack;
 
     /* Save old thread's extended state */
     if (OldThread->NpxState != 0)
