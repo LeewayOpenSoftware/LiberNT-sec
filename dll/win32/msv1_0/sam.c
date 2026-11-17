@@ -580,6 +580,7 @@ SamValidateUser(
 {
     static const UNICODE_STRING NtAuthorityU = RTL_CONSTANT_STRING(L"NT AUTHORITY");
     static const UNICODE_STRING LocalServiceU = RTL_CONSTANT_STRING(L"LocalService");
+    static const UNICODE_STRING SystemU = RTL_CONSTANT_STRING(L"SYSTEM");
     static const UNICODE_STRING NetworkServiceU = RTL_CONSTANT_STRING(L"NetworkService");
 
     NTSTATUS Status = STATUS_SUCCESS;
@@ -617,6 +618,27 @@ SamValidateUser(
 
             (*UserInfoPtr)->All.UserId = SECURITY_LOCAL_SERVICE_RID;
             (*UserInfoPtr)->All.PrimaryGroupId = SECURITY_LOCAL_SERVICE_RID;
+        }
+        else if (RtlEqualUnicodeString(LogonUserName, &SystemU, TRUE))
+        {
+            TRACE("SpecialAccount: SYSTEM\n");
+
+            /*
+             * LocalSystem service token with a service SID (SCM only). The password is NOT checked for Service logons,
+             * so the boundary is this gate: a Service logon by a caller holding SeTcb (LogonPwdData->TrustedClient).
+             * lsasrv additionally restricts the groups of a Service logon to the logon SIDs and the one derived NT SERVICE SID.
+             */
+            if (LogonType != Service || LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+                return STATUS_LOGON_FAILURE;
+
+            *UserInfoPtr = RtlAllocateHeap(RtlGetProcessHeap(),
+                                           HEAP_ZERO_MEMORY,
+                                           sizeof(SAMPR_USER_ALL_INFORMATION));
+            if (*UserInfoPtr == NULL)
+                return STATUS_INSUFFICIENT_RESOURCES;
+
+            (*UserInfoPtr)->All.UserId = SECURITY_LOCAL_SYSTEM_RID;
+            (*UserInfoPtr)->All.PrimaryGroupId = SECURITY_LOCAL_SYSTEM_RID;
         }
         else if (RtlEqualUnicodeString(LogonUserName, &NetworkServiceU, TRUE))
         {

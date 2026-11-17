@@ -1714,6 +1714,13 @@ LsaApLogonUserEx2(IN PLSA_CLIENT_REQUEST ClientRequest,
         *LogonId = ServiceLuid;
         WellKnownLogon = TRUE;
     }
+    else if (SpecialAccount && UserInfo->All.UserId == SECURITY_LOCAL_SYSTEM_RID)
+    {
+        LUID SystemLuid = SYSTEM_LUID;
+
+        *LogonId = SystemLuid;
+        WellKnownLogon = TRUE;
+    }
     else if (SpecialAccount && UserInfo->All.UserId == SECURITY_NETWORK_SERVICE_RID)
     {
         LUID ServiceLuid = NETWORKSERVICE_LUID;
