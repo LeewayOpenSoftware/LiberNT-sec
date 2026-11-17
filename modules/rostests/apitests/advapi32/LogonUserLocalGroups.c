@@ -192,11 +192,49 @@ RunUnprivilegedChild(VOID)
     return HasAdmin ? CHILD_INJECTED : CHILD_STRIPPED;
 }
 
-/* Spawn this same test exe with a restricted (SeTcb-removed) primary token so
- * it runs the unprivileged child above. Returns the child exit code, or -1. */
+/* Child entry: as an unprivileged (no-SeTcb) process, an untrusted LSA
+ * connection must be denied a trusted-only authentication-package call. */
 static
 int
-SpawnUnprivilegedChild(VOID)
+RunConnectTrustChild(VOID)
+{
+    LSA_STRING PackageName;
+    HANDLE LsaHandle = NULL;
+    ULONG AuthPackage = 0;
+    MSV1_0_PROTOCOL_MESSAGE_TYPE MsgType = MsV1_0EnumerateUsers;  /* trusted-only */
+    PVOID Ret = NULL;
+    ULONG RetLen = 0;
+    NTSTATUS ProtocolStatus = STATUS_SUCCESS;
+    NTSTATUS Status;
+
+    if (!NT_SUCCESS(LsaConnectUntrusted(&LsaHandle)))
+        return CHILD_SETUP_FAILED;
+
+    RtlInitString(&PackageName, MSV1_0_PACKAGE_NAME);
+    if (!NT_SUCCESS(LsaLookupAuthenticationPackage(LsaHandle, &PackageName, &AuthPackage)))
+    {
+        LsaDeregisterLogonProcess(LsaHandle);
+        return CHILD_SETUP_FAILED;
+    }
+
+    Status = LsaCallAuthenticationPackage(LsaHandle, AuthPackage, &MsgType,
+                                          sizeof(MsgType), &Ret, &RetLen, &ProtocolStatus);
+    if (Ret != NULL)
+        LsaFreeReturnBuffer(Ret);
+    LsaDeregisterLogonProcess(LsaHandle);
+
+    /* The trusted-only query must not succeed for an untrusted caller. */
+    if (NT_SUCCESS(Status) && NT_SUCCESS(ProtocolStatus))
+        return CHILD_INJECTED;      /* trust boundary breached */
+    return CHILD_DENIED;
+}
+
+/* Spawn this same test exe with a restricted (SeTcb-removed) primary token so
+ * it runs one of the unprivileged child routines. Returns the exit code, or -1. */
+static
+int
+SpawnUnprivilegedChild(
+    _In_ PCWSTR Sentinel)
 {
     HANDLE ProcToken = NULL, Restricted = NULL;
     LUID_AND_ATTRIBUTES Delete[1];
@@ -227,7 +265,7 @@ SpawnUnprivilegedChild(VOID)
     }
 
     GetModuleFileNameW(NULL, Module, MAX_PATH);
-    StringCchPrintfW(CommandLine, _countof(CommandLine), L"\"%ls\" LocalGroupsChild", Module);
+    StringCchPrintfW(CommandLine, _countof(CommandLine), L"\"%ls\" %ls", Module, Sentinel);
 
     if (CreateProcessAsUserW(Restricted, NULL, CommandLine, NULL, NULL, FALSE,
                              CREATE_NO_WINDOW, NULL, NULL, &StartupInfo, &ProcessInfo))
@@ -302,12 +340,11 @@ START_TEST(LogonUserLocalGroups)
     NTSTATUS Status;
     int ChildResult;
 
-    /* Child mode: run the unprivileged injection attempt and report via exit code. */
+    /* Child modes: run an unprivileged check and report via the exit code. */
     if (wcsstr(GetCommandLineW(), L"LocalGroupsChild") != NULL)
-    {
         ExitProcess((UINT)RunUnprivilegedChild());
-        return;
-    }
+    if (wcsstr(GetCommandLineW(), L"ConnectTrustChild") != NULL)
+        ExitProcess((UINT)RunConnectTrustChild());
 
     NetStatus = AddUser();
     if (NetStatus != NERR_Success)
@@ -356,16 +393,30 @@ START_TEST(LogonUserLocalGroups)
 
     /* Core security check: an unprivileged (no-SeTcb) caller must NOT be able to
      * inject Administrators through LocalGroups. */
-    ChildResult = SpawnUnprivilegedChild();
+    ChildResult = SpawnUnprivilegedChild(L"LocalGroupsChild");
     if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
     {
-        skip("could not run unprivileged child (result %d)\n", ChildResult);
+        skip("could not run unprivileged LocalGroups child (result %d)\n", ChildResult);
     }
     else
     {
         ok(ChildResult != CHILD_INJECTED,
            "unprivileged caller injected Administrators via LocalGroups (EoP)\n");
-        trace("unprivileged child result: %d (0=denied,2=stripped)\n", ChildResult);
+        trace("LocalGroups child result: %d (0=denied,2=stripped)\n", ChildResult);
+    }
+
+    /* Connect-trust check: an unprivileged caller's connection is untrusted, so
+     * a trusted-only authentication-package call must be denied. */
+    ChildResult = SpawnUnprivilegedChild(L"ConnectTrustChild");
+    if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
+    {
+        skip("could not run unprivileged connect-trust child (result %d)\n", ChildResult);
+    }
+    else
+    {
+        ok(ChildResult != CHILD_INJECTED,
+           "unprivileged caller was granted a trusted-only package call\n");
+        trace("connect-trust child result: %d (0=denied)\n", ChildResult);
     }
 
     NetUserDel(NULL, TEST_USER);

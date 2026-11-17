@@ -1696,6 +1696,7 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
     PVOID LocalAuthInfo = NULL;
     PTOKEN_GROUPS LocalGroups = NULL;
     HANDLE TokenHandle = NULL;
+    BOOLEAN PackageSucceeded = FALSE;
     ULONG i;
     ULONG PackageId;
     SECURITY_LOGON_TYPE LogonType;
@@ -1839,6 +1840,11 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
         ERR("LsaApLogonUser/Ex/2 failed (Status 0x%08lx)\n", Status);
         goto done;
     }
+
+    /* The package created the logon session and profile; Reply.LogonId and
+     * Reply.ProfileBuffer are valid from here on, so the failure cleanup in
+     * done: may act on them. */
+    PackageSucceeded = TRUE;
 
     if (LocalGroups != NULL && LocalGroups->GroupCount > 0)
     {
@@ -2052,8 +2058,12 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
     }
 
 done:
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status) && PackageSucceeded)
     {
+        /* Only reachable once the package ran: Reply.LogonId and
+         * Reply.ProfileBuffer are valid. Before that they still alias the
+         * Request union, so an early failure must not touch them here. */
+
         /* Notify the authentification package of the failure */
         Package->LsaApLogonTerminated(&RequestMsg->LogonUser.Reply.LogonId);
 

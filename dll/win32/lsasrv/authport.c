@@ -144,6 +144,18 @@ LsapCheckLogonProcess(PLSA_API_MSG RequestMsg,
             break;
 
         case YES:
+            /* A caller that claims a trusted connection must actually hold
+             * SeTcbPrivilege; verify it rather than trust the claim, so a raw
+             * connect message cannot assert trust it does not have. Refuse
+             * otherwise, as Windows does for LsaRegisterLogonProcess without
+             * the privilege. */
+            if (!LsapIsTrustedClient(ProcessHandle))
+            {
+                ERR("Untrusted process claimed a trusted connection; refusing\n");
+                NtClose(ProcessHandle);
+                RtlFreeHeap(RtlGetProcessHeap(), 0, Context);
+                return STATUS_PORT_CONNECTION_REFUSED;
+            }
             Context->TrustedCaller = TRUE;
             break;
 
