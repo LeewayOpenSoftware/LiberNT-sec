@@ -10,6 +10,7 @@
 
 #include <ndk/sefuncs.h>
 #include <ndk/umfuncs.h>
+#include <reactos/servicesid.h>
 
 /* Upper bound on caller-supplied LocalGroups, to keep the size arithmetic in
  * LsapCopyLocalGroups overflow-safe and reject absurd counts. */
@@ -976,6 +977,70 @@ done:
 }
 
 
+/*
+ * A Service logon may carry, besides the standard logon-session SIDs, exactly one NT SERVICE SID: the SID of the
+ * service the SCM is starting. The service name comes in the OriginName (UTF-16LE bytes, untrusted client memory)
+ * and the SID is DERIVED from it here and compared: this is a consistency check on top of the caller trust gate
+ * (SeTcb), not the trust anchor. Anything else in the list is refused.
+ */
+static
+NTSTATUS
+LsapCheckServiceLogonGroups(
+    IN PLSAP_LOGON_CONTEXT LogonContext,
+    IN PLSA_API_MSG RequestMsg,
+    IN PTOKEN_GROUPS LocalGroups)
+{
+    UCHAR Expected[LSA_SERVICE_SID_LENGTH];
+    WCHAR Name[LSA_SERVICE_SID_MAX_NAME_CCH];
+    BOOLEAN HaveExpected = FALSE, SeenService = FALSE;
+    ULONG Length, i;
+    NTSTATUS Status;
+
+    for (i = 0; i < LocalGroups->GroupCount; i++)
+    {
+        PSID Sid = LocalGroups->Groups[i].Sid;
+
+        if (LsapIsLocalGroupSid(Sid) || LsapIsLogonGroupSid(Sid))
+            continue;
+
+        if (!LsaIsServiceSidShape(Sid) || SeenService)
+        {
+            ERR("Service logon with a foreign group SID; denying\n");
+            return STATUS_PRIVILEGE_NOT_HELD;
+        }
+        SeenService = TRUE;
+
+        if (!HaveExpected)
+        {
+            Length = RequestMsg->LogonUser.Request.OriginName.Length;
+            if (Length == 0 || (Length & 1) || Length > sizeof(Name))
+                return STATUS_INVALID_PARAMETER;
+
+            Status = NtReadVirtualMemory(LogonContext->ClientProcessHandle,
+                                         RequestMsg->LogonUser.Request.OriginName.Buffer,
+                                         Name,
+                                         Length,
+                                         NULL);
+            if (!NT_SUCCESS(Status))
+                return Status;
+
+            Status = LsaFmtServiceSid(Name, Length / sizeof(WCHAR), (PSID)Expected);
+            if (!NT_SUCCESS(Status))
+                return Status;
+            HaveExpected = TRUE;
+        }
+
+        if (!RtlEqualSid(Sid, (PSID)Expected))
+        {
+            ERR("Service logon: SID does not match the service name; denying\n");
+            return STATUS_PRIVILEGE_NOT_HELD;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+
 static
 NTSTATUS
 LsapAddLocalGroups(
@@ -1884,6 +1949,20 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
         {
             ERR("LsapCopyLocalGroups failed (Status 0x%08lx)\n", Status);
             goto done;
+        }
+
+        if (LogonType == Service)
+        {
+            /* Only the SCM-style Service logon may carry an NT SERVICE SID, and only the one of its service */
+            if (!TrustedCaller)
+            {
+                Status = STATUS_PRIVILEGE_NOT_HELD;
+                goto done;
+            }
+
+            Status = LsapCheckServiceLogonGroups(LogonContext, RequestMsg, LocalGroups);
+            if (!NT_SUCCESS(Status))
+                goto done;
         }
 
         TRACE("GroupCount: %lu\n", LocalGroups->GroupCount);
