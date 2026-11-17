@@ -176,11 +176,15 @@ done:
     {
         if (LsaHandle != NULL)
         {
-            Status = LsaDeregisterLogonProcess(LsaHandle);
-            if (!NT_SUCCESS(Status))
+            NTSTATUS DeregStatus = LsaDeregisterLogonProcess(LsaHandle);
+            if (!NT_SUCCESS(DeregStatus))
             {
-                TRACE("LsaDeregisterLogonProcess failed (Status 0x%08lx)\n", Status);
+                TRACE("LsaDeregisterLogonProcess failed (Status 0x%08lx)\n", DeregStatus);
             }
+
+            /* Drop the cached handle so a later call retries the connection
+             * instead of reusing a closed one; keep the original failure. */
+            LsaHandle = NULL;
         }
     }
 
