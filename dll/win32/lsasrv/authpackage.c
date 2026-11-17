@@ -11,6 +11,10 @@
 #include <ndk/sefuncs.h>
 #include <ndk/umfuncs.h>
 
+/* Upper bound on caller-supplied LocalGroups, to keep the size arithmetic in
+ * LsapCopyLocalGroups overflow-safe and reject absurd counts. */
+#define LSAP_MAX_LOCAL_GROUPS 0x1000
+
 typedef enum _LSA_TOKEN_INFORMATION_TYPE
 {
     LsaTokenInformationNull,
@@ -753,6 +757,12 @@ LsapCopyLocalGroups(
     ULONG i;
     NTSTATUS Status;
 
+    /* Bound the caller-supplied count so the size arithmetic below cannot
+     * overflow (ClientGroupsCount is attacker-controlled) and reject absurd
+     * requests. */
+    if (ClientGroupsCount == 0 || ClientGroupsCount > LSAP_MAX_LOCAL_GROUPS)
+        return STATUS_INVALID_PARAMETER;
+
     LocalGroupsLength = sizeof(TOKEN_GROUPS) +
                         (ClientGroupsCount - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES);
     LocalGroups = RtlAllocateHeap(RtlGetProcessHeap(),
@@ -815,6 +825,15 @@ LsapCopyLocalGroups(
         if (!NT_SUCCESS(Status))
         {
             RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
+            goto done;
+        }
+
+        /* Reject a malformed SID (bad revision / sub-authority count) read
+         * from the client's address space before it enters the token. */
+        if (!RtlValidSid(DstSid))
+        {
+            RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
+            Status = STATUS_INVALID_SID;
             goto done;
         }
 
@@ -1729,6 +1748,22 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
 
     if (RequestMsg->LogonUser.Request.LocalGroupsCount > 0)
     {
+        /*
+         * LocalGroups adds arbitrary group SIDs to the returned token, so it
+         * is restricted to callers holding SeTcbPrivilege, as on Windows.
+         * Re-verify the client's token here instead of trusting the
+         * connect-time flag (which an LsaConnectUntrusted client can set to
+         * YES): deny the logon (fail closed) for an untrusted caller so it
+         * cannot inject privileged SIDs such as Administrators.
+         */
+        if (!LsapIsTrustedClient(LogonContext->ClientProcessHandle))
+        {
+            ERR("Untrusted caller supplied LocalGroups; denying logon\n");
+            if (LocalAuthInfo != NULL)
+                RtlFreeHeap(RtlGetProcessHeap(), 0, LocalAuthInfo);
+            return STATUS_PRIVILEGE_NOT_HELD;
+        }
+
         Status = LsapCopyLocalGroups(LogonContext,
                                      RequestMsg->LogonUser.Request.LocalGroups,
                                      RequestMsg->LogonUser.Request.LocalGroupsCount,
