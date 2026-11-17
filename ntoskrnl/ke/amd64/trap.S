@@ -35,6 +35,8 @@ EXTERN KdSetOwedBreakpoints:PROC
 EXTERN KeAcquireSpinLockAtDpcLevel:PROC
 EXTERN KeReleaseSpinLockFromDpcLevel:PROC
 EXTERN KiHvApicMsrs:BYTE
+EXTERN KiKvaShadowExitIretq:PROC
+EXTERN KiKvaShadowExitSysret:PROC
 
 
 /* Helper Macros *************************************************************/
@@ -580,6 +582,7 @@ KiGpfExit:
     ExitTrap (TF_SAVE_ALL OR TF_CHECKUSERAPC)
 ENDFUNC
 
+PUBLIC KiUserIretqFault
 FUNC KiUserIretqFault
     EnterTrap (TF_HAS_ERROR_CODE OR TF_SAVE_ALL)
 
@@ -1157,6 +1160,8 @@ PUBLIC KiSystemCallEntry64
     /* Get the kernel stack from the PCR */
     mov rsp, gs:[PcRspBase]
 
+PUBLIC KiSystemCallEntry64Resume
+GLOBAL_LABEL KiSystemCallEntry64Resume
     /* Allocate a TRAP_FRAME and space for parameters */
     sub rsp, (KTRAP_FRAME_LENGTH + MAX_SYSCALL_PARAM_SIZE)
 
@@ -1316,6 +1321,9 @@ SystemServiceInstrumentationDone:
     /* r9 matches rbp */
     mov r9, rbp
 
+    test byte ptr gs:[PcKvaShadowFlags], 1
+    jnz SystemServiceShadowSysret
+
     /* Swap gs back to user */
     swapgs
 
@@ -1331,12 +1339,24 @@ SystemServiceInstrumentationDone:
     /* return to user mode */
     sysretq
 
+SystemServiceShadowSysret:
+    pxor xmm0, xmm0
+    pxor xmm1, xmm1
+    pxor xmm2, xmm2
+    pxor xmm3, xmm3
+    pxor xmm4, xmm4
+    pxor xmm5, xmm5
+    xor rdx, rdx
+    jmp KiKvaShadowExitSysret
+
 SystemServiceIretq:
     mov [rsp + MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_Rip], rcx
     mov word ptr [rsp + MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_SegCs], (KGDT64_R3_CODE OR RPL_MASK)
     mov r8, [rsp + MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_Rsp]
     mov r9, rbp
     add rsp, MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_Rip
+    test byte ptr gs:[PcKvaShadowFlags], 1
+    jnz SystemServiceShadowIretq
     swapgs
     pxor xmm0, xmm0
     pxor xmm1, xmm1
@@ -1346,6 +1366,16 @@ SystemServiceIretq:
     pxor xmm5, xmm5
     xor edx, edx
     iretq
+
+SystemServiceShadowIretq:
+    pxor xmm0, xmm0
+    pxor xmm1, xmm1
+    pxor xmm2, xmm2
+    pxor xmm3, xmm3
+    pxor xmm4, xmm4
+    pxor xmm5, xmm5
+    xor edx, edx
+    jmp KiKvaShadowExitIretq
 
 SystemServiceInstrumented:
     mov rdx, [rdx + ThApcState + AsProcess]
@@ -1418,8 +1448,13 @@ KiPicoSystemCallEntry:
     mov r11, [rsp + MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_R11]
     mov rbp, [rsp + MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_Rbp]
     add rsp, MAX_SYSCALL_PARAM_SIZE + KTRAP_FRAME_Rip
+    test byte ptr gs:[PcKvaShadowFlags], 1
+    jnz KiPicoShadowIretq
     swapgs
     iretq
+
+KiPicoShadowIretq:
+    jmp KiKvaShadowExitIretq
 
 .ENDP
 
@@ -1479,6 +1514,8 @@ KiSystemCallEntry32:
     swapgs
     mov gs:[PcUserRsp], rsp
     mov rsp, gs:[PcRspBase]
+PUBLIC KiSystemCallEntry32Resume
+KiSystemCallEntry32Resume:
     push (KGDT64_R3_DATA OR RPL_MASK)
     push qword ptr gs:[PcUserRsp]
     push r11

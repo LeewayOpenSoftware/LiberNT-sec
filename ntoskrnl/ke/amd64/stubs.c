@@ -115,7 +115,8 @@ KiSwitchKernelStack(PVOID StackBase, PVOID StackLimit)
     Pcr->Prcb.RspBase += StackOffset;
 
     /* Adjust Rsp0 in the TSS */
-    Pcr->TssBase->Rsp0 += StackOffset;
+    if (!(Pcr->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE))
+        Pcr->TssBase->Rsp0 += StackOffset;
 
     return OldStackBase;
 }

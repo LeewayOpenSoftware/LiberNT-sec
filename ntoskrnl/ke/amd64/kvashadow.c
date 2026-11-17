@@ -17,7 +17,8 @@ typedef enum _KI_KVA_SHADOW_POLICY
 {
     KiKvaShadowPolicyOff,
     KiKvaShadowPolicyOn,
-    KiKvaShadowPolicyAuto
+    KiKvaShadowPolicyAuto,
+    KiKvaShadowPolicyTransition
 } KI_KVA_SHADOW_POLICY;
 
 typedef struct _KI_KVA_SHADOW_STATE
@@ -31,6 +32,13 @@ typedef struct _KI_KVA_SHADOW_STATE
 } KI_KVA_SHADOW_STATE;
 
 static KI_KVA_SHADOW_STATE KiKvaShadowState;
+
+extern UCHAR KiKvaShadowVectorStubs[];
+VOID KiKvaShadowSystemCall64(VOID);
+VOID KiKvaShadowSystemCall32(VOID);
+VOID KiKvaShadowExitIretq(VOID);
+
+#define KI_KVA_STUB_SIZE 16
 
 CODE_SEG("INIT")
 static
@@ -130,6 +138,8 @@ KiInitializeKvaShadow(
             KiKvaShadowState.Policy = KiKvaShadowPolicyOn;
         else if (KiIsLoadOptionPresent(Options, "KVASHADOW=AUTO"))
             KiKvaShadowState.Policy = KiKvaShadowPolicyAuto;
+        else if (KiIsLoadOptionPresent(Options, "KVASHADOW=TRANSITION"))
+            KiKvaShadowState.Policy = KiKvaShadowPolicyTransition;
         if (KiIsLoadOptionPresent(Options, "KVASHADOWPCID=OFF"))
             KiKvaShadowState.PcidAllowed = FALSE;
     }
@@ -144,6 +154,55 @@ KiInitializeKvaShadow(
             KiKvaShadowState.PcidAllowed,
             KiKvaShadowState.Invpcid,
             KiKvaShadowState.Active);
+
+    KiActivateKvaShadow(CONTAINING_RECORD(Prcb, KIPCR, Prcb));
+}
+
+VOID
+NTAPI
+KiActivateKvaShadow(
+    _Inout_ PKIPCR Pcr)
+{
+    PKIDTENTRY64 Idt = Pcr->IdtBase;
+    PKIPCR BootPcr;
+    ULONG64 Stub;
+    ULONG Index;
+
+    /* TODO: only the transition mode exists, where both directory table bases are the same root */
+    if (KiKvaShadowState.Policy != KiKvaShadowPolicyTransition)
+        return;
+
+    if (Pcr->Prcb.Number == 0)
+    {
+        for (Index = 0; Index < 256; Index++)
+        {
+            Pcr->KvaShadowHandlers[Index] = (PVOID)((ULONG64)Idt[Index].OffsetHigh << 32 |
+                                                    (ULONG64)Idt[Index].OffsetMiddle << 16 |
+                                                    (ULONG64)Idt[Index].OffsetLow);
+        }
+    }
+    else
+    {
+        BootPcr = CONTAINING_RECORD(KiProcessorBlock[0], KIPCR, Prcb);
+        RtlCopyMemory(Pcr->KvaShadowHandlers, BootPcr->KvaShadowHandlers, sizeof(Pcr->KvaShadowHandlers));
+    }
+
+    for (Index = 0; Index < 256; Index++)
+    {
+        if (Idt[Index].IstIndex != 0)
+            continue;
+
+        Stub = (ULONG64)&KiKvaShadowVectorStubs[Index * KI_KVA_STUB_SIZE];
+        Idt[Index].OffsetLow = Stub & 0xffff;
+        Idt[Index].OffsetMiddle = (Stub >> 16) & 0xffff;
+        Idt[Index].OffsetHigh = (ULONG)(Stub >> 32);
+    }
+
+    Pcr->KvaShadowExitIretq = KiKvaShadowExitIretq;
+    Pcr->TssBase->Rsp0 = (ULONG64)&Pcr->KvaShadowTransitionStack[sizeof(Pcr->KvaShadowTransitionStack)];
+    __writemsr(MSR_LSTAR, (ULONG64)KiKvaShadowSystemCall64);
+    __writemsr(MSR_CSTAR, (ULONG64)KiKvaShadowSystemCall32);
+    Pcr->KvaShadow.ShadowFlags |= KVA_SHADOW_ACTIVE;
 }
 
 NTSTATUS
@@ -172,6 +231,7 @@ NTAPI
 KiShadowAddressSpacesRequested(VOID)
 {
     return KiKvaShadowState.Policy == KiKvaShadowPolicyOn ||
+           KiKvaShadowState.Policy == KiKvaShadowPolicyTransition ||
            (KiKvaShadowState.Policy == KiKvaShadowPolicyAuto && KiKvaShadowState.Required);
 }
 

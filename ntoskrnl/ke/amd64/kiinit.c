@@ -575,6 +575,9 @@ KiSystemStartup(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
     /* Initialize the CPU features */
     KiInitializeCpu(Pcr);
 
+    if (Cpu != 0)
+        KiActivateKvaShadow(Pcr);
+
     /* Initial setup for the boot CPU */
     if (Cpu == 0)
     {

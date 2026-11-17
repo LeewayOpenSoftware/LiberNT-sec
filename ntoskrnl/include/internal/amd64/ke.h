@@ -385,6 +385,12 @@ KeRegisterInterruptHandler(IN ULONG Vector,
     /* Get the entry from the HAL */
     Entry = HalVectorToIDTEntry(Vector);
 
+    if (((PKIPCR)KeGetPcr())->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE)
+    {
+        ((PKIPCR)KeGetPcr())->KvaShadowHandlers[Entry] = Handler;
+        return;
+    }
+
     /* Now set the data */
     Idt = &KeGetPcr()->IdtBase[Entry];
     Idt->OffsetLow = (ULONG_PTR)Handler & 0xffff;
@@ -409,6 +415,9 @@ KeQueryInterruptHandler(IN ULONG Vector)
 
     /* Get the entry from the HAL */
     Entry = HalVectorToIDTEntry(Vector);
+
+    if (((PKIPCR)KeGetPcr())->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE)
+        return ((PKIPCR)KeGetPcr())->KvaShadowHandlers[Entry];
 
     /* Get the IDT entry */
     Idt = &KeGetPcr()->IdtBase[Entry];
@@ -511,6 +520,7 @@ VOID KiSetProcessorType(VOID);
 ULONG64 KiGetFeatureBits(VOID);
 VOID KiInitializeCpuFeatures(VOID);
 VOID NTAPI KiInitializeKvaShadow(_In_ PKPRCB Prcb, _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+VOID NTAPI KiActivateKvaShadow(_Inout_ PKIPCR Pcr);
 ULONG NTAPI KiAmd64QueryEffectiveMHz(_In_ ULONG ProcessorNumber);
 #define KiQueryEffectiveProcessorMhz(Number) KiAmd64QueryEffectiveMHz(Number)
 /* Current page table root, as recorded in a crash dump header. */

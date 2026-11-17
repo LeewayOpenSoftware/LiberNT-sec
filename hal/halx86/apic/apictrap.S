@@ -22,7 +22,16 @@ TRAP_ENTRY HalpProfileInterrupt, TF_SEND_EOI
 
 PUBLIC ApicSpuriousService
 ApicSpuriousService:
+    test byte ptr [rsp + 8], 1
+    jz ApicSpuriousReturn
+    swapgs
+    test byte ptr gs:[PcKvaShadowFlags], 1
+    jnz ApicSpuriousShadowReturn
+    swapgs
+ApicSpuriousReturn:
     iretq
+ApicSpuriousShadowReturn:
+    jmp qword ptr gs:[PcKvaShadowExitIretq]
 
 #else
 #include <ks386.inc>

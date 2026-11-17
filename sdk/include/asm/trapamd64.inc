@@ -421,6 +421,13 @@ MACRO(ExitTrap, Flags)
     RESTORE_PICO_FS_BASE
     RESTORE_USER_DEBUG_REGISTERS rbp
 
+    test byte ptr gs:[PcKvaShadowFlags], 1
+#ifdef _USE_ML
+    jnz kva_shadow_return
+#else
+    jnz 4f
+#endif
+
     /* Swap gs to user mode */
     swapgs
 #ifdef _USE_ML
@@ -477,6 +484,32 @@ debug_registers_restored:
 
     /* Return from the trap */
     iretq
+
+#ifdef _USE_ML
+kva_shadow_return:
+#else
+4:
+#endif
+    mov rax, [rbp + KTRAP_FRAME_Rax]
+    mov rcx, [rbp + KTRAP_FRAME_Rcx]
+    mov rdx, [rbp + KTRAP_FRAME_Rdx]
+    mov r8, [rbp + KTRAP_FRAME_R8]
+    mov r9, [rbp + KTRAP_FRAME_R9]
+    mov r10, [rbp + KTRAP_FRAME_R10]
+    mov r11, [rbp + KTRAP_FRAME_R11]
+    movaps xmm0, [rbp + KTRAP_FRAME_Xmm0]
+    movaps xmm1, [rbp + KTRAP_FRAME_Xmm1]
+    movaps xmm2, [rbp + KTRAP_FRAME_Xmm2]
+    movaps xmm3, [rbp + KTRAP_FRAME_Xmm3]
+    movaps xmm4, [rbp + KTRAP_FRAME_Xmm4]
+    movaps xmm5, [rbp + KTRAP_FRAME_Xmm5]
+    ldmxcsr [rbp + KTRAP_FRAME_MxCsr]
+    mov rbp, [rbp + KTRAP_FRAME_Rbp]
+    add rsp, KTRAP_FRAME_Rip
+    if ((Flags) AND TF_SEND_EOI)
+        mov dword ptr [APIC_EOI], 0
+    endif
+    jmp qword ptr gs:[PcKvaShadowExitIretq]
 ENDM
 
 

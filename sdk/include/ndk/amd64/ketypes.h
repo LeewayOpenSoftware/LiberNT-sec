@@ -1009,6 +1009,8 @@ typedef struct _KKVA_SHADOW_STATE
 
 C_ASSERT(sizeof(KKVA_SHADOW_STATE) == 4096);
 
+#define KVA_SHADOW_ACTIVE 0x1
+
 //
 // Processor Control Region
 //
@@ -1053,11 +1055,17 @@ typedef struct _KIPCR
     // hack:
     ULONG ContextSwitches;
 
+    PVOID KvaShadowHandlers[256];
+    PVOID KvaShadowExitIretq;
+
     /* Private page-aligned tail (owner decision D-STATE, 2026-11-17) until KPRCB follows the Windows 11 layout */
     DECLSPEC_ALIGN(4096) KKVA_SHADOW_STATE KvaShadow;
+    UCHAR KvaShadowTransitionStack[4096];
 } KIPCR, *PKIPCR;
 
 C_ASSERT((FIELD_OFFSET(KIPCR, KvaShadow) & 4095) == 0);
+C_ASSERT((FIELD_OFFSET(KIPCR, KvaShadowTransitionStack) & 4095) == 0);
+C_ASSERT(FIELD_OFFSET(KIPCR, KvaShadowExitIretq) < FIELD_OFFSET(KIPCR, KvaShadow));
 
 //
 // TSS Definition

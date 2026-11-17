@@ -213,7 +213,8 @@ KiSwapContextResume(
     }
 
     /* Setup ring 0 stack pointer */
-    Pcr->TssBase->Rsp0 = (ULONG64)NewThread->InitialStack;
+    if (!(Pcr->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE))
+        Pcr->TssBase->Rsp0 = (ULONG64)NewThread->InitialStack;
     Pcr->Prcb.RspBase = (ULONG64)NewThread->InitialStack;
 
     /* Save old thread's extended state */

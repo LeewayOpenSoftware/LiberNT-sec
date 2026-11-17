@@ -195,7 +195,8 @@ KiUserModeCallout(
     Pcr = (PKIPCR)KeGetPcr();
 
     /* Set user-mode dispatcher address as EIP */
-    Pcr->TssBase->Rsp0 = InitialStack;
+    if (!(Pcr->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE))
+        Pcr->TssBase->Rsp0 = InitialStack;
     Pcr->Prcb.RspBase = InitialStack;
     CallbackTrapFrame.Rip = (ULONG_PTR)KeUserCallbackDispatcher;
 
@@ -395,7 +396,8 @@ NtCallbackReturn(
     }
 
     /* Switch the stack back to the previous value */
-    Pcr->TssBase->Rsp0 = CalloutFrame->InitialStack;
+    if (!(Pcr->KvaShadow.ShadowFlags & KVA_SHADOW_ACTIVE))
+        Pcr->TssBase->Rsp0 = CalloutFrame->InitialStack;
     Pcr->Prcb.RspBase = CalloutFrame->InitialStack;
 
     /* Get the initial stack and restore it */

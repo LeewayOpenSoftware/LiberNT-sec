@@ -10,6 +10,7 @@
 
 EXTERN KiInitiateUserApc:PROC
 EXTERN KeUserCallbackDispatcher:QWORD
+EXTERN KiKvaShadowExitSysret:PROC
 
 /*
  * NTSTATUS
@@ -130,11 +131,17 @@ UserCallbackInstrumentationDone:
     /* Load user mode stack (It was copied to the trap frame) */
     mov rsp, [rsp + KTRAP_FRAME_Rsp]
 
+    test byte ptr gs:[PcKvaShadowFlags], 1
+    jnz UserCallbackShadowSysret
+
     /* Swap gs back to user */
     swapgs
 
     /* return to user mode */
     sysretq
+
+UserCallbackShadowSysret:
+    jmp KiKvaShadowExitSysret
 
 
 /*
