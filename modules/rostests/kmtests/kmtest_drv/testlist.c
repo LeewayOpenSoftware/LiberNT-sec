@@ -263,6 +263,7 @@ KMT_TESTFUNC Test_KeDpcQueueTransitions;
 KMT_TESTFUNC Test_KeExpandKernelStackSwitch;
 KMT_TESTFUNC Test_KeSwitchReaper;
 KMT_TESTFUNC Test_KeXState;
+KMT_TESTFUNC Test_KeIstStacks;
 KMT_TESTFUNC Test_KeSwitchSelfWake;
 KMT_TESTFUNC Test_KeTrapDebugRegisters;
 KMT_TESTFUNC Test_KeTrapFilterX87;
@@ -763,6 +764,7 @@ const KMT_TEST TestList[] =
     { "KeExpandKernelStackSwitch",          Test_KeExpandKernelStackSwitch },
     { "KeSwitchReaper",                     Test_KeSwitchReaper },
     { "KeXState",                           Test_KeXState },
+    { "KeIstStacks",                        Test_KeIstStacks },
     { "KeSwitchSelfWake",                   Test_KeSwitchSelfWake },
     { "KeTrapDebugRegisters",               Test_KeTrapDebugRegisters },
     { "KeTrapFilterX87",                    Test_KeTrapFilterX87 },

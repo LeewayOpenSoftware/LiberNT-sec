@@ -30,6 +30,7 @@ KiInitializeProcessorBootStructures(
     _In_ PVOID KernelStack,
     _In_ PVOID DpcStack,
     _In_ PVOID DoubleFaultStack,
+    _In_ PVOID McheckStack,
     _In_ PVOID NmiStack);
 
 typedef struct _APINFO
@@ -37,6 +38,7 @@ typedef struct _APINFO
     DECLSPEC_ALIGN(PAGE_SIZE) KIDTENTRY64 Idt[256];
     DECLSPEC_ALIGN(PAGE_SIZE) KGDTENTRY64 Gdt[128];
     DECLSPEC_ALIGN(16) UINT8 DoubleFaultStack[DOUBLE_FAULT_STACK_SIZE];
+    DECLSPEC_ALIGN(16) UINT8 McheckStack[DOUBLE_FAULT_STACK_SIZE];
     DECLSPEC_ALIGN(16) UINT8 NmiStack[DOUBLE_FAULT_STACK_SIZE];
     KIPCR Pcr;
     ETHREAD Thread;
@@ -110,6 +112,7 @@ KeStartAllProcessors(VOID)
                                             KernelStack,
                                             DPCStack,
                                             &APInfo->DoubleFaultStack[DOUBLE_FAULT_STACK_SIZE],
+                                            &APInfo->McheckStack[DOUBLE_FAULT_STACK_SIZE],
                                             &APInfo->NmiStack[DOUBLE_FAULT_STACK_SIZE]);
 
         /* Without an ISR stack the processor keeps taking interrupts on the interrupted stack */

@@ -28,9 +28,11 @@ KSPIN_LOCK KiFreezeExecutionLock;
 
 KIPCR KiInitialPcr;
 
-/* Boot and double-fault/NMI/DPC stack */
+/* Boot and double-fault/early DPC stack */
 UCHAR DECLSPEC_ALIGN(16) KiP0BootStackData[KERNEL_STACK_SIZE] = {0};
 UCHAR DECLSPEC_ALIGN(16) KiP0DoubleFaultStackData[KERNEL_STACK_SIZE] = {0};
+static UCHAR DECLSPEC_ALIGN(16) KiP0McheckStackData[KERNEL_STACK_SIZE] = {0};
+static UCHAR DECLSPEC_ALIGN(16) KiP0NmiStackData[KERNEL_STACK_SIZE] = {0};
 PVOID KiP0BootStack = &KiP0BootStackData[KERNEL_STACK_SIZE];
 PVOID KiP0DoubleFaultStack = &KiP0DoubleFaultStackData[KERNEL_STACK_SIZE];
 
@@ -250,6 +252,7 @@ KiInitializeTss(
     _Out_ PKTSS64 Tss,
     _In_ PVOID InitialStack,
     _In_ PVOID DoubleFaultStack,
+    _In_ PVOID McheckStack,
     _In_ PVOID NmiStack)
 {
     PKGDTENTRY64 TssEntry;
@@ -273,7 +276,7 @@ KiInitializeTss(
     Tss->Ist[1] = (ULONG64)DoubleFaultStack;
 
     /* Setup a stack for CheckAbort Traps */
-    Tss->Ist[2] = (ULONG64)DoubleFaultStack;
+    Tss->Ist[2] = (ULONG64)McheckStack;
 
     /* Setup a stack for NMI Traps */
     Tss->Ist[3] = (ULONG64)NmiStack;
@@ -291,6 +294,7 @@ KiInitializeProcessorBootStructures(
     _In_ PVOID KernelStack,
     _In_ PVOID DpcStack,
     _In_ PVOID DoubleFaultStack,
+    _In_ PVOID McheckStack,
     _In_ PVOID NmiStack)
 {
     /* Initialize the PCR */
@@ -308,6 +312,7 @@ KiInitializeProcessorBootStructures(
                     TssBase,
                     KernelStack,
                     DoubleFaultStack,
+                    McheckStack,
                     NmiStack);
 }
 
@@ -345,7 +350,8 @@ KiInitializeP0BootStructures(
                                         KiP0BootStack,
                                         KiP0DoubleFaultStack,
                                         KiP0DoubleFaultStack,
-                                        KiP0DoubleFaultStack);
+                                        &KiP0McheckStackData[KERNEL_STACK_SIZE],
+                                        &KiP0NmiStackData[KERNEL_STACK_SIZE]);
 }
 
 CODE_SEG("INIT")
