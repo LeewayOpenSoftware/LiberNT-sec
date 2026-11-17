@@ -608,8 +608,10 @@ SamValidateUser(
             TRACE("SpecialAccount: LocalService\n");
 
             /* Special accounts skip the password: only a SeTcb caller (the SCM) may obtain them */
-            if (LogonType != Service || LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+            if (LogonType != Service)
                 return STATUS_LOGON_FAILURE;
+            if (LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+                return STATUS_ACCESS_DENIED;
 
             *UserInfoPtr = RtlAllocateHeap(RtlGetProcessHeap(),
                                            HEAP_ZERO_MEMORY,
@@ -629,8 +631,10 @@ SamValidateUser(
              * so the boundary is this gate: a Service logon by a caller holding SeTcb (LogonPwdData->TrustedClient).
              * lsasrv additionally restricts the groups of a Service logon to the logon SIDs and the one derived NT SERVICE SID.
              */
-            if (LogonType != Service || LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+            if (LogonType != Service)
                 return STATUS_LOGON_FAILURE;
+            if (LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+                return STATUS_ACCESS_DENIED;
 
             *UserInfoPtr = RtlAllocateHeap(RtlGetProcessHeap(),
                                            HEAP_ZERO_MEMORY,
@@ -646,8 +650,10 @@ SamValidateUser(
             TRACE("SpecialAccount: NetworkService\n");
 
             /* Special accounts skip the password: only a SeTcb caller (the SCM) may obtain them */
-            if (LogonType != Service || LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+            if (LogonType != Service)
                 return STATUS_LOGON_FAILURE;
+            if (LogonPwdData == NULL || !LogonPwdData->TrustedClient)
+                return STATUS_ACCESS_DENIED;
 
             *UserInfoPtr = RtlAllocateHeap(RtlGetProcessHeap(),
                                            HEAP_ZERO_MEMORY,
