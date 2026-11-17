@@ -833,8 +833,12 @@ ScmReadServiceSidType(
 {
     DWORD dwValue = 0, dwSize = sizeof(dwValue), dwType = REG_NONE;
 
-    if (RegQueryValueExW(hServiceKey, L"ServiceSidType", NULL, &dwType, (LPBYTE)&dwValue, &dwSize) != ERROR_SUCCESS ||
-        dwType != REG_DWORD)
+    LONG lRet = RegQueryValueExW(hServiceKey, L"ServiceSidType", NULL, &dwType, (LPBYTE)&dwValue, &dwSize);
+
+    if (lRet == ERROR_FILE_NOT_FOUND)
         return SERVICE_SID_TYPE_NONE;
-    return (dwValue == SERVICE_SID_TYPE_UNRESTRICTED) ? dwValue : SERVICE_SID_TYPE_NONE;
+    /* Anything unreadable or not a REG_DWORD is an unknown type: the caller must refuse to start the service */
+    if (lRet != ERROR_SUCCESS || dwType != REG_DWORD || dwSize != sizeof(dwValue))
+        return MAXDWORD;
+    return dwValue;
 }

@@ -517,11 +517,14 @@ ScmLogonService(
     DPRINT("Service %S\n", pService->lpServiceName);
 
     /* A service SID needs the service token to come from LSA: never fall back to a token without it */
-    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hSidKey) == ERROR_SUCCESS)
-    {
-        dwSidType = ScmReadServiceSidType(hSidKey);
-        RegCloseKey(hSidKey);
-    }
+    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hSidKey) != ERROR_SUCCESS)
+        return ERROR_SERVICE_LOGON_FAILED;
+    dwSidType = ScmReadServiceSidType(hSidKey);
+    RegCloseKey(hSidKey);
+
+    /* RESTRICTED (3) and any unknown value are not implemented: fail closed, never fall back to a token without the SID */
+    if (dwSidType != SERVICE_SID_TYPE_NONE && dwSidType != SERVICE_SID_TYPE_UNRESTRICTED)
+        return ERROR_SERVICE_LOGON_FAILED;
     if (dwSidType != SERVICE_SID_TYPE_NONE && !(pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
         return ERROR_SERVICE_LOGON_FAILED;
 

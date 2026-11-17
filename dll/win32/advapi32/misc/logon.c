@@ -1527,6 +1527,11 @@ LogonUserExExW(
         if (LogonType == Service && lpszPassword != NULL &&
             _wcsnicmp(lpszPassword, L"_SC_", 4) == 0 && lpszPassword[4] != L'\0')
         {
+            if (wcslen(lpszPassword + 4) > 256)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                goto done;
+            }
             OriginName.Buffer = (PCHAR)(lpszPassword + 4);
             OriginName.Length = (USHORT)(wcslen(lpszPassword + 4) * sizeof(WCHAR));
             OriginName.MaximumLength = OriginName.Length + sizeof(WCHAR);
