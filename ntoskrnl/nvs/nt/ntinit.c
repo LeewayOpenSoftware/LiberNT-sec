@@ -416,6 +416,7 @@ MiInitializePhase0(
                                 (LONG64)MmNumberOfPhysicalPages);
     if (!NT_SUCCESS(Status))
         KeBugCheckEx(MEMORY_MANAGEMENT, 0x494E4954, (ULONG_PTR)Status, 0, 0);
+    MiSystem.ShadowRoots = KiShadowAddressSpacesRequested();
 
     DbgPrint("Page frame database: %lu MB at %012I64x for %lu frames\n", PfnPages >> (20 - PAGE_SHIFT),
              (ULONG64)PfnFirst << PAGE_SHIFT, FrameCount);

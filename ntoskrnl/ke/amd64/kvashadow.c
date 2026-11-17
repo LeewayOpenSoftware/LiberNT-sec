@@ -166,3 +166,20 @@ KiQueryKernelVaShadowInformation(
     *Flags = Information.KvaShadowFlags;
     return STATUS_SUCCESS;
 }
+
+BOOLEAN
+NTAPI
+KiShadowAddressSpacesRequested(VOID)
+{
+    return KiKvaShadowState.Policy == KiKvaShadowPolicyOn ||
+           (KiKvaShadowState.Policy == KiKvaShadowPolicyAuto && KiKvaShadowState.Required);
+}
+
+VOID
+NTAPI
+KiSetProcessShadowDirectoryTableBase(
+    _Inout_ PKPROCESS Process,
+    _In_ ULONG64 DirectoryTableBase)
+{
+    Process->UserDirectoryTableBase = DirectoryTableBase;
+}

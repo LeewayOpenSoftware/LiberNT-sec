@@ -201,6 +201,7 @@ MmCreateProcessAddressSpace(
 
     DirectoryTableBase[0] = (ULONG_PTR)Native->Space.RootFrame << PAGE_SHIFT;
     DirectoryTableBase[1] = (ULONG_PTR)MiSystem.SystemSpace.RootFrame << PAGE_SHIFT;
+    KiSetProcessShadowDirectoryTableBase(&Process->Pcb, (ULONG64)Native->Space.ShadowRootFrame << PAGE_SHIFT);
     MiSessionAddProcess(Process);
     return TRUE;
 }

@@ -1282,6 +1282,16 @@ NTAPI
 KiQueryKernelVaShadowInformation(
     _Out_ PULONG Flags);
 
+BOOLEAN
+NTAPI
+KiShadowAddressSpacesRequested(VOID);
+
+VOID
+NTAPI
+KiSetProcessShadowDirectoryTableBase(
+    _Inout_ PKPROCESS Process,
+    _In_ ULONG64 DirectoryTableBase);
+
 VOID
 NTAPI
 KxFreezeExecution(

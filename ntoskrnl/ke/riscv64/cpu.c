@@ -158,3 +158,20 @@ KiQueryKernelVaShadowInformation(
     *Flags = 0;
     return STATUS_NOT_IMPLEMENTED;
 }
+
+BOOLEAN
+NTAPI
+KiShadowAddressSpacesRequested(VOID)
+{
+    return FALSE;
+}
+
+VOID
+NTAPI
+KiSetProcessShadowDirectoryTableBase(
+    _Inout_ PKPROCESS Process,
+    _In_ ULONG64 DirectoryTableBase)
+{
+    UNREFERENCED_PARAMETER(Process);
+    UNREFERENCED_PARAMETER(DirectoryTableBase);
+}
