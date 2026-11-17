@@ -10,6 +10,7 @@ list(APPEND SOURCE
     config.c
     controlset.c
     database.c
+    sid.c
     driver.c
     failure.c
     groupdb.c

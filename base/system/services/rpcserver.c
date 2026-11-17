@@ -5268,6 +5268,7 @@ ScmIsSupportedConfigLevel(DWORD dwInfoLevel)
     return dwInfoLevel == SERVICE_CONFIG_DESCRIPTION ||
            dwInfoLevel == SERVICE_CONFIG_FAILURE_ACTIONS ||
            dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO ||
+           dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO ||
            dwInfoLevel == SERVICE_CONFIG_FAILURE_ACTIONS_FLAG ||
            dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO ||
            dwInfoLevel == SERVICE_CONFIG_TRIGGER_INFO;
@@ -5323,6 +5324,47 @@ ScmQueryDelayedAutoStart(HKEY hServiceKey, LPBYTE lpBuffer, DWORD cbBufSize, LPB
     if (cbBufSize < sizeof(SERVICE_DELAYED_AUTO_START_INFO))
         return ERROR_INSUFFICIENT_BUFFER;
     lpInfo->fDelayedAutostart = ScmReadDelayedAutoStart(hServiceKey) ? TRUE : FALSE;
+    return ERROR_SUCCESS;
+}
+
+
+/*
+ * SERVICE_CONFIG_SERVICE_SID_INFO. NONE and UNRESTRICTED are supported; RESTRICTED needs the write-restricted token
+ * and is not implemented (refused, never accepted and ignored). Only own-process services can carry a service SID:
+ * the token belongs to the process, and co-hosting services in one image would weaken the per-service isolation
+ * of the SID (a share-process image would need the union of its members' SIDs).
+ */
+static DWORD
+ScmSetServiceSidType(PSERVICE lpService, HKEY hServiceKey, const SERVICE_SID_INFO *lpInfo)
+{
+    DWORD dwValue, dwError;
+
+    if (lpInfo == NULL)
+        return ERROR_INVALID_PARAMETER;
+
+    dwValue = lpInfo->dwServiceSidType;
+    if (dwValue == SERVICE_SID_TYPE_NONE)
+    {
+        dwError = RegDeleteValueW(hServiceKey, L"ServiceSidType");
+        return (dwError == ERROR_FILE_NOT_FOUND) ? ERROR_SUCCESS : dwError;
+    }
+    if (dwValue != SERVICE_SID_TYPE_UNRESTRICTED)
+        return (dwValue == SERVICE_SID_TYPE_RESTRICTED) ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER;
+    if (!(lpService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
+        return ERROR_NOT_SUPPORTED;
+
+    return RegSetValueExW(hServiceKey, L"ServiceSidType", 0, REG_DWORD, (LPBYTE)&dwValue, sizeof(dwValue));
+}
+
+static DWORD
+ScmQueryServiceSidType(HKEY hServiceKey, LPBYTE lpBuffer, DWORD cbBufSize, LPBOUNDED_DWORD_8K pcbBytesNeeded)
+{
+    LPSERVICE_SID_INFO lpInfo = (LPSERVICE_SID_INFO)lpBuffer;
+
+    *pcbBytesNeeded = sizeof(SERVICE_SID_INFO);
+    if (cbBufSize < sizeof(SERVICE_SID_INFO))
+        return ERROR_INSUFFICIENT_BUFFER;
+    lpInfo->dwServiceSidType = ScmReadServiceSidType(hServiceKey);
     return ERROR_SUCCESS;
 }
 
@@ -5454,6 +5496,8 @@ RChangeServiceConfig2A(
         InfoW.psti = Info.psti;
     else if (Info.dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO)
         InfoW.psda = Info.psda;
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
+        InfoW.pssid = Info.pssid;
     else if (Info.dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO)
         InfoW.psps = Info.psps;
 
@@ -5926,6 +5970,10 @@ RChangeServiceConfig2W(
     {
         dwError = ScmSetPreshutdownTimeout(hServiceKey, Info.psps);
     }
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
+    {
+        dwError = ScmSetServiceSidType(lpService, hServiceKey, Info.pssid);
+    }
     else if (Info.dwInfoLevel == SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO)
     {
         dwError = ScmSetRequiredPrivileges(hServiceKey, Info.psrp);
@@ -6159,6 +6207,10 @@ RQueryServiceConfig2A(
     {
         dwError = ScmQueryPreshutdownTimeout(hServiceKey, lpBuffer, cbBufSize, pcbBytesNeeded);
     }
+    else if (dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
+    {
+        dwError = ScmQueryServiceSidType(hServiceKey, lpBuffer, cbBufSize, pcbBytesNeeded);
+    }
 
 done:
     /* Unlock the service database */
@@ -6373,6 +6425,10 @@ RQueryServiceConfig2W(
     else if (dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO)
     {
         dwError = ScmQueryPreshutdownTimeout(hServiceKey, lpBuffer, cbBufSize, pcbBytesNeeded);
+    }
+    else if (dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
+    {
+        dwError = ScmQueryServiceSidType(hServiceKey, lpBuffer, cbBufSize, pcbBytesNeeded);
     }
     else if (dwInfoLevel == SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO)
     {

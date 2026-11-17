@@ -824,3 +824,17 @@ ScmReadRequiredPrivileges(
     *pcbPrivileges = dwSize + 2 * sizeof(WCHAR);
     return ERROR_SUCCESS;
 }
+
+
+/* Registry value ServiceSidType (REG_DWORD); anything but a DWORD 1 is NONE (0). */
+DWORD
+ScmReadServiceSidType(
+    _In_ HKEY hServiceKey)
+{
+    DWORD dwValue = 0, dwSize = sizeof(dwValue), dwType = REG_NONE;
+
+    if (RegQueryValueExW(hServiceKey, L"ServiceSidType", NULL, &dwType, (LPBYTE)&dwValue, &dwSize) != ERROR_SUCCESS ||
+        dwType != REG_DWORD)
+        return SERVICE_SID_TYPE_NONE;
+    return (dwValue == SERVICE_SID_TYPE_UNRESTRICTED) ? dwValue : SERVICE_SID_TYPE_NONE;
+}

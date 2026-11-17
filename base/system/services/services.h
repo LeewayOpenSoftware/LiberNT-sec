@@ -284,6 +284,10 @@ VOID ScmStartTriggers(VOID);
 
 VOID ScmPreshutdownServices(VOID);
 BOOLEAN ScmReadDelayedAutoStart(_In_ HKEY hServiceKey);
+BOOL WINAPI LogonUserExExW(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, DWORD, PTOKEN_GROUPS, PHANDLE, PSID *, PVOID *, LPDWORD, PQUOTA_LIMITS);
+DWORD ScmReadServiceSidType(_In_ HKEY hServiceKey);
+DWORD ScmGetServiceSid(_In_ PCWSTR pszServiceName, _Out_ PSID *ppSid);
+
 DWORD ScmReadRequiredPrivileges(_In_ HKEY hServiceKey, _Out_ LPWSTR *ppmszPrivileges, _Out_ LPDWORD pcbPrivileges);
 DWORD ScmApplyRequiredPrivileges(_In_ PSERVICE pService, _Inout_ PSERVICE_IMAGE pImage);
 VOID ScmStartDelayedAutoStartServices(HANDLE hShutdownEvent);

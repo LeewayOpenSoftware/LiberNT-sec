@@ -505,29 +505,53 @@ ScmLogonService(
     PWSTR pszUserName = NULL;
     PWSTR pszDomainName = NULL;
     PWSTR pszPassword = NULL;
-    PWSTR ptr;
+    PWSTR ptr = NULL;
     DWORD dwError = ERROR_SUCCESS;
+    DWORD dwSidType = SERVICE_SID_TYPE_NONE;
+    PSID pServiceSid = NULL;
+    TOKEN_GROUPS ServiceGroups;
+    BOOL bSystem = ScmIsLocalSystemAccount(pImage->pszAccountName);
+    HKEY hSidKey = NULL;
 
     DPRINT("ScmLogonService(%p %p)\n", pService, pImage);
     DPRINT("Service %S\n", pService->lpServiceName);
 
-    if (ScmIsLocalSystemAccount(pImage->pszAccountName) ||
-        ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName)))
+    /* A service SID needs the service token to come from LSA: never fall back to a token without it */
+    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hSidKey) == ERROR_SUCCESS)
+    {
+        dwSidType = ScmReadServiceSidType(hSidKey);
+        RegCloseKey(hSidKey);
+    }
+    if (dwSidType != SERVICE_SID_TYPE_NONE && !(pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
+        return ERROR_SERVICE_LOGON_FAILED;
+
+    if (dwSidType == SERVICE_SID_TYPE_NONE &&
+        (bSystem ||
+         ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName))))
         return ERROR_SUCCESS;
 
-    /* Get the user and domain names */
-    ptr = wcschr(pImage->pszAccountName, L'\\');
-    if (ptr != NULL)
+    if (bSystem)
     {
-        *ptr = L'\0';
-        pszUserName = ptr + 1;
-        pszDomainName = pImage->pszAccountName;
+        /* LocalSystem with a service SID: the msv1_0 SYSTEM special account (SeTcb callers only) */
+        pszUserName = L"SYSTEM";
+        pszDomainName = L"NT AUTHORITY";
     }
     else
     {
-        // ERROR_INVALID_SERVICE_ACCOUNT
-        pszUserName = pImage->pszAccountName;
-        pszDomainName = NULL;
+        /* Get the user and domain names */
+        ptr = wcschr(pImage->pszAccountName, L'\\');
+        if (ptr != NULL)
+        {
+            *ptr = L'\0';
+            pszUserName = ptr + 1;
+            pszDomainName = pImage->pszAccountName;
+        }
+        else
+        {
+            // ERROR_INVALID_SERVICE_ACCOUNT
+            pszUserName = pImage->pszAccountName;
+            pszDomainName = NULL;
+        }
     }
 
     /* Build the service 'password' */
@@ -546,12 +570,44 @@ ScmLogonService(
     DPRINT("Domain: %S  User: %S  Password: %S\n", pszDomainName, pszUserName, pszPassword);
 
     /* Do the service logon */
-    if (!LogonUserW(pszUserName,
-                    pszDomainName,
-                    pszPassword,
-                    LOGON32_LOGON_SERVICE,
-                    LOGON32_PROVIDER_DEFAULT,
-                    &pImage->hToken))
+    if (dwSidType != SERVICE_SID_TYPE_NONE)
+    {
+        dwError = ScmGetServiceSid(pService->lpServiceName, &pServiceSid);
+        if (dwError != ERROR_SUCCESS)
+        {
+            dwError = ERROR_SERVICE_LOGON_FAILED;
+            goto done;
+        }
+
+        ServiceGroups.GroupCount = 1;
+        ServiceGroups.Groups[0].Sid = pServiceSid;
+        ServiceGroups.Groups[0].Attributes = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_OWNER;
+
+        if (!LogonUserExExW(pszUserName,
+                            pszDomainName,
+                            pszPassword,
+                            LOGON32_LOGON_SERVICE,
+                            LOGON32_PROVIDER_DEFAULT,
+                            &ServiceGroups,
+                            &pImage->hToken,
+                            NULL, NULL, NULL, NULL))
+        {
+            dwError = GetLastError();
+            DPRINT1("LogonUserExExW() failed (Error %lu)\n", dwError);
+            dwError = ERROR_SERVICE_LOGON_FAILED;
+            goto done;
+        }
+
+        /* the SYSTEM account has no user profile to load */
+        if (bSystem)
+            goto done;
+    }
+    else if (!LogonUserW(pszUserName,
+                         pszDomainName,
+                         pszPassword,
+                         LOGON32_LOGON_SERVICE,
+                         LOGON32_PROVIDER_DEFAULT,
+                         &pImage->hToken))
     {
         dwError = GetLastError();
         DPRINT1("LogonUserW() failed (Error %lu)\n", dwError);
@@ -588,6 +644,9 @@ ScmLogonService(
 done:
     if (pszPassword != NULL)
         HeapFree(GetProcessHeap(), 0, pszPassword);
+
+    if (pServiceSid != NULL)
+        HeapFree(GetProcessHeap(), 0, pServiceSid);
 
     if (ptr != NULL)
         *ptr = L'\\';
