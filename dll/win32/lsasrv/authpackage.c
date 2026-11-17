@@ -739,10 +739,71 @@ LsapCallAuthenticationPackage(PLSA_API_MSG RequestMsg,
 }
 
 
+/* The LOCAL SID (S-1-2-0): benign, carries no privilege. */
+static
+BOOLEAN
+LsapIsLocalGroupSid(
+    IN PSID Sid)
+{
+    static SID_IDENTIFIER_AUTHORITY LocalAuthority = {SECURITY_LOCAL_SID_AUTHORITY};
+
+    return (RtlIdentifierAuthoritySid(Sid) != NULL &&
+            RtlEqualMemory(RtlIdentifierAuthoritySid(Sid), &LocalAuthority, sizeof(LocalAuthority)) &&
+            *RtlSubAuthorityCountSid(Sid) == 1 &&
+            *RtlSubAuthoritySid(Sid, 0) == SECURITY_LOCAL_RID);
+}
+
+/* A logon SID (S-1-5-5-X-Y). */
+static
+BOOLEAN
+LsapIsLogonGroupSid(
+    IN PSID Sid)
+{
+    static SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+
+    return (RtlIdentifierAuthoritySid(Sid) != NULL &&
+            RtlEqualMemory(RtlIdentifierAuthoritySid(Sid), &NtAuthority, sizeof(NtAuthority)) &&
+            *RtlSubAuthorityCountSid(Sid) == SECURITY_LOGON_IDS_RID_COUNT &&
+            *RtlSubAuthoritySid(Sid, 0) == SECURITY_LOGON_IDS_RID);
+}
+
+/*
+ * Allocate a fresh, system-unique logon SID (S-1-5-5-X-Y) on the process heap,
+ * so it is freed by the same RtlFreeHeap path as the copied SIDs.
+ */
+static
+NTSTATUS
+LsapAllocateFreshLogonSid(
+    OUT PSID *OutSid)
+{
+    static SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    LUID LogonId;
+    PSID Sid;
+    NTSTATUS Status;
+
+    Status = NtAllocateLocallyUniqueId(&LogonId);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Sid = RtlAllocateHeap(RtlGetProcessHeap(), 0,
+                          RtlLengthRequiredSid(SECURITY_LOGON_IDS_RID_COUNT));
+    if (Sid == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    RtlInitializeSid(Sid, &NtAuthority, SECURITY_LOGON_IDS_RID_COUNT);
+    *RtlSubAuthoritySid(Sid, 0) = SECURITY_LOGON_IDS_RID;
+    *RtlSubAuthoritySid(Sid, 1) = (ULONG)LogonId.HighPart;
+    *RtlSubAuthoritySid(Sid, 2) = LogonId.LowPart;
+
+    *OutSid = Sid;
+    return STATUS_SUCCESS;
+}
+
 static
 NTSTATUS
 LsapCopyLocalGroups(
     IN PLSAP_LOGON_CONTEXT LogonContext,
+    IN BOOLEAN TrustedCaller,
     IN PTOKEN_GROUPS ClientGroups,
     IN ULONG ClientGroupsCount,
     OUT PTOKEN_GROUPS *TokenGroups)
@@ -835,6 +896,39 @@ LsapCopyLocalGroups(
             RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
             Status = STATUS_INVALID_SID;
             goto done;
+        }
+
+        /*
+         * A trusted caller may add any SID. An untrusted caller may add only
+         * the benign logon-session SIDs advapi32 attaches to every logon: the
+         * LOCAL SID (kept as-is) and a logon SID. The logon SID is replaced by
+         * a freshly generated, system-unique one so an untrusted caller cannot
+         * attach another session's logon SID (which would grant that session's
+         * window-station/desktop access). Any other SID is an injection attempt.
+         */
+        if (!TrustedCaller && !LsapIsLocalGroupSid(DstSid))
+        {
+            if (LsapIsLogonGroupSid(DstSid))
+            {
+                PSID FreshSid = NULL;
+
+                Status = LsapAllocateFreshLogonSid(&FreshSid);
+                if (!NT_SUCCESS(Status))
+                {
+                    RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
+                    goto done;
+                }
+
+                RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
+                DstSid = FreshSid;
+            }
+            else
+            {
+                ERR("Untrusted caller supplied a non-logon group SID; denying\n");
+                RtlFreeHeap(RtlGetProcessHeap(), 0, DstSid);
+                Status = STATUS_PRIVILEGE_NOT_HELD;
+                goto done;
+            }
         }
 
         LocalGroups->Groups[i].Sid = DstSid;
@@ -1750,22 +1844,19 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
     if (RequestMsg->LogonUser.Request.LocalGroupsCount > 0)
     {
         /*
-         * LocalGroups adds arbitrary group SIDs to the returned token, so it
-         * is restricted to callers holding SeTcbPrivilege, as on Windows.
-         * Re-verify the client's token here instead of trusting the
-         * connect-time flag (which an LsaConnectUntrusted client can set to
-         * YES): deny the logon (fail closed) for an untrusted caller so it
-         * cannot inject privileged SIDs such as Administrators.
+         * LocalGroups adds group SIDs to the returned token. A trusted caller
+         * (SeTcbPrivilege) may add any SID; an untrusted caller may add only
+         * the benign logon-session SIDs that advapi32 attaches to every logon
+         * (its logon SID and the LOCAL SID), so ordinary LogonUser keeps
+         * working while a privileged SID such as Administrators cannot be
+         * injected. The trust decision re-checks the client token rather than
+         * the connect-time flag, which a forged connect can set to YES.
          */
-        if (!LsapIsTrustedClient(LogonContext->ClientProcessHandle))
-        {
-            ERR("Untrusted caller supplied LocalGroups; denying logon\n");
-            if (LocalAuthInfo != NULL)
-                RtlFreeHeap(RtlGetProcessHeap(), 0, LocalAuthInfo);
-            return STATUS_PRIVILEGE_NOT_HELD;
-        }
+        BOOLEAN TrustedCaller =
+            LsapIsTrustedClient(LogonContext->ClientProcessHandle);
 
         Status = LsapCopyLocalGroups(LogonContext,
+                                     TrustedCaller,
                                      RequestMsg->LogonUser.Request.LocalGroups,
                                      RequestMsg->LogonUser.Request.LocalGroupsCount,
                                      &LocalGroups);

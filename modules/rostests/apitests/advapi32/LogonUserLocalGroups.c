@@ -62,8 +62,8 @@ MakeAdminGroups(VOID)
 
 /*
  * Perform an MSV1_0 interactive logon of TEST_USER through LsaLogonUser with the
- * supplied LocalGroups. Returns the NTSTATUS from LsaLogonUser. On success,
- * *HasAdmin reports whether BUILTIN\Administrators is present in the token.
+ * supplied LocalGroups. Returns the NTSTATUS from LsaLogonUser. On success, if
+ * ProbeSid is given, *HasProbe reports whether that SID is present in the token.
  */
 static
 NTSTATUS
@@ -71,7 +71,8 @@ LsaInteractiveLogon(
     _In_ HANDLE LsaHandle,
     _In_ ULONG AuthPackage,
     _In_opt_ PTOKEN_GROUPS Groups,
-    _Out_opt_ PBOOL HasAdmin)
+    _In_opt_ PSID ProbeSid,
+    _Out_opt_ PBOOL HasProbe)
 {
     LSA_STRING OriginName;
     PMSV1_0_INTERACTIVE_LOGON AuthInfo;
@@ -86,8 +87,8 @@ LsaInteractiveLogon(
     NTSTATUS Status;
     PBYTE Ptr;
 
-    if (HasAdmin != NULL)
-        *HasAdmin = FALSE;
+    if (HasProbe != NULL)
+        *HasProbe = FALSE;
 
     RtlInitString(&OriginName, "ApiTestLocalGroups");
 
@@ -127,19 +128,12 @@ LsaInteractiveLogon(
 
     if (NT_SUCCESS(Status) && Token != NULL)
     {
-        if (HasAdmin != NULL)
+        if (ProbeSid != NULL && HasProbe != NULL)
         {
-            SID_IDENTIFIER_AUTHORITY NtAuth = { SECURITY_NT_AUTHORITY };
-            PSID AdminSid = NULL;
             BOOL Member = FALSE;
 
-            if (AllocateAndInitializeSid(&NtAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
-                                         DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &AdminSid))
-            {
-                CheckTokenMembership(Token, AdminSid, &Member);
-                *HasAdmin = Member;
-                FreeSid(AdminSid);
-            }
+            CheckTokenMembership(Token, ProbeSid, &Member);
+            *HasProbe = Member;
         }
     }
 
@@ -184,12 +178,85 @@ RunUnprivilegedChild(VOID)
         return CHILD_SETUP_FAILED;
     }
 
-    Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, &HasAdmin);
+    Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups,
+                                 Groups->Groups[0].Sid, &HasAdmin);
     LsaDeregisterLogonProcess(LsaHandle);
 
     if (!NT_SUCCESS(Status))
         return CHILD_DENIED;        /* logon rejected - correct */
     return HasAdmin ? CHILD_INJECTED : CHILD_STRIPPED;
+}
+
+/* Build a one-entry TOKEN_GROUPS holding a specific (foreign) logon SID. */
+static
+PTOKEN_GROUPS
+MakeForeignLogonGroups(
+    _Out_ PSID *LogonSid)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuth = { SECURITY_NT_AUTHORITY };
+    PTOKEN_GROUPS Groups;
+    PSID Sid = NULL;
+
+    *LogonSid = NULL;
+
+    /* A logon SID that is NOT this caller's: S-1-5-5-0x7777-0x7777. */
+    if (!AllocateAndInitializeSid(&NtAuth, SECURITY_LOGON_IDS_RID_COUNT,
+                                  SECURITY_LOGON_IDS_RID, 0x7777, 0x7777,
+                                  0, 0, 0, 0, 0, &Sid))
+        return NULL;
+
+    Groups = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(TOKEN_GROUPS));
+    if (Groups == NULL)
+    {
+        FreeSid(Sid);
+        return NULL;
+    }
+
+    Groups->GroupCount = 1;
+    Groups->Groups[0].Sid = Sid;
+    Groups->Groups[0].Attributes = SE_GROUP_LOGON_ID | SE_GROUP_ENABLED |
+                                   SE_GROUP_ENABLED_BY_DEFAULT;
+    *LogonSid = Sid;
+    return Groups;
+}
+
+/* Child entry: an unprivileged caller supplying a foreign logon SID must NOT
+ * get that exact SID in its token (lsasrv substitutes a fresh one). */
+static
+int
+RunForeignLogonChild(VOID)
+{
+    LSA_STRING PackageName;
+    HANDLE LsaHandle = NULL;
+    ULONG AuthPackage = 0;
+    PTOKEN_GROUPS Groups;
+    PSID LogonSid = NULL;
+    BOOL HasForeign = FALSE;
+    NTSTATUS Status;
+
+    if (!NT_SUCCESS(LsaConnectUntrusted(&LsaHandle)))
+        return CHILD_SETUP_FAILED;
+
+    RtlInitString(&PackageName, MSV1_0_PACKAGE_NAME);
+    if (!NT_SUCCESS(LsaLookupAuthenticationPackage(LsaHandle, &PackageName, &AuthPackage)))
+    {
+        LsaDeregisterLogonProcess(LsaHandle);
+        return CHILD_SETUP_FAILED;
+    }
+
+    Groups = MakeForeignLogonGroups(&LogonSid);
+    if (Groups == NULL)
+    {
+        LsaDeregisterLogonProcess(LsaHandle);
+        return CHILD_SETUP_FAILED;
+    }
+
+    Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, LogonSid, &HasForeign);
+    LsaDeregisterLogonProcess(LsaHandle);
+
+    if (!NT_SUCCESS(Status))
+        return CHILD_STRIPPED;      /* logon failed - not the injection bug */
+    return HasForeign ? CHILD_INJECTED : CHILD_DENIED;
 }
 
 /* Child entry: as an unprivileged (no-SeTcb) process, an untrusted LSA
@@ -229,6 +296,29 @@ RunConnectTrustChild(VOID)
     return CHILD_DENIED;
 }
 
+/* Child entry: an unprivileged (no-SeTcb) process must still be able to log on
+ * through LogonUserW (advapi32 attaches only benign logon-session groups). A
+ * STATUS_PRIVILEGE_NOT_HELD here would be the regression the allow-list fixes. */
+static
+int
+RunLogonUserChild(VOID)
+{
+    HANDLE Token = NULL;
+
+    SetLastError(0xdeadbeef);
+    if (LogonUserW(TEST_USER, L".", TEST_PASSWORD, LOGON32_LOGON_NETWORK,
+                   LOGON32_PROVIDER_DEFAULT, &Token))
+    {
+        if (Token != NULL)
+            CloseHandle(Token);
+        return CHILD_DENIED;                 /* 0: logon succeeded - correct */
+    }
+
+    if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD)
+        return CHILD_INJECTED;               /* 1: 1314 - the regression */
+    return CHILD_STRIPPED;                    /* 2: other failure (env/auth) */
+}
+
 /* Spawn this same test exe with a restricted (SeTcb-removed) primary token so
  * it runs one of the unprivileged child routines. Returns the exit code, or -1. */
 static
@@ -248,7 +338,7 @@ SpawnUnprivilegedChild(
                           TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &ProcToken))
         return -1;
 
-    if (!LookupPrivilegeValueW(NULL, SE_TCB_NAME, &Delete[0].Luid))
+    if (!LookupPrivilegeValueW(NULL, L"SeTcbPrivilege", &Delete[0].Luid))
     {
         CloseHandle(ProcToken);
         return -1;
@@ -299,7 +389,7 @@ TestMalformedGroups(
         Groups.GroupCount = 0x40000000;   /* * sizeof(SID_AND_ATTRIBUTES) overflows 32-bit */
         Groups.Groups[0].Sid = NULL;
         Groups.Groups[0].Attributes = 0;
-        Status = LsaInteractiveLogon(LsaHandle, AuthPackage, &Groups, NULL);
+        Status = LsaInteractiveLogon(LsaHandle, AuthPackage, &Groups, NULL, NULL);
         ok(!NT_SUCCESS(Status), "huge count: expected failure, got 0x%08lx\n", Status);
     }
 
@@ -310,7 +400,7 @@ TestMalformedGroups(
         Groups.GroupCount = 1;
         Groups.Groups[0].Sid = (PSID)(ULONG_PTR)0x1;   /* not a valid address */
         Groups.Groups[0].Attributes = SE_GROUP_ENABLED;
-        Status = LsaInteractiveLogon(LsaHandle, AuthPackage, &Groups, NULL);
+        Status = LsaInteractiveLogon(LsaHandle, AuthPackage, &Groups, NULL, NULL);
         ok(!NT_SUCCESS(Status), "bad Sid pointer: expected failure, got 0x%08lx\n", Status);
     }
 
@@ -321,7 +411,7 @@ TestMalformedGroups(
         Buf.g.GroupCount = 1;
         Buf.g.Groups[0].Sid = (PSID)BadSid;
         Buf.g.Groups[0].Attributes = SE_GROUP_ENABLED;
-        Status = LsaInteractiveLogon(LsaHandle, AuthPackage, &Buf.g, NULL);
+        Status = LsaInteractiveLogon(LsaHandle, AuthPackage, &Buf.g, NULL, NULL);
         ok(!NT_SUCCESS(Status), "bad SID revision: expected failure, got 0x%08lx\n", Status);
     }
 
@@ -345,6 +435,10 @@ START_TEST(LogonUserLocalGroups)
         ExitProcess((UINT)RunUnprivilegedChild());
     if (wcsstr(GetCommandLineW(), L"ConnectTrustChild") != NULL)
         ExitProcess((UINT)RunConnectTrustChild());
+    if (wcsstr(GetCommandLineW(), L"LogonUserChild") != NULL)
+        ExitProcess((UINT)RunLogonUserChild());
+    if (wcsstr(GetCommandLineW(), L"ForeignLogonChild") != NULL)
+        ExitProcess((UINT)RunForeignLogonChild());
 
     NetStatus = AddUser();
     if (NetStatus != NERR_Success)
@@ -369,7 +463,7 @@ START_TEST(LogonUserLocalGroups)
             Groups = MakeAdminGroups();
             if (Groups != NULL)
             {
-                Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, &HasAdmin);
+                Status = LsaInteractiveLogon(LsaHandle, AuthPackage, Groups, Groups->Groups[0].Sid, &HasAdmin);
                 ok(NT_SUCCESS(Status), "trusted logon with LocalGroups: 0x%08lx\n", Status);
                 ok(HasAdmin, "trusted caller: Administrators should be present\n");
                 FreeSid(Groups->Groups[0].Sid);
@@ -380,7 +474,7 @@ START_TEST(LogonUserLocalGroups)
             TestMalformedGroups(LsaHandle, AuthPackage);
 
             /* lsass must still answer after the malformed inputs. */
-            Status = LsaInteractiveLogon(LsaHandle, AuthPackage, NULL, NULL);
+            Status = LsaInteractiveLogon(LsaHandle, AuthPackage, NULL, NULL, NULL);
             ok(NT_SUCCESS(Status), "lsass alive after adversarial cases: 0x%08lx\n", Status);
         }
 
@@ -417,6 +511,34 @@ START_TEST(LogonUserLocalGroups)
         ok(ChildResult != CHILD_INJECTED,
            "unprivileged caller was granted a trusted-only package call\n");
         trace("connect-trust child result: %d (0=denied)\n", ChildResult);
+    }
+
+    /* Regression guard: an unprivileged caller must still be able to LogonUser
+     * (the benign logon-session groups advapi32 supplies are allowed). */
+    ChildResult = SpawnUnprivilegedChild(L"LogonUserChild");
+    if (ChildResult < 0)
+    {
+        skip("could not run unprivileged LogonUser child (result %d)\n", ChildResult);
+    }
+    else
+    {
+        ok(ChildResult != CHILD_INJECTED,
+           "unprivileged LogonUser got ERROR_PRIVILEGE_NOT_HELD (regression)\n");
+        trace("LogonUser child result: %d (0=logon ok,2=other failure)\n", ChildResult);
+    }
+
+    /* An unprivileged caller supplying a foreign logon SID must not receive it
+     * (lsasrv substitutes a fresh one). */
+    ChildResult = SpawnUnprivilegedChild(L"ForeignLogonChild");
+    if (ChildResult < 0 || ChildResult == CHILD_SETUP_FAILED)
+    {
+        skip("could not run unprivileged foreign-logon child (result %d)\n", ChildResult);
+    }
+    else
+    {
+        ok(ChildResult != CHILD_INJECTED,
+           "unprivileged caller obtained a foreign logon SID in its token\n");
+        trace("foreign-logon child result: %d (0=substituted/absent)\n", ChildResult);
     }
 
     NetUserDel(NULL, TEST_USER);
