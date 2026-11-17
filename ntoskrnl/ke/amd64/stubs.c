@@ -278,6 +278,9 @@ KiSwapProcess(IN PKPROCESS NewProcess,
     DirectoryTableBase = NewProcess->DirectoryTableBase[0];
 #endif
 
+    if (NewProcess != OldProcess && KiSpeculationFeatures.IbpbEnabled)
+        __writemsr(MSR_PRED_CMD, PRED_CMD_IBPB);
+
     Pcr->KvaShadow.KernelDirectoryTableBase = DirectoryTableBase;
     Pcr->KvaShadow.UserDirectoryTableBase = DirectoryTableBase;
 

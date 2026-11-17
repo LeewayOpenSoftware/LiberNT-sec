@@ -521,6 +521,21 @@ ULONG64 KiGetFeatureBits(VOID);
 VOID KiInitializeCpuFeatures(VOID);
 VOID NTAPI KiInitializeKvaShadow(_In_ PKPRCB Prcb, _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
 VOID NTAPI KiActivateKvaShadow(_Inout_ PKIPCR Pcr);
+
+typedef struct _KI_SPECULATION_FEATURES
+{
+    BOOLEAN IbpbSupported;
+    BOOLEAN IbpbEnabled;
+    BOOLEAN IbrsSupported;
+    BOOLEAN StibpSupported;
+    BOOLEAN SsbdSupported;
+} KI_SPECULATION_FEATURES, *PKI_SPECULATION_FEATURES;
+
+extern KI_SPECULATION_FEATURES KiSpeculationFeatures;
+
+BOOLEAN KiIsBootOptionPresent(_In_opt_ PCSTR CommandLine, _In_ PCSTR Option);
+VOID NTAPI KiDetectCpuSpeculationCapabilities(_In_ PKPRCB Prcb, _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+VOID NTAPI KiVerifyProcessorSpeculationCapabilities(VOID);
 ULONG NTAPI KiAmd64QueryEffectiveMHz(_In_ ULONG ProcessorNumber);
 #define KiQueryEffectiveProcessorMhz(Number) KiAmd64QueryEffectiveMHz(Number)
 /* Current page table root, as recorded in a crash dump header. */

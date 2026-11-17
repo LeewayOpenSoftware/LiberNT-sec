@@ -274,6 +274,8 @@ typedef enum
 #define MSR_FS_BASE             0xC0000100
 #define MSR_GS_BASE             0xC0000101
 #define MSR_GS_SWAP             0xC0000102
+#define MSR_PRED_CMD            0x0049
+#define PRED_CMD_IBPB           0x0000000000000001ULL
 #define MSR_MCG_CAP             0x0179
 #define MSR_MCG_STATUS          0x017A
 #define MSR_MC0_STATUS          0x0401

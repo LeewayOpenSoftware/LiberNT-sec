@@ -482,6 +482,7 @@ KiInitializeKernelMachineDependent(
         Prcb->FeatureBits |= KF_NX_DISABLED;
     }
 
+    KiDetectCpuSpeculationCapabilities(Prcb, LoaderBlock);
     KiInitializeKvaShadow(Prcb, LoaderBlock);
 
 #if DBG
@@ -576,7 +577,10 @@ KiSystemStartup(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
     KiInitializeCpu(Pcr);
 
     if (Cpu != 0)
+    {
+        KiVerifyProcessorSpeculationCapabilities();
         KiActivateKvaShadow(Pcr);
+    }
 
     /* Initial setup for the boot CPU */
     if (Cpu == 0)

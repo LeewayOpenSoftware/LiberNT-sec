@@ -101,6 +101,130 @@ KiGetCpuVendor(VOID)
     return Prcb->CpuVendor;
 }
 
+#define KI_CPUID7_EDX_IBRS_IBPB  (1u << 26)
+#define KI_CPUID7_EDX_STIBP      (1u << 27)
+#define KI_CPUID7_EDX_SSBD       (1u << 31)
+#define KI_CPUID8_EBX_IBPB       (1u << 12)
+#define KI_CPUID8_EBX_IBRS       (1u << 14)
+#define KI_CPUID8_EBX_STIBP      (1u << 15)
+#define KI_CPUID8_EBX_SSBD       (1u << 24)
+
+KI_SPECULATION_FEATURES KiSpeculationFeatures;
+
+static
+BOOLEAN
+KiProcessorHasIbpb(
+    _In_ ULONG Vendor)
+{
+    int Regs[4];
+
+    __cpuid(Regs, 0);
+    if ((ULONG)Regs[0] >= 7)
+    {
+        __cpuidex(Regs, 7, 0);
+        if (Regs[3] & KI_CPUID7_EDX_IBRS_IBPB)
+            return TRUE;
+    }
+
+    if (Vendor == CPU_AMD)
+    {
+        __cpuid(Regs, 0x80000000);
+        if ((ULONG)Regs[0] >= 0x80000008)
+        {
+            __cpuid(Regs, 0x80000008);
+            if (Regs[1] & KI_CPUID8_EBX_IBPB)
+                return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+BOOLEAN
+KiIsBootOptionPresent(
+    _In_opt_ PCSTR CommandLine,
+    _In_ PCSTR Option)
+{
+    SIZE_T Length;
+    PCSTR Scan;
+
+    if (CommandLine == NULL)
+        return FALSE;
+
+    Length = strlen(Option);
+    for (Scan = CommandLine; *Scan != ANSI_NULL; ++Scan)
+    {
+        if ((Scan == CommandLine || Scan[-1] == ' ' || Scan[-1] == '/') &&
+            _strnicmp(Scan, Option, Length) == 0 &&
+            (Scan[Length] == ' ' || Scan[Length] == '/' || Scan[Length] == ANSI_NULL))
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+VOID
+NTAPI
+KiDetectCpuSpeculationCapabilities(
+    _In_ PKPRCB Prcb,
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock)
+{
+    int Regs[4];
+    BOOLEAN Ibrs = FALSE;
+    BOOLEAN Stibp = FALSE;
+    BOOLEAN Ssbd = FALSE;
+
+    __cpuid(Regs, 0);
+    if ((ULONG)Regs[0] >= 7)
+    {
+        __cpuidex(Regs, 7, 0);
+        if (Regs[3] & KI_CPUID7_EDX_IBRS_IBPB)
+            Ibrs = TRUE;
+        if (Regs[3] & KI_CPUID7_EDX_STIBP)
+            Stibp = TRUE;
+        if (Regs[3] & KI_CPUID7_EDX_SSBD)
+            Ssbd = TRUE;
+    }
+
+    if (Prcb->CpuVendor == CPU_AMD)
+    {
+        __cpuid(Regs, 0x80000000);
+        if ((ULONG)Regs[0] >= 0x80000008)
+        {
+            __cpuid(Regs, 0x80000008);
+            if (Regs[1] & KI_CPUID8_EBX_IBRS)
+                Ibrs = TRUE;
+            if (Regs[1] & KI_CPUID8_EBX_STIBP)
+                Stibp = TRUE;
+            if (Regs[1] & KI_CPUID8_EBX_SSBD)
+                Ssbd = TRUE;
+        }
+    }
+
+    KiSpeculationFeatures.IbpbSupported = KiProcessorHasIbpb(Prcb->CpuVendor);
+    KiSpeculationFeatures.IbrsSupported = Ibrs;
+    KiSpeculationFeatures.StibpSupported = Stibp;
+    KiSpeculationFeatures.SsbdSupported = Ssbd;
+    KiSpeculationFeatures.IbpbEnabled = KiSpeculationFeatures.IbpbSupported &&
+        !KiIsBootOptionPresent(LoaderBlock != NULL ? LoaderBlock->LoadOptions : NULL, "NOIBPB");
+
+    DPRINT1("IBPB: supported %u, enabled %u\n",
+            KiSpeculationFeatures.IbpbSupported, KiSpeculationFeatures.IbpbEnabled);
+}
+
+VOID
+NTAPI
+KiVerifyProcessorSpeculationCapabilities(VOID)
+{
+    if (KiSpeculationFeatures.IbpbEnabled &&
+        !KiProcessorHasIbpb(KeGetCurrentPrcb()->CpuVendor))
+    {
+        KiSpeculationFeatures.IbpbEnabled = FALSE;
+    }
+}
+
 static struct
 {
     ULONG64 Aperf;

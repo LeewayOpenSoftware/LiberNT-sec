@@ -472,6 +472,7 @@ if(ARCH STREQUAL "amd64")
     list(APPEND KMTEST_DRV_SOURCE
         ntos_ke/amd64/KeExpandKernelStack.c
         ntos_ke/amd64/KeSwitchHandoff.c
+        ntos_ke/amd64/KeIbpb.c
         ntos_ke/amd64/KeTrapDebugRegisters.c
         ntos_ke/amd64/KeTrapFilterX87.c
         ntos_ke/amd64/KeXState.c
