@@ -17,6 +17,28 @@ MiPtIndex(const MI_ARCH_DESCRIPTOR *Arch, ULONG64 VirtualAddress, LONG Level)
 }
 
 static
+VOID
+MiPtMirrorRootEntry(
+    _In_ PMI_ADDRESS_SPACE Space,
+    _In_ ULONG TableFrame,
+    _In_ ULONG Index,
+    _In_ ULONG64 VirtualAddress,
+    _In_ MI_PTE Value)
+{
+    PMI_PTE Shadow;
+
+    if (Space->ShadowRootFrame == 0 || TableFrame != Space->RootFrame ||
+        VirtualAddress > Space->System->Arch->UserAddressEnd)
+    {
+        return;
+    }
+
+    Shadow = MiArchMapFrame(Space->ShadowRootFrame);
+    MiArchPteWrite(&Shadow[Index], Value);
+    MiArchUnmapFrame(Shadow);
+}
+
+static
 PMI_PTE
 MiPtWalk(
     _Inout_ PMI_ADDRESS_SPACE Space,
@@ -78,6 +100,7 @@ MiPtWalk(
                     MI_ATOMIC_ADD32(&System->Pfn.Pfn[Frame].UsedEntries, 1);
                     MI_ATOMIC_ADD64(&Space->PageTablePages, 1);
                     MiArchPteWrite(Slot, Entry);
+                    MiPtMirrorRootEntry(Space, Frame, Index, VirtualAddress, Entry);
                     Table = MI_FRAME_INVALID;
                 }
                 MiPfnUnlock(&System->Pfn, Frame, OldIrql);
@@ -335,6 +358,8 @@ MiPtReleaseTable(
         }
         ParentSlot = (PMI_PTE)((PUCHAR)MiArchMapFrame(Parent) + (Table->PteAddress & (PAGE_SIZE - 1)));
         MiArchPteWrite(ParentSlot, 0);
+        MiPtMirrorRootEntry(Space, Parent, (ULONG)((Table->PteAddress & (PAGE_SIZE - 1)) / sizeof(MI_PTE)),
+                            VirtualAddress, 0);
         MI_ATOMIC_ADD64(&Space->PageTablePages, -1);
         MI_ATOMIC_ADD32(&System->Pfn.Pfn[Parent].UsedEntries, -1);
         if (Space->TlbBatch != NULL)
@@ -619,6 +644,31 @@ MiPtCheckTable(
 }
 
 ULONG
+MiPtCheckShadow(
+    _In_ PMI_ADDRESS_SPACE Space)
+{
+    const MI_ARCH_DESCRIPTOR *Arch = Space->System->Arch;
+    LONG Top = Arch->PagingLevels - 1;
+    PMI_PTE Root = MiArchMapFrame(Space->RootFrame);
+    PMI_PTE Shadow = MiArchMapFrame(Space->ShadowRootFrame);
+    ULONG Entries = (ULONG)Arch->Level[Top].EntryCount;
+    ULONG LastUser = (ULONG)((Arch->UserAddressEnd >> Arch->Level[Top].Shift) & Arch->Level[Top].IndexMask);
+    ULONG Index, Errors = 0;
+
+    for (Index = 0; Index < Entries; Index++)
+    {
+        MI_PTE Expected = (Index <= LastUser) ? MiArchPteRead(&Root[Index]) : 0;
+
+        if (MiArchPteRead(&Shadow[Index]) != Expected)
+            Errors++;
+    }
+
+    MiArchUnmapFrame(Shadow);
+    MiArchUnmapFrame(Root);
+    return Errors;
+}
+
+ULONG
 MiPtCheck(
     _In_ PMI_ADDRESS_SPACE Space)
 {
@@ -627,6 +677,8 @@ MiPtCheck(
 
     if ((LONG64)Tables != MI_ATOMIC_READ64(&Space->PageTablePages))
         Errors++;
+    if (Space->ShadowRootFrame != 0)
+        Errors += MiPtCheckShadow(Space);
 
     return Errors;
 }

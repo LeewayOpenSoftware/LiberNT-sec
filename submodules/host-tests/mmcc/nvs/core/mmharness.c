@@ -341,6 +341,7 @@ static const TEST_ENTRY Tests[] =
 {
     { "pfn", TestPfn, 0 },
     { "pagetable", TestPageTable, 0 },
+    { "shadow", TestShadowRoot, 0 },
     { "vad", TestVad, 0 },
     { "vm", TestVm, 0 },
     { "large", TestLarge, 0 },

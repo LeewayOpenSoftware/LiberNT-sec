@@ -118,4 +118,5 @@ void TestBenchVm(void);
 void TestBenchCcDirty(void);
 void TestPfn(void);
 void TestPageTable(void);
+void TestShadowRoot(void);
 void TestBenchCore(void);

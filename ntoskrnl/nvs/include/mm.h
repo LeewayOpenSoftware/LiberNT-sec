@@ -55,6 +55,7 @@ typedef struct _MI_ADDRESS_SPACE
 {
     struct _MI_SYSTEM *System;
     ULONG RootFrame;
+    ULONG ShadowRootFrame;
     BOOLEAN IsSystem;
     MI_RWLOCK Lock;
     MI_VAD_ROOT VadRoot;
@@ -110,6 +111,7 @@ typedef struct _MI_SYSTEM
     MI_ADDRESS_SPACE SystemSpace;
     volatile LONG64 CommittedPages;
     LONG64 CommitLimit;
+    BOOLEAN ShadowRoots;
     volatile LONG64 AwePages;
     struct _MI_PAGEFILE *PageFile;
     struct _MI_SYSTEM_PTES *SystemPtes;
@@ -176,6 +178,7 @@ BOOLEAN MiPtTranslateRoot(_In_ const MI_ARCH_DESCRIPTOR *Arch, _In_ ULONG64 Root
                           _In_ ULONG64 VirtualAddress, _Out_ PULONG64 PhysicalAddress,
                           _Out_opt_ PMI_PTE LeafPte);
 ULONG MiPtCheck(_In_ PMI_ADDRESS_SPACE Space);
+ULONG MiPtCheckShadow(_In_ PMI_ADDRESS_SPACE Space);
 BOOLEAN MiPtIsUserFrame(_In_ PMI_SYSTEM System, _In_ ULONG Frame);
 NTSTATUS MiPtPinRange(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 VirtualAddress, _In_ ULONG64 Length);
 NTSTATUS MiPtPinSystemRange(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 VirtualAddress, _In_ ULONG64 Length,

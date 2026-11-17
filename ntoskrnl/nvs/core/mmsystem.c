@@ -133,6 +133,22 @@ MiSpaceInitialize(
     if (!IsSystem)
         MiArchInitializeProcessRoot(System->SystemSpace.RootFrame, Root);
 
+    if (!IsSystem && System->ShadowRoots)
+    {
+        ULONG Shadow = MiPfnAllocatePage(&System->Pfn, MI_ALLOCATE_ZEROED);
+
+        if (Shadow == MI_FRAME_INVALID)
+        {
+            MiPfnShareDecrement(&System->Pfn, Root, TRUE);
+            Space->RootFrame = 0;
+            return STATUS_NO_MEMORY;
+        }
+
+        MiPfnInitializePage(&System->Pfn, Shadow, 0, 0, 0, MI_PFN_FLAG_PAGE_TABLE | MI_PFN_FLAG_PINNED);
+        System->Pfn.Pfn[Shadow].PageTableOwner = Space;
+        Space->ShadowRootFrame = Shadow;
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -224,6 +240,12 @@ MiAddressSpaceDestroy(
     MI_ASSERT(MI_ATOMIC_READ64(&Space->PageTablePages) == 0);
 
     MiLockRangeReset(Space);
+    if (Space->ShadowRootFrame != 0)
+    {
+        MI_ASSERT(MiPtCheckShadow(Space) == 0);
+        MiPfnShareDecrement(&Space->System->Pfn, Space->ShadowRootFrame, TRUE);
+        Space->ShadowRootFrame = 0;
+    }
     MiPfnShareDecrement(&Space->System->Pfn, Space->RootFrame, TRUE);
     Space->RootFrame = 0;
 }
