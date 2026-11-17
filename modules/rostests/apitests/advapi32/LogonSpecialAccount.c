@@ -95,11 +95,14 @@ RunWithoutTcb(VOID)
     SetEnvironmentVariableW(L"LNT_LSA_CHILD", L"1");
     if (!CreateProcessAsUserW(Restricted, NULL, Cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &Si, &Pi))
     {
+        SetEnvironmentVariableW(L"LNT_LSA_CHILD", NULL);
         skip("CreateProcessAsUser failed: %lu\n", GetLastError());
         CloseHandle(Restricted);
         return;
     }
-    WaitForSingleObject(Pi.hProcess, 120000);
+    SetEnvironmentVariableW(L"LNT_LSA_CHILD", NULL);
+    if (WaitForSingleObject(Pi.hProcess, 120000) != WAIT_OBJECT_0)
+        TerminateProcess(Pi.hProcess, 1);
     GetExitCodeProcess(Pi.hProcess, &Exit);
     ok(Exit == CHILD_BASE, "child without SeTcb reported exit code %lu (expected %d)\n", Exit, CHILD_BASE);
     CloseHandle(Pi.hThread);
