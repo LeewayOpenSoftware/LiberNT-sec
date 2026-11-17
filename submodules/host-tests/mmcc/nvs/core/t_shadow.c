@@ -129,6 +129,9 @@ TestShadowRoot(void)
 
         MiArchPteWrite(&Shadow[Index], 0);
         CHECK(MiPtCheck(&Space) == 1);
+        CHECK(MiArchPteIsAccessed(Saved));
+        MiArchPteWrite(&Shadow[Index], MiArchPteSetAccessed(Saved, FALSE));
+        CHECK(MiPtCheck(&Space) == 0);
         MiArchPteWrite(&Shadow[Index], Saved);
         MiArchUnmapFrame(Shadow);
         CHECK(MiPtCheck(&Space) == 0);
@@ -157,6 +160,61 @@ TestShadowRoot(void)
     CHECK(Space.ShadowRootFrame == 0);
     CHECK((LONG64)MiPfnAvailablePages(&System->Pfn) == Available);
     CHECK(WorldCheck(&World) == 0);
+
+    {
+        MI_ADDRESS_SPACE Parent, Child;
+        ULONG64 Base = USER_BASE, Size = 4 * PAGE_SIZE;
+        NTSTATUS Status;
+
+        ProcessCreate(&World, &Parent);
+        ProcessCreate(&World, &Child);
+        CHECK(Parent.ShadowRootFrame != 0 && Child.ShadowRootFrame != 0);
+        WorldAttach(&World, 0, &Parent);
+        WorldAttach(&World, 1, &Child);
+        CHECK(NT_SUCCESS(MiAllocateVirtualMemory(&Parent, &Base, &Size,
+                                                 MI_MEM_RESERVE | MI_MEM_COMMIT, MI_PROT_READWRITE)));
+        CHECK(NT_SUCCESS(UserWrite64(&World, 0, Base, 0x11223344)));
+        Status = MiCloneAddressSpace(&Parent, &Child);
+        CHECK(Status == STATUS_SUCCESS);
+        if (NT_SUCCESS(Status))
+        {
+            CHECK(UserRead64(&World, 1, Base, &Status) == 0x11223344 && NT_SUCCESS(Status));
+            CHECK(NT_SUCCESS(UserWrite64(&World, 1, Base + PAGE_SIZE, 0xABCDEF)));
+            CHECK(ShadowEntry(Child.RootFrame, ShadowTopIndex(Base)) != 0);
+            CHECK(MiPtCheck(&Parent) == 0);
+            CHECK(MiPtCheck(&Child) == 0);
+        }
+        WorldAttach(&World, 0, NULL);
+        WorldAttach(&World, 1, NULL);
+        ProcessDestroy(&World, &Child);
+        ProcessDestroy(&World, &Parent);
+        CHECK((LONG64)MiPfnAvailablePages(&System->Pfn) == Available);
+    }
+
+    {
+        static ULONG Held[8192];
+        MI_ADDRESS_SPACE Starved;
+        ULONG Count = 0;
+
+        while (MiPfnAvailablePages(&System->Pfn) > 1 && Count < 8192)
+        {
+            ULONG Frame = MiPfnAllocatePage(&System->Pfn, 0);
+
+            if (Frame == MI_FRAME_INVALID)
+                break;
+            MiPfnInitializePage(&System->Pfn, Frame, 0, 0, 0, 0);
+            Held[Count++] = Frame;
+        }
+        if (MiPfnAvailablePages(&System->Pfn) == 1)
+        {
+            CHECK(MiAddressSpaceCreate(System, &Starved) == STATUS_NO_MEMORY);
+            CHECK(Starved.RootFrame == 0 && Starved.ShadowRootFrame == 0);
+            CHECK(MiPfnAvailablePages(&System->Pfn) == 1);
+        }
+        while (Count != 0)
+            MiPfnShareDecrement(&System->Pfn, Held[--Count], TRUE);
+        CHECK((LONG64)MiPfnAvailablePages(&System->Pfn) == Available);
+    }
 
     System->ShadowRoots = FALSE;
     WorldDestroy(&World);

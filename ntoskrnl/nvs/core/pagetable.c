@@ -17,22 +17,32 @@ MiPtIndex(const MI_ARCH_DESCRIPTOR *Arch, ULONG64 VirtualAddress, LONG Level)
 }
 
 static
+ULONG
+MiPtLastUserRootIndex(
+    _In_ const MI_ARCH_DESCRIPTOR *Arch)
+{
+    LONG Top = Arch->PagingLevels - 1;
+
+    return (ULONG)((Arch->UserAddressEnd >> Arch->Level[Top].Shift) & Arch->Level[Top].IndexMask);
+}
+
+static
 VOID
 MiPtMirrorRootEntry(
     _In_ PMI_ADDRESS_SPACE Space,
     _In_ ULONG TableFrame,
     _In_ ULONG Index,
-    _In_ ULONG64 VirtualAddress,
     _In_ MI_PTE Value)
 {
     PMI_PTE Shadow;
 
     if (Space->ShadowRootFrame == 0 || TableFrame != Space->RootFrame ||
-        VirtualAddress > Space->System->Arch->UserAddressEnd)
+        Index > MiPtLastUserRootIndex(Space->System->Arch))
     {
         return;
     }
 
+    /* The caller holds the root's PFN lock; the mapping itself needs none only while MiArchMapFrame is a direct map */
     Shadow = MiArchMapFrame(Space->ShadowRootFrame);
     MiArchPteWrite(&Shadow[Index], Value);
     MiArchUnmapFrame(Shadow);
@@ -100,7 +110,7 @@ MiPtWalk(
                     MI_ATOMIC_ADD32(&System->Pfn.Pfn[Frame].UsedEntries, 1);
                     MI_ATOMIC_ADD64(&Space->PageTablePages, 1);
                     MiArchPteWrite(Slot, Entry);
-                    MiPtMirrorRootEntry(Space, Frame, Index, VirtualAddress, Entry);
+                    MiPtMirrorRootEntry(Space, Frame, Index, Entry);
                     Table = MI_FRAME_INVALID;
                 }
                 MiPfnUnlock(&System->Pfn, Frame, OldIrql);
@@ -233,6 +243,7 @@ MiPtSplitBootBlock(PMI_ADDRESS_SPACE Space, ULONG64 VirtualAddress, PMI_PTE Alia
     ULONG Frame, Index;
     PMI_PTE Table;
 
+    MI_ASSERT(ParentFrame != Space->RootFrame || Space->ShadowRootFrame == 0);
     if (Arch->LargePageLevel != 1 || !MiArchPteIsBlock(Block, 1))
         return STATUS_INVALID_PARAMETER;
 
@@ -357,9 +368,18 @@ MiPtReleaseTable(
                 Space->EmptyTable[i].Present = FALSE;
         }
         ParentSlot = (PMI_PTE)((PUCHAR)MiArchMapFrame(Parent) + (Table->PteAddress & (PAGE_SIZE - 1)));
-        MiArchPteWrite(ParentSlot, 0);
-        MiPtMirrorRootEntry(Space, Parent, (ULONG)((Table->PteAddress & (PAGE_SIZE - 1)) / sizeof(MI_PTE)),
-                            VirtualAddress, 0);
+        if (Parent == Space->RootFrame && Space->ShadowRootFrame != 0)
+        {
+            KIRQL OldIrql = MiPfnLock(&System->Pfn, Parent);
+
+            MiArchPteWrite(ParentSlot, 0);
+            MiPtMirrorRootEntry(Space, Parent, (ULONG)((Table->PteAddress & (PAGE_SIZE - 1)) / sizeof(MI_PTE)), 0);
+            MiPfnUnlock(&System->Pfn, Parent, OldIrql);
+        }
+        else
+        {
+            MiArchPteWrite(ParentSlot, 0);
+        }
         MI_ATOMIC_ADD64(&Space->PageTablePages, -1);
         MI_ATOMIC_ADD32(&System->Pfn.Pfn[Parent].UsedEntries, -1);
         if (Space->TlbBatch != NULL)
@@ -471,6 +491,7 @@ MiPtWrite(
     MI_PTE Old;
 
     MI_ASSERT(TableFrame < Space->System->Pfn.FrameCount);
+    MI_ASSERT(TableFrame != Space->RootFrame || Space->ShadowRootFrame == 0);
     Table = &Space->System->Pfn.Pfn[TableFrame];
     MI_ASSERT(MI_PFN_FLAGS(Table) & MI_PFN_FLAG_PAGE_TABLE);
     Old = MiArchPteRead(Slot);
@@ -652,14 +673,15 @@ MiPtCheckShadow(
     PMI_PTE Root = MiArchMapFrame(Space->RootFrame);
     PMI_PTE Shadow = MiArchMapFrame(Space->ShadowRootFrame);
     ULONG Entries = (ULONG)Arch->Level[Top].EntryCount;
-    ULONG LastUser = (ULONG)((Arch->UserAddressEnd >> Arch->Level[Top].Shift) & Arch->Level[Top].IndexMask);
+    ULONG LastUser = MiPtLastUserRootIndex(Arch);
     ULONG Index, Errors = 0;
 
     for (Index = 0; Index < Entries; Index++)
     {
         MI_PTE Expected = (Index <= LastUser) ? MiArchPteRead(&Root[Index]) : 0;
 
-        if (MiArchPteRead(&Shadow[Index]) != Expected)
+        /* The processor sets the accessed bit in whichever root it walked */
+        if (MiArchPteSetAccessed(MiArchPteRead(&Shadow[Index]), FALSE) != MiArchPteSetAccessed(Expected, FALSE))
             Errors++;
     }
 

@@ -130,9 +130,6 @@ MiSpaceInitialize(
     System->Pfn.Pfn[Root].PageTableOwner = Space;
     Space->RootFrame = Root;
 
-    if (!IsSystem)
-        MiArchInitializeProcessRoot(System->SystemSpace.RootFrame, Root);
-
     if (!IsSystem && System->ShadowRoots)
     {
         ULONG Shadow = MiPfnAllocatePage(&System->Pfn, MI_ALLOCATE_ZEROED);
@@ -148,6 +145,9 @@ MiSpaceInitialize(
         System->Pfn.Pfn[Shadow].PageTableOwner = Space;
         Space->ShadowRootFrame = Shadow;
     }
+
+    if (!IsSystem)
+        MiArchInitializeProcessRoot(System->SystemSpace.RootFrame, Root);
 
     return STATUS_SUCCESS;
 }
