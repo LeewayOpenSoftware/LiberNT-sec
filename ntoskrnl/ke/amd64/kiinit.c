@@ -434,8 +434,9 @@ KiInitializeKernelMachineDependent(
         (FeatureBits & KF_SLAT) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_VIRT_FIRMWARE_ENABLED] =
         (FeatureBits & KF_VIRT_FIRMWARE_ENABLED) ? TRUE : FALSE;
+    /* FIXME: CR4.FSGSBASE is never set, so the instructions are not available to user mode */
     SharedUserData->ProcessorFeatures[PF_RDWRFSGSBASE_AVAILABLE] =
-        (FeatureBits & KF_RDWRFSGSBASE) ? TRUE : FALSE;
+        ((FeatureBits & KF_RDWRFSGSBASE) && (__readcr4() & CR4_FSGSBASE)) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_FASTFAIL_AVAILABLE] = TRUE;
     SharedUserData->ProcessorFeatures[PF_RDRAND_INSTRUCTION_AVAILABLE] =
         (FeatureBits & KF_RDRAND) ? TRUE : FALSE;

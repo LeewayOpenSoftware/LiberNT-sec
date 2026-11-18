@@ -175,6 +175,7 @@ typedef enum
 #define CR4_FXSR                0x200
 #define CR4_XMMEXCPT            0x400
 #define CR4_CHANNELS            0x800
+#define CR4_FSGSBASE            0x10000
 #define CR4_XSAVE               0x40000
 
 //

@@ -130,6 +130,7 @@ extern void func_NtTerminateThread(void);
 extern void func_NtUnloadDriver(void);
 extern void func_NtWnfState(void);
 extern void func_NtWriteFile(void);
+extern void func_ProcessorFeatures(void);
 extern void func_NtdllDefWindowProc(void);
 extern void func_RtlAllocateHeap(void);
 extern void func_RtlCreateTagHeap(void);
@@ -362,6 +363,7 @@ const struct test winetest_testlist[] =
     { "NtUnloadDriver",                 func_NtUnloadDriver },
     { "NtWnfState",                     func_NtWnfState },
     { "NtWriteFile",                    func_NtWriteFile },
+    { "ProcessorFeatures",              func_ProcessorFeatures },
     { "NtdllDefWindowProc",             func_NtdllDefWindowProc },
     { "RtlAllocateHeap",                func_RtlAllocateHeap },
     { "RtlCreateTagHeap", func_RtlCreateTagHeap },

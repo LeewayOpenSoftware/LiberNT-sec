@@ -142,6 +142,7 @@ KiNmiInterruptHandler(
         /* Check if GS base is already kernel mode. This is needed, because
            we might be interrupted during an interrupt/exception from user-mode
            before the swapgs instruction. */
+        /* Sound only while CR4.FSGSBASE is clear: user mode can then not load a kernel-half GS base */
         if ((LONG64)__readmsr(MSR_GS_BASE) >= 0)
         {
             /* Swap GS to kernel */
