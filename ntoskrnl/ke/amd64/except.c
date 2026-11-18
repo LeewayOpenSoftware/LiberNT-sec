@@ -574,11 +574,22 @@ KeRaiseUserException(IN NTSTATUS ExceptionCode)
 }
 
 
+static
+VOID
+KiEnsureKernelGsBase(
+    _In_ PKTRAP_FRAME TrapFrame)
+{
+    if ((TrapFrame->SegCs & MODE_MASK) == 0 && (LONG64)__readmsr(MSR_GS_BASE) >= 0)
+        __swapgs();
+}
+
 VOID
 DECLSPEC_NORETURN
 KiSystemFatalException(IN ULONG ExceptionCode,
                        IN PKTRAP_FRAME TrapFrame)
 {
+    KiEnsureKernelGsBase(TrapFrame);
+
     /* Bugcheck the system */
     KeBugCheckWithTf(UNEXPECTED_KERNEL_MODE_TRAP,
                      ExceptionCode,
@@ -849,6 +860,8 @@ KiMcheckAbortHandler(
     ULONG64 Status, Address, Misc, ReportedStatus = 0;
     ULONG Bank, BankCount, ReportedBank = 0;
     BOOLEAN Found = FALSE;
+
+    KiEnsureKernelGsBase(TrapFrame);
 
     BankCount = (ULONG)(__readmsr(MSR_MCG_CAP) & 0xFF);
     DbgPrint("Machine check on processor %lu, global status 0x%I64x\n",
