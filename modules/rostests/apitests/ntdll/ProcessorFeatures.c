@@ -21,10 +21,11 @@ TestReadGsBase(VOID)
     PVOID Base = NULL;
     SIZE_T Size = sizeof(Code);
     ULONG64 Value = 0;
+    ULONG OldProtect;
     NTSTATUS Status;
 
     Status = NtAllocateVirtualMemory(NtCurrentProcess(), &Base, 0, &Size,
-                                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     ok_hex(Status, STATUS_SUCCESS);
     if (!NT_SUCCESS(Status))
     {
@@ -32,6 +33,8 @@ TestReadGsBase(VOID)
         return;
     }
     RtlCopyMemory(Base, Code, sizeof(Code));
+    Status = NtProtectVirtualMemory(NtCurrentProcess(), &Base, &Size, PAGE_EXECUTE_READ, &OldProtect);
+    ok_hex(Status, STATUS_SUCCESS);
 
     _SEH2_TRY
     {

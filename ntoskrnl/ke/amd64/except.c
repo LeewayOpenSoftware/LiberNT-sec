@@ -579,6 +579,7 @@ VOID
 KiEnsureKernelGsBase(
     _In_ PKTRAP_FRAME TrapFrame)
 {
+    /* Sound only while CR4.FSGSBASE is clear: user mode can then not load a kernel-half GS base */
     if ((TrapFrame->SegCs & MODE_MASK) == 0 && (LONG64)__readmsr(MSR_GS_BASE) >= 0)
         __swapgs();
 }
