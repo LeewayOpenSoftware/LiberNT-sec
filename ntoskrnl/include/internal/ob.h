@@ -299,6 +299,7 @@ ObpDeleteSymbolicLinkName(
 //
 // Process/Handle Table Init/Rundown
 //
+/* HandleList has to be in ascending order */
 NTSTATUS
 NTAPI
 ObInitProcess(
