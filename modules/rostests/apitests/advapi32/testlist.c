@@ -22,7 +22,6 @@ extern void func_LogonProcess(void);
 extern void func_LogonSession(void);
 extern void func_LogonSessionEnd(void);
 extern void func_LogonUserNetwork(void);
-extern void func_LogonUserLocalGroups(void);
 extern void func_IsTextUnicode(void);
 extern void func_LocalSystemPrivileges(void);
 extern void func_LockServiceDatabase(void);
@@ -90,7 +89,6 @@ const struct test winetest_testlist[] =
     { "LogonSession", func_LogonSession },
     { "LogonSessionEnd", func_LogonSessionEnd },
     { "LogonUserNetwork", func_LogonUserNetwork },
-    { "LogonUserLocalGroups", func_LogonUserLocalGroups },
     { "IsTextUnicode" , func_IsTextUnicode },
     { "TokenDefaultDacl", func_TokenDefaultDacl },
     { "LocalSystemPrivileges", func_LocalSystemPrivileges },
