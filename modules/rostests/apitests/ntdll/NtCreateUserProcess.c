@@ -142,8 +142,9 @@ TestList_(
 START_TEST(NtCreateUserProcess)
 {
     HANDLE Event, Mine = NULL, Plain = NULL, Helper, Process, List[3];
-    HANDLE InParent = NULL, Unlisted = NULL, NotInherited = NULL;
+    HANDLE InParent = NULL, Unlisted = NULL, NotInherited = NULL, Many[64], Swap;
     NTSTATUS Status;
+    ULONG Index;
 
     if (!RtlDosPathNameToNtPathName_U(NtCurrentPeb()->ProcessParameters->ImagePathName.Buffer, &NtImagePath, NULL, NULL))
     {
@@ -252,6 +253,35 @@ START_TEST(NtCreateUserProcess)
         TestList(Helper, List, 3, STATUS_INVALID_PARAMETER, Event, NULL, NULL);
         List[2] = NULL;
         TestList(Helper, List, 3, STATUS_INVALID_PARAMETER, Event, NULL, NULL);
+
+        /* The order of the entries does not matter */
+        Status = STATUS_SUCCESS;
+        for (Index = 0; Index < RTL_NUMBER_OF(Many) && NT_SUCCESS(Status); Index++)
+        {
+            Status = NtDuplicateObject(NtCurrentProcess(), Event, Helper, &Many[RTL_NUMBER_OF(Many) - 1 - Index], 0, OBJ_INHERIT,
+                                       DUPLICATE_SAME_ACCESS);
+        }
+
+        ok_ntstatus(Status, STATUS_SUCCESS);
+        if (NT_SUCCESS(Status))
+        {
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_SUCCESS, Event, Many[0], Unlisted);
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_SUCCESS, Event, Many[RTL_NUMBER_OF(Many) - 1], InParent);
+            Swap = Many[5];
+            Many[5] = Many[40];
+            Many[40] = Swap;
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_SUCCESS, Event, Many[5], NotInherited);
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_SUCCESS, Event, Many[31], Unlisted);
+            Swap = Many[63];
+            Many[63] = NULL;
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_SUCCESS, Event, NULL, Many[0]);
+            Many[63] = Many[7];
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_INVALID_PARAMETER, Event, NULL, NULL);
+            Many[63] = (HANDLE)(ULONG_PTR)0x7FFF0;
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_INVALID_PARAMETER, Event, NULL, NULL);
+            Many[63] = Swap;
+            TestList(Helper, Many, RTL_NUMBER_OF(Many), STATUS_SUCCESS, Event, Swap, Unlisted);
+        }
     }
 
     NtTerminateProcess(Helper, STATUS_SUCCESS);

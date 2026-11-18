@@ -2272,6 +2272,29 @@ typedef struct _OBP_INHERIT_HANDLE_CONTEXT
 
 static
 BOOLEAN
+ObpIsHandleListed(
+    IN POBP_INHERIT_HANDLE_CONTEXT FilterContext,
+    IN HANDLE Handle)
+{
+    SIZE_T Low = 0, High = FilterContext->HandleCount, Middle;
+
+    while (Low < High)
+    {
+        Middle = Low + (High - Low) / 2;
+        if (FilterContext->HandleList[Middle] == Handle)
+            return TRUE;
+
+        if ((ULONG_PTR)FilterContext->HandleList[Middle] < (ULONG_PTR)Handle)
+            Low = Middle + 1;
+        else
+            High = Middle;
+    }
+
+    return FALSE;
+}
+
+static
+BOOLEAN
 NTAPI
 ObpFilterInheritedHandleCallback(
     IN PHANDLE_TABLE_ENTRY HandleEntry,
@@ -2282,16 +2305,12 @@ ObpFilterInheritedHandleCallback(
     POBJECT_HEADER ObjectHeader;
     POBJECT_TYPE ObjectType;
     PVOID Object;
-    SIZE_T Index;
 
-    for (Index = 0; Index < FilterContext->HandleCount; Index++)
+    if (ObpIsHandleListed(FilterContext, Handle))
     {
-        if (FilterContext->HandleList[Index] == Handle)
-        {
-            FilterContext->KeptCount++;
-            ExUnlockHandleTableEntry(FilterContext->HandleTable, HandleEntry);
-            return FALSE;
-        }
+        FilterContext->KeptCount++;
+        ExUnlockHandleTableEntry(FilterContext->HandleTable, HandleEntry);
+        return FALSE;
     }
 
     ObjectHeader = ObpGetHandleObject(HandleEntry);
@@ -2312,16 +2331,9 @@ ObpCountListedHandleCallback(
     IN PVOID Context)
 {
     POBP_INHERIT_HANDLE_CONTEXT FilterContext = Context;
-    SIZE_T Index;
 
-    for (Index = 0; Index < FilterContext->HandleCount; Index++)
-    {
-        if (FilterContext->HandleList[Index] == Handle)
-        {
-            FilterContext->KeptCount++;
-            break;
-        }
-    }
+    if (ObpIsHandleListed(FilterContext, Handle))
+        FilterContext->KeptCount++;
 
     return FALSE;
 }
@@ -2413,7 +2425,7 @@ ObInitProcess(IN PEPROCESS Parent OPTIONAL,
     PHANDLE_TABLE ParentTable, ObjectTable;
     OBP_INHERIT_HANDLE_CONTEXT FilterContext;
     NTSTATUS Status = STATUS_SUCCESS;
-    SIZE_T Index, NullCount = 0;
+    SIZE_T Index;
 
     /* Check for a parent */
     if (Parent)
@@ -2437,17 +2449,22 @@ ObInitProcess(IN PEPROCESS Parent OPTIONAL,
             FilterContext.HandleCount = HandleCount;
             FilterContext.KeptCount = 0;
 
-            for (Index = 0; Index < HandleCount; Index++)
+            /* The caller hands the list over in ascending order, so a repeated entry sits next to its twin */
+            for (Index = 1; Index < HandleCount; Index++)
             {
-                if (!HandleList[Index])
-                    NullCount++;
+                if ((ULONG_PTR)HandleList[Index] <= (ULONG_PTR)HandleList[Index - 1])
+                {
+                    Status = STATUS_INVALID_PARAMETER;
+                    FilterContext.HandleCount = 0;
+                    break;
+                }
             }
 
             /* One NULL entry: nothing is inherited, the other entries still have to be handles of the parent */
-            if (NullCount)
+            if (FilterContext.HandleCount && !HandleList[0])
             {
                 ExEnumHandleTable(ParentTable, ObpCountListedHandleCallback, &FilterContext, NULL);
-                if (NullCount != 1 || FilterContext.KeptCount != HandleCount - 1)
+                if (FilterContext.KeptCount != HandleCount - 1)
                     Status = STATUS_INVALID_PARAMETER;
 
                 FilterContext.HandleCount = 0;

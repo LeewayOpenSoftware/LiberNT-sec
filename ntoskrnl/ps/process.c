@@ -2621,6 +2621,57 @@ PspSetProcessSessionFromToken(
     return Status;
 }
 
+#define PSP_MAX_HANDLE_LIST_ENTRIES \
+    ((SIZE_T)LOW_LEVEL_ENTRIES * MID_LEVEL_ENTRIES * HIGH_LEVEL_ENTRIES + 1)
+
+static
+VOID
+PspSortHandleList(
+    _Inout_updates_(Count) PHANDLE List,
+    _In_ SIZE_T Count)
+{
+    SIZE_T Start, End, Root, Child;
+    HANDLE Swap;
+
+    if (Count < 2)
+        return;
+
+    Start = Count / 2;
+    End = Count;
+    for (;;)
+    {
+        if (Start > 0)
+        {
+            Start--;
+        }
+        else
+        {
+            End--;
+            if (End == 0)
+                break;
+
+            Swap = List[End];
+            List[End] = List[0];
+            List[0] = Swap;
+        }
+
+        Root = Start;
+        while ((Child = 2 * Root + 1) < End)
+        {
+            if (Child + 1 < End && (ULONG_PTR)List[Child] < (ULONG_PTR)List[Child + 1])
+                Child++;
+
+            if ((ULONG_PTR)List[Root] >= (ULONG_PTR)List[Child])
+                break;
+
+            Swap = List[Root];
+            List[Root] = List[Child];
+            List[Child] = Swap;
+            Root = Child;
+        }
+    }
+}
+
 NTSTATUS
 NTAPI
 NtCreateUserProcess(OUT PHANDLE ProcessHandle,
@@ -2870,7 +2921,8 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
                     HandleListSize = AttributeList->Attributes[i].Size;
                     HandleListPointer = AttributeList->Attributes[i].ValuePtr;
                     if (!HandleListPointer || !HandleListSize ||
-                        (HandleListSize % sizeof(HANDLE)) != 0)
+                        (HandleListSize % sizeof(HANDLE)) != 0 ||
+                        (HandleListSize / sizeof(HANDLE)) > PSP_MAX_HANDLE_LIST_ENTRIES)
                     {
                         AttributeError = TRUE;
                         break;
@@ -3072,6 +3124,8 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
 
         if (!NT_SUCCESS(Status))
             goto Cleanup;
+
+        PspSortHandleList(CapturedHandleList, HandleCount);
     }
 
     DPRINT("NtCreateUserProcess: Image='%wZ'\n", &CapturedImageName);
