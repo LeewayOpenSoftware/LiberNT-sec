@@ -21,18 +21,17 @@ KmtCpuSupportsIbpb(VOID)
     CHAR Vendor[13];
 
     __cpuid(Regs, 0);
-    if ((unsigned int)Regs[0] >= 7)
-    {
-        int Leaf7[4];
-        __cpuidex(Leaf7, 7, 0);
-        if (Leaf7[3] & CPUID7_EDX_IBRS_IBPB)
-            Ibpb = TRUE;
-    }
-
     *(int *)&Vendor[0] = Regs[1];
     *(int *)&Vendor[4] = Regs[3];
     *(int *)&Vendor[8] = Regs[2];
     Vendor[12] = ANSI_NULL;
+
+    if ((unsigned int)Regs[0] >= 7)
+    {
+        __cpuidex(Regs, 7, 0);
+        if (Regs[3] & CPUID7_EDX_IBRS_IBPB)
+            Ibpb = TRUE;
+    }
 
     if (strcmp(Vendor, "AuthenticAMD") == 0 || strcmp(Vendor, "HygonGenuine") == 0)
     {
